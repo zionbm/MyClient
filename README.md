@@ -18,7 +18,15 @@ Server-side POC monorepo for MyClient: CRM, AI business assistant and virtual re
 ```bash
 npm install
 cp .env.example .env
+npm run prisma:generate
 npm run check
+```
+
+Create and apply local database migrations:
+
+```bash
+docker compose up -d postgres
+npm run prisma:migrate:dev
 ```
 
 Run a single service:
@@ -70,6 +78,8 @@ curl -s http://localhost:3003/plivo/recording \
   -H 'content-type: application/json' \
   -d '{"businessId":"biz_1","callId":"call_2","from":"+972501234567","transcript":"Please call me back about the repair","urgent":true}'
 ```
+
+The Core service persists callback tasks, owner-created tasks, notifications and pending actions in PostgreSQL through Prisma. Duplicate callback and owner task requests are detected by `Task.idempotencyKey`, so the protection survives service restarts.
 
 List created tasks:
 

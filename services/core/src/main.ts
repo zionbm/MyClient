@@ -1,96 +1,65 @@
 import "reflect-metadata";
-import { Body, Controller, Get, Module, Param, Post } from "@nestjs/common";
+import { Body, Controller, Get, Inject, Module, Param, Post } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { FastifyAdapter, type NestFastifyApplication } from "@nestjs/platform-fastify";
+import type { Prisma } from "@prisma/client";
 import { getPort, health, log } from "@myclient/common";
-import { AiActionSchema, CreateCallbackTaskSchema, type AiAction } from "@myclient/contracts";
-
-type Task = {
-  id: string;
-  businessId: string;
-  title: string;
-  description?: string;
-  priority: "NORMAL" | "URGENT";
-  status: "OPEN" | "COMPLETED";
-  source: string;
-  sourceRef?: string;
-  createdAt: string;
-};
-
-type Notification = {
-  id: string;
-  businessId: string;
-  taskId: string;
-  title: string;
-  body: string;
-  status: "PENDING";
-  createdAt: string;
-};
-
-type PendingAction = {
-  id: string;
-  businessId: string;
-  action: AiAction;
-  createdAt: string;
-};
-
-const tasks: Task[] = [];
-const notifications: Notification[] = [];
-const pendingActions: PendingAction[] = [];
-const idempotencyIndex = new Map<string, Task>();
-
-function id(prefix: string): string {
-  return `${prefix}_${crypto.randomUUID()}`;
-}
+import { AiActionSchema, CreateCallbackTaskSchema } from "@myclient/contracts";
+import { BusinessesRepository, NotificationsRepository, PendingActionsRepository, TasksRepository } from "./core.repositories.js";
+import { PrismaService } from "./prisma.service.js";
 
 @Controller()
 class CoreController {
+  constructor(
+    @Inject(TasksRepository) private readonly tasks: TasksRepository,
+    @Inject(NotificationsRepository) private readonly notifications: NotificationsRepository,
+    @Inject(PendingActionsRepository) private readonly pendingActions: PendingActionsRepository
+  ) {}
+
   @Get("health")
   health() {
-    return health("core", { database: "mock-in-memory", notifications: "mock-fcm" });
+    return health("core", { database: "postgresql-prisma", notifications: "mock-fcm" });
   }
 
   @Post("internal/tasks/callback")
-  createCallbackTask(@Body() body: unknown) {
+  async createCallbackTask(@Body() body: unknown) {
     const command = CreateCallbackTaskSchema.parse(body);
-    const existing = idempotencyIndex.get(command.idempotencyKey);
+    const existing = await this.tasks.findByIdempotencyKey(command.businessId, command.idempotencyKey);
     if (existing) {
       return { duplicate: true, task: existing };
     }
 
     const urgentPrefix = command.priority === "URGENT" ? "[URGENT] " : "";
-    const task: Task = {
-      id: id("task"),
+    const task = await this.tasks.create({
       businessId: command.businessId,
       title: `${urgentPrefix}Call back customer`,
       description: command.transcript ?? "The customer asked you to call them back.",
       priority: command.priority,
-      status: "OPEN",
       source: "telephony",
       sourceRef: command.sourceCallId,
-      createdAt: new Date().toISOString()
-    };
+      idempotencyKey: command.idempotencyKey
+    });
 
-    const notification: Notification = {
-      id: id("notification"),
+    const notification = await this.notifications.create({
       businessId: command.businessId,
       taskId: task.id,
       title: command.priority === "URGENT" ? "Urgent customer message" : "Customer callback",
       body: command.transcript ?? `Caller ${command.callerPhone ?? "unknown"} asked for a callback.`,
-      status: "PENDING",
-      createdAt: new Date().toISOString()
-    };
+      payload: {
+        source: "telephony",
+        sourceCallId: command.sourceCallId,
+        callerPhone: command.callerPhone ?? null,
+        priority: command.priority
+      }
+    });
 
-    tasks.push(task);
-    notifications.push(notification);
-    idempotencyIndex.set(command.idempotencyKey, task);
     log("info", "callback task created", { businessId: command.businessId, taskId: task.id });
 
     return { duplicate: false, task, notification };
   }
 
   @Post("owner-actions/execute")
-  executeOwnerAction(@Body() body: unknown) {
+  async executeOwnerAction(@Body() body: unknown) {
     const request = body as { businessId?: string; action?: unknown };
     if (!request.businessId) {
       throw new Error("businessId is required");
@@ -98,31 +67,32 @@ class CoreController {
 
     const action = AiActionSchema.parse(request.action);
     if (action.missingFields.length > 0) {
-      const pending: PendingAction = {
-        id: id("pending"),
+      const pending = await this.pendingActions.create({
         businessId: request.businessId,
-        action,
-        createdAt: new Date().toISOString()
-      };
-      pendingActions.push(pending);
+        actionType: action.type,
+        payload: action.payload as Prisma.InputJsonValue,
+        missingFields: action.missingFields
+      });
       return { status: "PENDING_MISSING_INFORMATION", pending };
     }
 
     if (action.type === "CREATE_TASK") {
+      const existing = await this.tasks.findByIdempotencyKey(request.businessId, action.idempotencyKey);
+      if (existing) {
+        return { status: "EXECUTED", duplicate: true, task: existing };
+      }
+
       const title = typeof action.payload.title === "string" ? action.payload.title : "Owner task";
-      const task: Task = {
-        id: id("task"),
+      const task = await this.tasks.create({
         businessId: request.businessId,
         title,
         description: typeof action.payload.description === "string" ? action.payload.description : undefined,
         priority: "NORMAL",
-        status: "OPEN",
         source: "ai_owner_command",
         sourceRef: action.idempotencyKey,
-        createdAt: new Date().toISOString()
-      };
-      tasks.push(task);
-      return { status: "EXECUTED", task };
+        idempotencyKey: action.idempotencyKey
+      });
+      return { status: "EXECUTED", duplicate: false, task };
     }
 
     return {
@@ -132,18 +102,25 @@ class CoreController {
   }
 
   @Get("businesses/:businessId/tasks")
-  listTasks(@Param("businessId") businessId: string) {
-    return { tasks: tasks.filter((task) => task.businessId === businessId) };
+  async listTasks(@Param("businessId") businessId: string) {
+    return { tasks: await this.tasks.listByBusiness(businessId) };
   }
 
   @Get("businesses/:businessId/notifications")
-  listNotifications(@Param("businessId") businessId: string) {
-    return { notifications: notifications.filter((item) => item.businessId === businessId) };
+  async listNotifications(@Param("businessId") businessId: string) {
+    return { notifications: await this.notifications.listByBusiness(businessId) };
   }
 }
 
 @Module({
-  controllers: [CoreController]
+  controllers: [CoreController],
+  providers: [
+    PrismaService,
+    BusinessesRepository,
+    TasksRepository,
+    NotificationsRepository,
+    PendingActionsRepository
+  ]
 })
 class CoreModule {}
 

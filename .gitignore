@@ -5,4 +5,3 @@ dist/
 coverage/
 *.log
 *.tsbuildinfo
-packages/database/prisma/migrations/

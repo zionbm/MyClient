@@ -13,6 +13,8 @@
   "dependencies": {
     "@myclient/common": "*",
     "@myclient/contracts": "*",
+    "@myclient/database": "*",
+    "@prisma/client": "6.12.0",
     "@nestjs/common": "^11.1.6",
     "@nestjs/core": "^11.1.6",
     "@nestjs/platform-fastify": "^11.1.6",
