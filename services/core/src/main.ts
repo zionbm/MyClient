@@ -32,6 +32,7 @@ import {
   CreateTaskSchema,
   CompletePendingActionSchema,
   ListByStatusQuerySchema,
+  OwnerVoiceCommandHeadersSchema,
   RegisterBusinessSchema,
   UpdateAppointmentSchema,
   UpdateBusinessPhoneNumberSchema,
@@ -52,8 +53,9 @@ import {
   CustomerNotesRepository,
   CustomersRepository,
   IncomingCallsRepository,
-  JobsRepository,
-  NotificationsRepository,
+    JobsRepository,
+    NotificationsRepository,
+    OwnerVoiceCommandsRepository,
   PendingActionsRepository,
   TasksRepository
 } from "./core.repositories.js";
@@ -133,6 +135,16 @@ function parseMockFirebaseUid(headers: RequestHeaders): string {
   return firebaseUid;
 }
 
+function requireAudioBody(body: unknown): Buffer {
+  if (!Buffer.isBuffer(body) || body.byteLength === 0) {
+    throw new BadRequestException("Audio body is required");
+  }
+  if (body.byteLength > 5 * 1024 * 1024) {
+    throw new BadRequestException("Audio body is too large");
+  }
+  return body;
+}
+
 @Controller()
 class CoreController {
   constructor(
@@ -148,6 +160,7 @@ class CoreController {
     @Inject(AppointmentsRepository) private readonly appointments: AppointmentsRepository,
     @Inject(JobsRepository) private readonly jobs: JobsRepository,
     @Inject(NotificationsRepository) private readonly notifications: NotificationsRepository,
+    @Inject(OwnerVoiceCommandsRepository) private readonly ownerVoiceCommands: OwnerVoiceCommandsRepository,
     @Inject(PendingActionsRepository) private readonly pendingActions: PendingActionsRepository
   ) {}
 
@@ -481,6 +494,121 @@ class CoreController {
       status: action.requiresConfirmation ? "REVIEW_REQUIRED" : "MOCK_ACCEPTED",
       action
     };
+  }
+
+  @Get("businesses/:businessId/voice-commands")
+  async listOwnerVoiceCommands(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string) {
+    await this.requireBusinessAccess(headers, businessId);
+    return { voiceCommands: await this.ownerVoiceCommands.listByBusiness(businessId) };
+  }
+
+  @Post("businesses/:businessId/voice-commands/audio")
+  async createOwnerVoiceCommandFromAudio(
+    @Headers() headers: RequestHeaders,
+    @Param("businessId") businessId: string,
+    @Body() body: unknown
+  ) {
+    const user = await this.requireBusinessAccess(headers, businessId);
+    const audio = requireAudioBody(body);
+    const commandHeaders = OwnerVoiceCommandHeadersSchema.parse({
+      idempotencyKey: headerValue(headers, "x-idempotency-key"),
+      languageCode: headerValue(headers, "x-language-code") ?? "he-IL",
+      filename: headerValue(headers, "x-audio-filename") ?? "owner-command.m4a"
+    });
+    const existing = await this.ownerVoiceCommands.findByIdempotencyKey(commandHeaders.idempotencyKey);
+    if (existing) {
+      return {
+        duplicate: true,
+        voiceCommand: existing,
+        execution: existing.executionResult
+      };
+    }
+
+    let voiceCommand = await this.ownerVoiceCommands.create({
+      businessId,
+      userId: user.id,
+      languageCode: commandHeaders.languageCode,
+      idempotencyKey: commandHeaders.idempotencyKey
+    });
+
+    try {
+      const stt = await this.transcribeOwnerCommandAudio({
+        audio,
+        contentType: headerValue(headers, "content-type") ?? "audio/mp4",
+        filename: commandHeaders.filename,
+        languageCode: commandHeaders.languageCode
+      });
+      voiceCommand = await this.ownerVoiceCommands.update({
+        id: voiceCommand.id,
+        transcript: stt.transcript,
+        sttProvider: stt.provider,
+        sttConfidence: stt.confidence,
+        executionStatus: "TRANSCRIBED"
+      });
+
+      const intent = await this.parseOwnerCommandIntent({
+        transcript: stt.transcript,
+        businessId,
+        userId: user.id,
+        idempotencyKey: commandHeaders.idempotencyKey
+      });
+      voiceCommand = await this.ownerVoiceCommands.update({
+        id: voiceCommand.id,
+        llmProvider: intent.provider,
+        llmAction: intent.action as Prisma.InputJsonValue,
+        executionStatus: "PARSED"
+      });
+
+      const execution = await this.executeVoiceCommandAction({
+        businessId,
+        userId: user.id,
+        action: intent.action,
+        idempotencyKey: commandHeaders.idempotencyKey
+      });
+      voiceCommand = await this.ownerVoiceCommands.update({
+        id: voiceCommand.id,
+        executionStatus: execution.status,
+        executionResult: execution as Prisma.InputJsonValue
+      });
+      await this.audit.record({
+        businessId,
+        actorType: "user",
+        actorId: user.id,
+        source: "owner_voice_command",
+        entityType: "owner_voice_command",
+        entityId: voiceCommand.id,
+        action: "EXECUTE_OWNER_VOICE_COMMAND",
+        after: voiceCommand as Prisma.InputJsonValue
+      });
+
+      return {
+        duplicate: false,
+        voiceCommand,
+        stt,
+        llm: intent,
+        execution
+      };
+    } catch (error) {
+      voiceCommand = await this.ownerVoiceCommands.update({
+        id: voiceCommand.id,
+        executionStatus: "FAILED",
+        executionResult: {
+          message: error instanceof Error ? error.message : String(error)
+        }
+      });
+      await this.audit.record({
+        businessId,
+        actorType: "user",
+        actorId: user.id,
+        source: "owner_voice_command",
+        entityType: "owner_voice_command",
+        entityId: voiceCommand.id,
+        action: "FAIL_OWNER_VOICE_COMMAND",
+        after: voiceCommand as Prisma.InputJsonValue,
+        result: "FAILED"
+      });
+      throw error;
+    }
   }
 
   @Get("businesses/:businessId/tasks")
@@ -1154,6 +1282,121 @@ class CoreController {
     };
   }
 
+  private async transcribeOwnerCommandAudio(input: {
+    audio: Buffer;
+    contentType: string;
+    filename: string;
+    languageCode: string;
+  }): Promise<{ provider: string; model?: string; languageCode: string; transcript: string; confidence: number }> {
+    const voiceBaseUrl = getEnv("VOICE_BASE_URL", "http://localhost:3002");
+    const audioBody = input.audio.buffer.slice(input.audio.byteOffset, input.audio.byteOffset + input.audio.byteLength) as ArrayBuffer;
+    const response = await fetch(`${voiceBaseUrl}/stt/openai`, {
+      method: "POST",
+      headers: {
+        "content-type": input.contentType,
+        "x-audio-filename": input.filename,
+        "x-language-code": input.languageCode
+      },
+      body: audioBody
+    });
+    const result = (await response.json().catch(() => ({}))) as {
+      provider?: string;
+      model?: string;
+      languageCode?: string;
+      transcript?: string;
+      confidence?: number;
+    };
+    if (!response.ok) {
+      throw new BadRequestException({
+        message: `Voice STT failed with ${response.status}`,
+        details: result
+      });
+    }
+    if (!result.transcript) {
+      throw new BadRequestException("Voice STT returned empty transcript");
+    }
+    return {
+      provider: result.provider ?? "openai",
+      model: result.model,
+      languageCode: result.languageCode ?? input.languageCode,
+      transcript: result.transcript,
+      confidence: result.confidence ?? 1
+    };
+  }
+
+  private async parseOwnerCommandIntent(input: {
+    transcript: string;
+    businessId: string;
+    userId: string;
+    idempotencyKey: string;
+  }) {
+    const aiBaseUrl = getEnv("AI_BASE_URL", "http://localhost:3001");
+    const response = await fetch(`${aiBaseUrl}/intent/parse`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        text: input.transcript,
+        businessId: input.businessId,
+        userId: input.userId,
+        idempotencyKey: input.idempotencyKey
+      })
+    });
+    const result = (await response.json().catch(() => ({}))) as { provider?: string; action?: unknown };
+    if (!response.ok) {
+      throw new BadRequestException({
+        message: `AI intent parsing failed with ${response.status}`,
+        details: result
+      });
+    }
+    const action = AiActionSchema.parse(result.action);
+    return {
+      provider: result.provider ?? "openai",
+      action
+    };
+  }
+
+  private async executeVoiceCommandAction(input: {
+    businessId: string;
+    userId: string;
+    action: {
+      type: string;
+      payload: Record<string, unknown>;
+      missingFields: string[];
+      requiresConfirmation: boolean;
+    };
+    idempotencyKey: string;
+  }) {
+    if (input.action.missingFields.length > 0 || input.action.requiresConfirmation) {
+      const pending = await this.pendingActions.create({
+        businessId: input.businessId,
+        userId: input.userId,
+        actionType: input.action.type,
+        payload: input.action.payload as Prisma.InputJsonValue,
+        missingFields: input.action.missingFields
+      });
+      await this.audit.record({
+        businessId: input.businessId,
+        actorType: "user",
+        actorId: input.userId,
+        source: "owner_voice_command",
+        entityType: "pending_action",
+        entityId: pending.id,
+        action: "CREATE_PENDING_ACTION_FROM_VOICE_COMMAND",
+        after: pending as Prisma.InputJsonValue
+      });
+      return { status: "PENDING", pendingAction: pending };
+    }
+
+    const result = await this.executeStructuredAction({
+      businessId: input.businessId,
+      userId: input.userId,
+      actionType: input.action.type,
+      payload: input.action.payload,
+      idempotencyKey: input.idempotencyKey
+    });
+    return { status: "EXECUTED", result };
+  }
+
   private async executeCallbackTask(command: {
     businessId: string;
     incomingCallId?: string;
@@ -1262,13 +1505,20 @@ class CoreController {
     AppointmentsRepository,
     JobsRepository,
     NotificationsRepository,
+    OwnerVoiceCommandsRepository,
     PendingActionsRepository
   ]
 })
 class CoreModule {}
 
 async function bootstrap() {
-  const app = await NestFactory.create<NestFastifyApplication>(CoreModule, new FastifyAdapter());
+  const adapter = new FastifyAdapter();
+  const app = await NestFactory.create<NestFastifyApplication>(CoreModule, adapter);
+  adapter.getInstance().addContentTypeParser(
+    ["audio/mp4", "audio/m4a", "audio/aac", "application/octet-stream"],
+    { parseAs: "buffer" },
+    (_request, body, done) => done(null, body)
+  );
   app.useGlobalFilters(new ApiExceptionFilter("core"));
   const port = getPort("CORE_PORT", 3000);
   await app.listen(port, "0.0.0.0");

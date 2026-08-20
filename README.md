@@ -57,6 +57,19 @@ Create demo data for manual testing:
 npm run seed:demo
 ```
 
+Owner voice commands use server-side OpenAI STT and LLM. Set `OPENAI_API_KEY`, record a short `m4a/aac` command in Hebrew, and upload it to:
+
+```bash
+curl -s http://localhost:3000/businesses/<business-id>/voice-commands/audio \
+  -X POST \
+  -H 'authorization: Bearer mock:<firebaseUid>' \
+  -H 'content-type: audio/mp4' \
+  -H 'x-audio-filename: command.m4a' \
+  -H 'x-language-code: he-IL' \
+  -H 'x-idempotency-key: voice_cmd_1' \
+  --data-binary '@command.m4a'
+```
+
 ## API Errors
 
 All Nest services return API errors in a consistent JSON shape:

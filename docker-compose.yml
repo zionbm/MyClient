@@ -25,6 +25,8 @@ services:
       DATABASE_URL: postgresql://myclient:myclient@postgres:5432/myclient?schema=public
       DEFAULT_LOCALE: he-IL
       INTERNAL_API_SECRET: dev-internal-secret
+      AI_BASE_URL: http://ai:3001
+      VOICE_BASE_URL: http://voice:3002
     ports:
       - "3000:3000"
     depends_on:
@@ -38,8 +40,10 @@ services:
     environment:
       NODE_ENV: development
       AI_PORT: 3001
-      MOCK_LLM_PROVIDER: true
+      MOCK_LLM_PROVIDER: ${MOCK_LLM_PROVIDER:-false}
       DEFAULT_LOCALE: he-IL
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_LLM_MODEL: ${OPENAI_LLM_MODEL:-gpt-5-mini}
     ports:
       - "3001:3001"
 
@@ -50,9 +54,11 @@ services:
     environment:
       NODE_ENV: development
       VOICE_PORT: 3002
-      MOCK_STT_PROVIDER: true
+      MOCK_STT_PROVIDER: ${MOCK_STT_PROVIDER:-false}
       MOCK_TTS_PROVIDER: true
       DEFAULT_LOCALE: he-IL
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_STT_MODEL: ${OPENAI_STT_MODEL:-gpt-4o-mini-transcribe}
     ports:
       - "3002:3002"
 

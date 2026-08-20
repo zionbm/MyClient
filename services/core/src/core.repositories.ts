@@ -78,6 +78,24 @@ type ResolvePendingActionInput = {
   resolution?: Prisma.InputJsonValue;
 };
 
+type CreateOwnerVoiceCommandInput = {
+  businessId: string;
+  userId: string;
+  languageCode: string;
+  idempotencyKey: string;
+};
+
+type UpdateOwnerVoiceCommandInput = {
+  id: string;
+  transcript?: string;
+  sttProvider?: string;
+  sttConfidence?: number;
+  llmProvider?: string;
+  llmAction?: Prisma.InputJsonValue;
+  executionStatus?: string;
+  executionResult?: Prisma.InputJsonValue;
+};
+
 type RegisterBusinessInput = {
   firebaseUid: string;
   email: string;
@@ -521,6 +539,56 @@ export class CallTranscriptsRepository {
         taskId: input.taskId,
         provider: input.provider ?? "mock",
         confidence: input.confidence
+      }
+    });
+  }
+}
+
+@Injectable()
+export class OwnerVoiceCommandsRepository {
+  constructor(
+    @Inject(PrismaService) private readonly prisma: PrismaService,
+    @Inject(BusinessesRepository) private readonly businesses: BusinessesRepository
+  ) {}
+
+  async create(input: CreateOwnerVoiceCommandInput) {
+    await this.businesses.requireBusiness(input.businessId);
+    return this.prisma.ownerVoiceCommand.create({
+      data: {
+        businessId: input.businessId,
+        userId: input.userId,
+        languageCode: input.languageCode,
+        idempotencyKey: input.idempotencyKey,
+        executionStatus: "RECEIVED"
+      }
+    });
+  }
+
+  async findByIdempotencyKey(idempotencyKey: string) {
+    return this.prisma.ownerVoiceCommand.findUnique({
+      where: { idempotencyKey }
+    });
+  }
+
+  async listByBusiness(businessId: string) {
+    await this.businesses.requireBusiness(businessId);
+    return this.prisma.ownerVoiceCommand.findMany({
+      where: { businessId },
+      orderBy: { createdAt: "desc" }
+    });
+  }
+
+  async update(input: UpdateOwnerVoiceCommandInput) {
+    return this.prisma.ownerVoiceCommand.update({
+      where: { id: input.id },
+      data: {
+        transcript: input.transcript,
+        sttProvider: input.sttProvider,
+        sttConfidence: input.sttConfidence,
+        llmProvider: input.llmProvider,
+        llmAction: input.llmAction,
+        executionStatus: input.executionStatus,
+        executionResult: input.executionResult
       }
     });
   }

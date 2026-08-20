@@ -60,3 +60,25 @@ curl -s http://localhost:3000/businesses/<businessId>/notifications/<notificatio
   -H 'content-type: application/json' \
   -d '{"status":"READ"}'
 ```
+
+## Owner Voice Command With Server STT
+
+After setting `OPENAI_API_KEY`, record a short Hebrew command in the app as `m4a/aac` and upload it to Core:
+
+```bash
+curl -s http://localhost:3000/businesses/<businessId>/voice-commands/audio \
+  -X POST \
+  -H 'authorization: Bearer mock:<firebaseUid>' \
+  -H 'content-type: audio/mp4' \
+  -H 'x-audio-filename: command.m4a' \
+  -H 'x-language-code: he-IL' \
+  -H 'x-idempotency-key: voice_cmd_manual_1' \
+  --data-binary '@command.m4a'
+```
+
+List voice command history:
+
+```bash
+curl -s http://localhost:3000/businesses/<businessId>/voice-commands \
+  -H 'authorization: Bearer mock:<firebaseUid>'
+```

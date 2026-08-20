@@ -138,3 +138,11 @@ export const CompletePendingActionSchema = z.object({
 });
 
 export type CompletePendingAction = z.infer<typeof CompletePendingActionSchema>;
+
+export const OwnerVoiceCommandHeadersSchema = z.object({
+  idempotencyKey: z.string().trim().min(8),
+  languageCode: z.string().trim().min(1).default("he-IL"),
+  filename: z.string().trim().min(1).default("owner-command.m4a")
+});
+
+export type OwnerVoiceCommandHeaders = z.infer<typeof OwnerVoiceCommandHeadersSchema>;

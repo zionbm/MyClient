@@ -44,14 +44,15 @@ model Business {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  users        User[]
-  settings     BusinessSettings?
-  phoneNumbers BusinessPhoneNumber[]
-  customers    Customer[]
-  jobs         Job[]
-  appointments Appointment[]
-  tasks        Task[]
-  IncomingCall IncomingCall[]
+  users         User[]
+  settings      BusinessSettings?
+  phoneNumbers  BusinessPhoneNumber[]
+  customers     Customer[]
+  jobs          Job[]
+  appointments  Appointment[]
+  tasks         Task[]
+  IncomingCall  IncomingCall[]
+  voiceCommands OwnerVoiceCommand[]
 }
 
 model BusinessSettings {
@@ -235,6 +236,28 @@ model AiAction {
   updatedAt      DateTime     @updatedAt
 
   @@index([businessId])
+}
+
+model OwnerVoiceCommand {
+  id              String   @id @default(uuid())
+  businessId      String
+  userId          String
+  languageCode    String   @default("he-IL")
+  transcript      String?
+  sttProvider     String?
+  sttConfidence   Decimal?
+  llmProvider     String?
+  llmAction       Json?
+  executionStatus String   @default("RECEIVED")
+  executionResult Json?
+  idempotencyKey  String   @unique
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  business Business @relation(fields: [businessId], references: [id])
+
+  @@index([businessId])
+  @@index([businessId, userId])
 }
 
 model PendingAction {

@@ -21,10 +21,15 @@ Current paid-provider boundaries:
 
 Implementation order for paid services:
 
-1. Plivo inbound webhook integration, using existing phone-number-to-business resolution.
-2. STT live provider, replacing `/stt/mock` while keeping stored transcripts unchanged.
+1. OpenAI STT and LLM for owner voice commands.
+2. Plivo inbound webhook integration, using existing phone-number-to-business resolution.
 3. TTS live provider for business IVR prompts.
 4. Notification provider for delivery, updating notification status to `SENT` or `FAILED`.
-5. LLM provider for owner commands, returning the existing `AiAction` contract.
 
 The business logic should stay inside Core. Paid provider services should translate external payloads into the existing contracts and call Core internal endpoints.
+
+Owner voice command flow:
+
+```text
+App m4a upload -> Core /voice-commands/audio -> Voice /stt/openai -> AI /intent/parse -> Core action execution
+```
