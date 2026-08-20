@@ -25,7 +25,10 @@ function requireAudio(body: unknown): Buffer {
 class VoiceController {
   @Get("health")
   health() {
-    return health("voice", { stt: "openai", tts: "mock-google-tts-hebrew-chirp3-hd" });
+    return health("voice", {
+      stt: getEnv("GEMINI_STT_MODEL", "gemini-2.5-flash"),
+      tts: getEnv("GEMINI_TTS_MODEL", "gemini-3.1-flash-tts-preview")
+    });
   }
 
   @Post("stt/mock")
@@ -42,49 +45,86 @@ class VoiceController {
     return result;
   }
 
-  @Post("stt/openai")
-  async transcribeOpenAi(@Headers() headers: RequestHeaders, @Body() body: unknown) {
+  @Post("stt/gemini")
+  async transcribeGemini(@Headers() headers: RequestHeaders, @Body() body: unknown) {
     const audio = requireAudio(body);
-    const apiKey = getEnv("OPENAI_API_KEY");
-    const model = getEnv("OPENAI_STT_MODEL", "gpt-4o-mini-transcribe");
+    const apiKey = getEnv("GEMINI_API_KEY");
+    const model = getEnv("GEMINI_STT_MODEL", "gemini-2.5-flash");
     const contentType = headerValue(headers, "content-type") ?? "audio/mp4";
-    const filename = headerValue(headers, "x-audio-filename") ?? "owner-command.m4a";
     const languageCode = headerValue(headers, "x-language-code") ?? "he-IL";
-    const audioBuffer = audio.buffer.slice(audio.byteOffset, audio.byteOffset + audio.byteLength) as ArrayBuffer;
 
-    const form = new FormData();
-    form.append("file", new Blob([audioBuffer], { type: contentType }), filename);
-    form.append("model", model);
-    form.append("language", languageCode.startsWith("he") ? "he" : languageCode);
-    form.append("prompt", "הקלטה של בעל עסק בעברית שמבקש ליצור משימה, לקוח, פגישה, עבודה או הערה במערכת CRM.");
-
-    const response = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
       method: "POST",
       headers: {
-        authorization: `Bearer ${apiKey}`
+        "x-goog-api-key": apiKey,
+        "content-type": "application/json"
       },
-      body: form
+      body: JSON.stringify({
+        contents: [
+          {
+            role: "user",
+            parts: [
+              {
+                text:
+                  "תמלל את קובץ האודיו לעברית. זו הקלטה של בעל עסק שמבקש ליצור משימה, לקוח, פגישה, עבודה או הערה במערכת CRM. " +
+                  "החזר רק JSON תקין עם transcript ו-confidence. אל תוסיף הסברים."
+              },
+              {
+                inlineData: {
+                  mimeType: contentType,
+                  data: audio.toString("base64")
+                }
+              }
+            ]
+          }
+        ],
+        generationConfig: {
+          response_mime_type: "application/json",
+          response_schema: {
+            type: "OBJECT",
+            required: ["transcript", "confidence"],
+            properties: {
+              transcript: { type: "STRING" },
+              confidence: { type: "NUMBER" }
+            }
+          },
+          speech_config: {
+            languageCode
+          }
+        }
+      })
     });
 
-    const result = (await response.json().catch(() => ({}))) as { text?: string; error?: { message?: string }; usage?: unknown };
+    const result = (await response.json().catch(() => ({}))) as {
+      error?: { message?: string };
+      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+      usageMetadata?: unknown;
+    };
     if (!response.ok) {
       throw new BadGatewayException({
-        message: `OpenAI transcription failed with ${response.status}`,
+        message: `Gemini transcription failed with ${response.status}`,
         details: result
       });
     }
-    if (!result.text?.trim()) {
-      throw new BadGatewayException("OpenAI transcription returned empty text");
+
+    const outputText = result.candidates?.flatMap((candidate) => candidate.content?.parts ?? []).find((part) => part.text)?.text;
+    if (!outputText) {
+      throw new BadGatewayException("Gemini transcription returned empty output");
     }
 
-    log("info", "openai stt completed", { model, languageCode, bytes: audio.byteLength });
+    const transcription = JSON.parse(outputText) as { transcript?: string; confidence?: number };
+    if (!transcription.transcript?.trim()) {
+      throw new BadGatewayException("Gemini transcription returned empty text");
+    }
+
+    log("info", "gemini stt completed", { model, languageCode, bytes: audio.byteLength });
     return {
-      provider: "openai",
+      provider: "gemini",
       model,
       languageCode,
-      transcript: result.text.trim(),
-      confidence: 1,
-      usage: result.usage
+      transcript: transcription.transcript.trim(),
+      confidence: transcription.confidence ?? 1,
+      usage: result.usageMetadata
     };
   }
 
@@ -96,6 +136,58 @@ class VoiceController {
       voice: body.voice ?? "he-IL-Chirp3-HD",
       text,
       audioObjectUri: `mock://tts/${stableIdempotencyKey("tts", text)}`
+    };
+  }
+
+  @Post("tts/gemini")
+  async synthesizeGemini(@Body() body: { text?: string; voice?: string; languageCode?: string }) {
+    const text = body.text?.trim() || "שלום, הגעתם למזכירה הווירטואלית.";
+    const apiKey = getEnv("GEMINI_API_KEY");
+    const model = getEnv("GEMINI_TTS_MODEL", "gemini-3.1-flash-tts-preview");
+    const voice = body.voice ?? getEnv("GEMINI_TTS_VOICE", "Kore");
+
+    const response = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions", {
+      method: "POST",
+      headers: {
+        "x-goog-api-key": apiKey,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        model,
+        input: text,
+        response_format: {
+          type: "audio"
+        },
+        generation_config: {
+          speech_config: [
+            { voice }
+          ]
+        }
+      })
+    });
+
+    const result = (await response.json().catch(() => ({}))) as {
+      error?: { message?: string };
+      output_audio?: { data?: string; mime_type?: string };
+    };
+    if (!response.ok) {
+      throw new BadGatewayException({
+        message: `Gemini TTS failed with ${response.status}`,
+        details: result
+      });
+    }
+    if (!result.output_audio?.data) {
+      throw new BadGatewayException("Gemini TTS returned empty audio");
+    }
+
+    return {
+      provider: "gemini",
+      model,
+      voice,
+      text,
+      audioMimeType: result.output_audio.mime_type ?? "audio/wav",
+      audioBase64: result.output_audio.data,
+      audioObjectUri: `data:${result.output_audio.mime_type ?? "audio/wav"};base64,${result.output_audio.data}`
     };
   }
 }
