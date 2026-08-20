@@ -47,6 +47,20 @@ docker compose up --build
 
 ## Mock Flow Examples
 
+Register a new business owner:
+
+```bash
+curl -s http://localhost:3000/auth/register-business \
+  -H 'content-type: application/json' \
+  -d '{"firebaseUid":"firebase_demo_1","email":"dani@example.com","displayName":"דני כהן","businessName":"דני תיקונים"}'
+```
+
+Load the current business context after login:
+
+```bash
+curl -s 'http://localhost:3000/auth/me?firebaseUid=firebase_demo_1'
+```
+
 Owner text command through AI:
 
 ```bash

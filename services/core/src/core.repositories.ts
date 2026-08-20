@@ -1,4 +1,4 @@
-import { Inject, Injectable, NotFoundException } from "@nestjs/common";
+import { ConflictException, Inject, Injectable, NotFoundException } from "@nestjs/common";
 import type { Prisma } from "@prisma/client";
 import { PrismaService } from "./prisma.service.js";
 
@@ -64,18 +64,120 @@ type CreatePendingActionInput = {
   missingFields: string[];
 };
 
+type RegisterBusinessInput = {
+  firebaseUid: string;
+  email: string;
+  displayName: string;
+  businessName: string;
+};
+
 @Injectable()
 export class BusinessesRepository {
   constructor(@Inject(PrismaService) private readonly prisma: PrismaService) {}
 
-  async ensureBusiness(businessId: string) {
-    return this.prisma.business.upsert({
-      where: { id: businessId },
-      update: {},
-      create: {
-        id: businessId,
-        name: `Mock Business ${businessId}`
-      }
+  async findById(businessId: string) {
+    return this.prisma.business.findUnique({
+      where: { id: businessId }
+    });
+  }
+
+  async requireBusiness(businessId: string) {
+    const business = await this.findById(businessId);
+    if (!business) {
+      throw new NotFoundException("Business not found");
+    }
+
+    return business;
+  }
+}
+
+@Injectable()
+export class AuthRepository {
+  constructor(@Inject(PrismaService) private readonly prisma: PrismaService) {}
+
+  async registerBusiness(input: RegisterBusinessInput) {
+    const existingUser = await this.prisma.user.findUnique({
+      where: { firebaseUid: input.firebaseUid },
+      include: { business: true }
+    });
+
+    if (existingUser) {
+      return {
+        created: false,
+        business: existingUser.business,
+        user: existingUser
+      };
+    }
+
+    const emailUser = await this.prisma.user.findUnique({
+      where: { email: input.email },
+      select: { id: true }
+    });
+
+    if (emailUser) {
+      throw new ConflictException("Email is already registered");
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const business = await tx.business.create({
+        data: {
+          name: input.businessName
+        }
+      });
+
+      const user = await tx.user.create({
+        data: {
+          businessId: business.id,
+          email: input.email,
+          displayName: input.displayName,
+          firebaseUid: input.firebaseUid
+        }
+      });
+
+      await tx.auditEvent.createMany({
+        data: [
+          {
+            businessId: business.id,
+            actorType: "system",
+            source: "auth",
+            entityType: "business",
+            entityId: business.id,
+            action: "CREATE_BUSINESS",
+            result: "SUCCESS",
+            after: {
+              name: business.name
+            }
+          },
+          {
+            businessId: business.id,
+            actorType: "user",
+            actorId: user.id,
+            source: "auth",
+            entityType: "user",
+            entityId: user.id,
+            action: "CREATE_OWNER_USER",
+            result: "SUCCESS",
+            after: {
+              email: user.email,
+              displayName: user.displayName,
+              firebaseUid: user.firebaseUid
+            }
+          }
+        ]
+      });
+
+      return {
+        created: true,
+        business,
+        user
+      };
+    });
+  }
+
+  async getMe(firebaseUid: string) {
+    return this.prisma.user.findUnique({
+      where: { firebaseUid },
+      include: { business: true }
     });
   }
 }
@@ -97,7 +199,7 @@ export class TasksRepository {
   }
 
   async create(input: CreateTaskInput) {
-    await this.businesses.ensureBusiness(input.businessId);
+    await this.businesses.requireBusiness(input.businessId);
     if (input.customerId) {
       await this.ensureCustomerBelongsToBusiness(input.businessId, input.customerId);
     }
@@ -118,6 +220,7 @@ export class TasksRepository {
   }
 
   async listByBusiness(businessId: string) {
+    await this.businesses.requireBusiness(businessId);
     return this.prisma.task.findMany({
       where: { businessId },
       orderBy: { createdAt: "desc" }
@@ -191,7 +294,7 @@ export class CustomersRepository {
   ) {}
 
   async create(input: CreateCustomerInput) {
-    await this.businesses.ensureBusiness(input.businessId);
+    await this.businesses.requireBusiness(input.businessId);
     return this.prisma.customer.create({
       data: {
         businessId: input.businessId,
@@ -204,6 +307,7 @@ export class CustomersRepository {
   }
 
   async listByBusiness(businessId: string) {
+    await this.businesses.requireBusiness(businessId);
     return this.prisma.customer.findMany({
       where: { businessId },
       orderBy: { createdAt: "desc" }
@@ -245,7 +349,7 @@ export class CustomerNotesRepository {
   ) {}
 
   async create(input: CreateCustomerNoteInput) {
-    await this.businesses.ensureBusiness(input.businessId);
+    await this.businesses.requireBusiness(input.businessId);
     const customer = await this.prisma.customer.findFirst({
       where: {
         businessId: input.businessId,
@@ -298,7 +402,7 @@ export class NotificationsRepository {
   ) {}
 
   async create(input: CreateNotificationInput) {
-    await this.businesses.ensureBusiness(input.businessId);
+    await this.businesses.requireBusiness(input.businessId);
     return this.prisma.notification.create({
       data: {
         businessId: input.businessId,
@@ -311,6 +415,7 @@ export class NotificationsRepository {
   }
 
   async listByBusiness(businessId: string) {
+    await this.businesses.requireBusiness(businessId);
     return this.prisma.notification.findMany({
       where: { businessId },
       orderBy: { createdAt: "desc" }
@@ -326,7 +431,7 @@ export class PendingActionsRepository {
   ) {}
 
   async create(input: CreatePendingActionInput) {
-    await this.businesses.ensureBusiness(input.businessId);
+    await this.businesses.requireBusiness(input.businessId);
     return this.prisma.pendingAction.create({
       data: {
         businessId: input.businessId,

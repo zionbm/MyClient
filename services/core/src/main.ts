@@ -1,19 +1,22 @@
 import "reflect-metadata";
-import { BadRequestException, Body, Controller, Get, Inject, Module, NotFoundException, Param, Patch, Post } from "@nestjs/common";
+import { BadRequestException, Body, Controller, Get, Inject, Module, NotFoundException, Param, Patch, Post, Query } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { FastifyAdapter, type NestFastifyApplication } from "@nestjs/platform-fastify";
 import type { Prisma } from "@prisma/client";
 import { getPort, health, log } from "@myclient/common";
 import {
   AiActionSchema,
+  AuthMeQuerySchema,
   CreateCallbackTaskSchema,
   CreateCustomerNoteSchema,
   CreateCustomerSchema,
   CreateTaskSchema,
+  RegisterBusinessSchema,
   UpdateCustomerSchema,
   UpdateTaskSchema
 } from "@myclient/contracts";
 import {
+  AuthRepository,
   BusinessesRepository,
   CustomerNotesRepository,
   CustomersRepository,
@@ -63,6 +66,7 @@ function parseOptionalDate(value: string | null | undefined): Date | null | unde
 @Controller()
 class CoreController {
   constructor(
+    @Inject(AuthRepository) private readonly auth: AuthRepository,
     @Inject(CustomersRepository) private readonly customers: CustomersRepository,
     @Inject(TasksRepository) private readonly tasks: TasksRepository,
     @Inject(CustomerNotesRepository) private readonly customerNotes: CustomerNotesRepository,
@@ -73,6 +77,47 @@ class CoreController {
   @Get("health")
   health() {
     return health("core", { database: "postgresql-prisma", notifications: "mock-fcm" });
+  }
+
+  @Post("auth/register-business")
+  async registerBusiness(@Body() body: unknown) {
+    const command = RegisterBusinessSchema.parse(body);
+    const result = await this.auth.registerBusiness(command);
+    return {
+      created: result.created,
+      business: result.business,
+      user: {
+        id: result.user.id,
+        businessId: result.user.businessId,
+        email: result.user.email,
+        displayName: result.user.displayName,
+        firebaseUid: result.user.firebaseUid,
+        createdAt: result.user.createdAt,
+        updatedAt: result.user.updatedAt
+      }
+    };
+  }
+
+  @Get("auth/me")
+  async me(@Query() query: unknown) {
+    const command = AuthMeQuerySchema.parse(query);
+    const user = await this.auth.getMe(command.firebaseUid);
+    if (!user) {
+      throw new NotFoundException("User not found");
+    }
+
+    return {
+      user: {
+        id: user.id,
+        businessId: user.businessId,
+        email: user.email,
+        displayName: user.displayName,
+        firebaseUid: user.firebaseUid,
+        createdAt: user.createdAt,
+        updatedAt: user.updatedAt
+      },
+      business: user.business
+    };
   }
 
   @Post("internal/tasks/callback")
@@ -301,6 +346,7 @@ class CoreController {
   controllers: [CoreController],
   providers: [
     PrismaService,
+    AuthRepository,
     BusinessesRepository,
     CustomersRepository,
     TasksRepository,
