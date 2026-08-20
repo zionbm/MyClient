@@ -6,6 +6,17 @@ import { ApiExceptionFilter, getEnv, getPort, health, log, stableIdempotencyKey 
 import type { CreateCallbackTask } from "@myclient/contracts";
 
 type IvrDigit = "1" | "2" | "3";
+type IncomingCallResult = {
+  businessId: string;
+  incomingCall: { id: string; plivoCallId: string };
+  mode: string;
+  prompt?: string;
+  reason?: string;
+  urgent?: boolean;
+  nextWebhook?: string;
+  maxSeconds?: number;
+  finishOnKey?: string;
+};
 
 async function readDownstreamError(response: Response): Promise<unknown> {
   const contentType = response.headers.get("content-type") ?? "";
@@ -23,43 +34,28 @@ class TelephonyController {
   }
 
   @Post("plivo/incoming")
-  incoming(@Body() body: { businessId?: string; callId?: string; from?: string; to?: string; digit?: string }) {
-    const digit = this.normalizeDigit(body.digit);
-    const callerIdAvailable = Boolean(body.from);
-    if (!callerIdAvailable) {
-      return {
-        mode: "RECORD_MESSAGE",
-        reason: "CALLER_ID_MISSING",
-        prompt: "אנא ציין את שמך ואת מספר הטלפון לחזרה אחרי הצליל."
-      };
-    }
-
-    if (!digit) {
-      return {
-        mode: "PLAY_MENU",
-        prompt: "לחזרה טלפונית הקש 1, להשארת הודעה הקש 2, ולמקרה דחוף הקש 3."
-      };
-    }
-
-    if (digit === "1") {
-      return {
-        mode: "CREATE_CALLBACK_WITHOUT_RECORDING",
-        nextWebhook: "/plivo/callback-request"
-      };
-    }
-
-    return {
-      mode: "RECORD_MESSAGE",
-      urgent: digit === "3",
-      maxSeconds: 60,
-      finishOnKey: "#"
-    };
+  async incoming(@Body() body: { businessId?: string; callId?: string; from?: string; to?: string; digit?: string }) {
+    return this.createCoreIncomingCall({
+      businessId: body.businessId,
+      plivoCallId: this.requireCallId(body.callId),
+      fromNumber: body.from,
+      toNumber: this.requireToNumber(body.to),
+      selectedDigit: this.normalizeDigit(body.digit)
+    });
   }
 
   @Post("plivo/callback-request")
-  async callbackRequest(@Body() body: { businessId: string; callId: string; from?: string; to?: string }) {
-    return this.createCoreCallbackTask({
+  async callbackRequest(@Body() body: { businessId?: string; callId: string; from?: string; to?: string }) {
+    const incoming = await this.createCoreIncomingCall({
       businessId: body.businessId,
+      plivoCallId: this.requireCallId(body.callId),
+      fromNumber: body.from,
+      toNumber: this.requireToNumber(body.to),
+      selectedDigit: "1"
+    });
+    return this.createCoreCallbackTask({
+      businessId: incoming.businessId,
+      incomingCallId: incoming.incomingCall.id,
       callerPhone: body.from,
       priority: "NORMAL",
       sourceCallId: body.callId,
@@ -71,9 +67,9 @@ class TelephonyController {
   async recording(
     @Body()
     body: {
-      businessId: string;
       callId: string;
       from?: string;
+      to?: string;
       recordingUrl?: string;
       transcript?: string;
       urgent?: boolean;
@@ -94,18 +90,93 @@ class TelephonyController {
     }
 
     const stt = (await sttResponse.json()) as { transcript?: string };
-    return this.createCoreCallbackTask({
-      businessId: body.businessId,
-      callerPhone: body.from,
+    await this.createCoreIncomingCall({
+      plivoCallId: this.requireCallId(body.callId),
+      fromNumber: body.from,
+      toNumber: this.requireToNumber(body.to),
+      selectedDigit: body.urgent ? "3" : "2"
+    });
+    return this.createCoreRecording({
+      plivoCallId: body.callId,
       transcript: stt.transcript,
-      priority: body.urgent ? "URGENT" : "NORMAL",
-      sourceCallId: body.callId,
-      idempotencyKey: stableIdempotencyKey("plivo_recording", `${body.callId}:${body.urgent ? "urgent" : "normal"}`)
+      recordingUrl: body.recordingUrl,
+      urgent: body.urgent,
+      provider: "mock-google-stt",
+      confidence: stt.transcript ? 0.99 : 0.75
     });
   }
 
   private normalizeDigit(digit: string | undefined): IvrDigit | undefined {
     return digit === "1" || digit === "2" || digit === "3" ? digit : undefined;
+  }
+
+  private requireCallId(callId: string | undefined): string {
+    if (!callId) {
+      return `mock_call_${crypto.randomUUID()}`;
+    }
+    return callId;
+  }
+
+  private requireToNumber(to: string | undefined): string {
+    if (!to) {
+      return getEnv("DEFAULT_MOCK_PLIVO_NUMBER", "+972000000000");
+    }
+    return to;
+  }
+
+  private async createCoreIncomingCall(command: {
+    businessId?: string;
+    plivoCallId: string;
+    fromNumber?: string;
+    toNumber: string;
+    selectedDigit?: IvrDigit;
+  }): Promise<IncomingCallResult> {
+    const coreBaseUrl = getEnv("CORE_BASE_URL", "http://localhost:3000");
+    const response = await fetch(`${coreBaseUrl}/internal/telephony/incoming`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-internal-secret": getEnv("INTERNAL_API_SECRET", "dev-internal-secret")
+      },
+      body: JSON.stringify(command)
+    });
+
+    if (!response.ok) {
+      throw new BadGatewayException({
+        message: `Core service failed with ${response.status}`,
+        details: await readDownstreamError(response)
+      });
+    }
+
+    return (await response.json()) as IncomingCallResult;
+  }
+
+  private async createCoreRecording(command: {
+    plivoCallId: string;
+    transcript?: string;
+    recordingUrl?: string;
+    urgent?: boolean;
+    provider: string;
+    confidence?: number;
+  }) {
+    const coreBaseUrl = getEnv("CORE_BASE_URL", "http://localhost:3000");
+    const response = await fetch(`${coreBaseUrl}/internal/telephony/recording`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-internal-secret": getEnv("INTERNAL_API_SECRET", "dev-internal-secret")
+      },
+      body: JSON.stringify(command)
+    });
+
+    if (!response.ok) {
+      throw new BadGatewayException({
+        message: `Core service failed with ${response.status}`,
+        details: await readDownstreamError(response)
+      });
+    }
+
+    return response.json();
   }
 
   private async createCoreCallbackTask(command: CreateCallbackTask) {

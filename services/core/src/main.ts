@@ -17,22 +17,38 @@ import {
 import { NestFactory } from "@nestjs/core";
 import { FastifyAdapter, type NestFastifyApplication } from "@nestjs/platform-fastify";
 import type { Business, Prisma, User } from "@prisma/client";
-import { ApiExceptionFilter, getEnv, getPort, health, log } from "@myclient/common";
+import { ApiExceptionFilter, getEnv, getPort, health, log, stableIdempotencyKey } from "@myclient/common";
 import {
   AiActionSchema,
+  CreateAppointmentSchema,
+  CreateBusinessPhoneNumberSchema,
   CreateCallbackTaskSchema,
+  CreateCallTranscriptSchema,
   CreateCustomerNoteSchema,
   CreateCustomerSchema,
+  CreateIncomingCallSchema,
+  CreateJobSchema,
   CreateTaskSchema,
   RegisterBusinessSchema,
+  UpdateAppointmentSchema,
+  UpdateBusinessPhoneNumberSchema,
+  UpdateBusinessSettingsSchema,
   UpdateCustomerSchema,
+  UpdateJobSchema,
   UpdateTaskSchema
 } from "@myclient/contracts";
 import {
+  AppointmentsRepository,
   AuthRepository,
+  AuditRepository,
   BusinessesRepository,
+  BusinessPhoneNumbersRepository,
+  BusinessSettingsRepository,
+  CallTranscriptsRepository,
   CustomerNotesRepository,
   CustomersRepository,
+  IncomingCallsRepository,
+  JobsRepository,
   NotificationsRepository,
   PendingActionsRepository,
   TasksRepository
@@ -82,6 +98,14 @@ function parseOptionalDate(value: string | null | undefined): Date | null | unde
   return parsed;
 }
 
+function parseRequiredDate(value: string): Date {
+  const parsed = parseOptionalDate(value);
+  if (!parsed) {
+    throw new BadRequestException(`Invalid date: ${value}`);
+  }
+  return parsed;
+}
+
 function headerValue(headers: RequestHeaders, name: string): string | undefined {
   const value = headers[name.toLowerCase()] ?? headers[name];
   if (Array.isArray(value)) {
@@ -109,9 +133,16 @@ function parseMockFirebaseUid(headers: RequestHeaders): string {
 class CoreController {
   constructor(
     @Inject(AuthRepository) private readonly auth: AuthRepository,
+    @Inject(AuditRepository) private readonly audit: AuditRepository,
+    @Inject(BusinessSettingsRepository) private readonly settings: BusinessSettingsRepository,
+    @Inject(BusinessPhoneNumbersRepository) private readonly phoneNumbers: BusinessPhoneNumbersRepository,
+    @Inject(IncomingCallsRepository) private readonly incomingCalls: IncomingCallsRepository,
+    @Inject(CallTranscriptsRepository) private readonly callTranscripts: CallTranscriptsRepository,
     @Inject(CustomersRepository) private readonly customers: CustomersRepository,
     @Inject(TasksRepository) private readonly tasks: TasksRepository,
     @Inject(CustomerNotesRepository) private readonly customerNotes: CustomerNotesRepository,
+    @Inject(AppointmentsRepository) private readonly appointments: AppointmentsRepository,
+    @Inject(JobsRepository) private readonly jobs: JobsRepository,
     @Inject(NotificationsRepository) private readonly notifications: NotificationsRepository,
     @Inject(PendingActionsRepository) private readonly pendingActions: PendingActionsRepository
   ) {}
@@ -125,6 +156,7 @@ class CoreController {
   async registerBusiness(@Body() body: unknown) {
     const command = RegisterBusinessSchema.parse(body);
     const result = await this.auth.registerBusiness(command);
+    await this.settings.getByBusiness(result.business.id);
     return {
       created: result.created,
       business: result.business,
@@ -157,42 +189,229 @@ class CoreController {
     };
   }
 
+  @Get("businesses/:businessId/settings")
+  async getSettings(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string) {
+    await this.requireBusinessAccess(headers, businessId);
+    return { settings: await this.settings.getByBusiness(businessId) };
+  }
+
+  @Patch("businesses/:businessId/settings")
+  async updateSettings(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Body() body: unknown) {
+    const user = await this.requireBusinessAccess(headers, businessId);
+    const command = UpdateBusinessSettingsSchema.parse(body);
+    const before = await this.settings.getByBusiness(businessId);
+    const settings = await this.settings.update({
+      businessId,
+      locale: command.locale,
+      timezone: command.timezone,
+      greetingText: command.greetingText,
+      callbackPrompt: command.callbackPrompt,
+      urgentPrompt: command.urgentPrompt,
+      workingHours: command.workingHours as Prisma.InputJsonValue | null | undefined,
+      notificationPhone: command.notificationPhone,
+      allowUrgentCalls: command.allowUrgentCalls
+    });
+    await this.audit.record({
+      businessId,
+      actorType: "user",
+      actorId: user.id,
+      source: "core",
+      entityType: "business_settings",
+      entityId: settings.id,
+      action: "UPDATE_SETTINGS",
+      before: before as Prisma.InputJsonValue,
+      after: settings as Prisma.InputJsonValue
+    });
+    return { settings };
+  }
+
+  @Get("businesses/:businessId/phone-numbers")
+  async listPhoneNumbers(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string) {
+    await this.requireBusinessAccess(headers, businessId);
+    return { phoneNumbers: await this.phoneNumbers.listByBusiness(businessId) };
+  }
+
+  @Post("businesses/:businessId/phone-numbers")
+  async createPhoneNumber(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Body() body: unknown) {
+    const user = await this.requireBusinessAccess(headers, businessId);
+    const command = CreateBusinessPhoneNumberSchema.parse(body);
+    const phoneNumber = await this.phoneNumbers.create({
+      businessId,
+      plivoNumber: command.plivoNumber,
+      displayName: command.displayName,
+      status: command.status
+    });
+    await this.audit.record({
+      businessId,
+      actorType: "user",
+      actorId: user.id,
+      source: "core",
+      entityType: "business_phone_number",
+      entityId: phoneNumber.id,
+      action: "CREATE_PHONE_NUMBER",
+      after: phoneNumber as Prisma.InputJsonValue
+    });
+    return { phoneNumber };
+  }
+
+  @Patch("businesses/:businessId/phone-numbers/:phoneNumberId")
+  async updatePhoneNumber(
+    @Headers() headers: RequestHeaders,
+    @Param("businessId") businessId: string,
+    @Param("phoneNumberId") phoneNumberId: string,
+    @Body() body: unknown
+  ) {
+    const user = await this.requireBusinessAccess(headers, businessId);
+    const command = UpdateBusinessPhoneNumberSchema.parse(body);
+    const phoneNumber = await this.phoneNumbers.update({
+      businessId,
+      phoneNumberId,
+      displayName: command.displayName,
+      status: command.status
+    });
+    if (!phoneNumber) {
+      throw new NotFoundException("Phone number not found");
+    }
+    await this.audit.record({
+      businessId,
+      actorType: "user",
+      actorId: user.id,
+      source: "core",
+      entityType: "business_phone_number",
+      entityId: phoneNumber.id,
+      action: "UPDATE_PHONE_NUMBER",
+      after: phoneNumber as Prisma.InputJsonValue
+    });
+    return { phoneNumber };
+  }
+
+  @Post("internal/telephony/incoming")
+  async createIncomingCall(@Headers() headers: RequestHeaders, @Body() body: unknown) {
+    this.requireInternalSecret(headers);
+    const command = CreateIncomingCallSchema.parse(body);
+    const phoneNumber = await this.phoneNumbers.findActiveByNumber(command.toNumber);
+    const businessId = command.businessId ?? phoneNumber?.businessId;
+    if (!businessId) {
+      throw new NotFoundException("Business phone number not found");
+    }
+
+    const selectedDigit = command.selectedDigit === "1" || command.selectedDigit === "2" || command.selectedDigit === "3" ? command.selectedDigit : undefined;
+    const callerIdAvailable = Boolean(command.fromNumber);
+    const status = selectedDigit === "1" ? "CALLBACK_REQUESTED" : selectedDigit ? "RECORDING_REQUESTED" : "MENU_PLAYED";
+    const incomingCall = await this.incomingCalls.createOrUpdate({
+      businessId,
+      plivoCallId: command.plivoCallId,
+      fromNumber: command.fromNumber,
+      toNumber: command.toNumber,
+      selectedDigit,
+      urgent: selectedDigit === "3",
+      status
+    });
+    const settings = await this.settings.getByBusiness(businessId);
+    await this.audit.record({
+      businessId,
+      actorType: "system",
+      source: "telephony",
+      entityType: "incoming_call",
+      entityId: incomingCall.id,
+      action: "UPSERT_INCOMING_CALL",
+      after: incomingCall as Prisma.InputJsonValue
+    });
+
+    if (!callerIdAvailable) {
+      return {
+        businessId,
+        incomingCall,
+        mode: "RECORD_MESSAGE",
+        reason: "CALLER_ID_MISSING",
+        prompt: settings.callbackPrompt ?? "אנא ציין את שמך ואת מספר הטלפון לחזרה אחרי הצליל."
+      };
+    }
+
+    if (!selectedDigit) {
+      return {
+        businessId,
+        incomingCall,
+        mode: "PLAY_MENU",
+        prompt: settings.greetingText ?? "לחזרה טלפונית הקש 1, להשארת הודעה הקש 2, ולמקרה דחוף הקש 3."
+      };
+    }
+
+    if (selectedDigit === "1") {
+      return {
+        businessId,
+        incomingCall,
+        mode: "CREATE_CALLBACK_WITHOUT_RECORDING",
+        nextWebhook: "/plivo/callback-request"
+      };
+    }
+
+    return {
+      businessId,
+      incomingCall,
+      mode: "RECORD_MESSAGE",
+      urgent: selectedDigit === "3",
+      prompt: selectedDigit === "3" ? settings.urgentPrompt : settings.callbackPrompt,
+      maxSeconds: 60,
+      finishOnKey: "#"
+    };
+  }
+
+  @Post("internal/telephony/recording")
+  async createCallTranscript(@Headers() headers: RequestHeaders, @Body() body: unknown) {
+    this.requireInternalSecret(headers);
+    const command = CreateCallTranscriptSchema.parse(body);
+    const incomingCall = await this.incomingCalls.findByPlivoCallId(command.plivoCallId);
+    if (!incomingCall) {
+      throw new NotFoundException("Incoming call not found");
+    }
+
+    const updatedCall = await this.incomingCalls.update({
+      plivoCallId: command.plivoCallId,
+      status: "RECORDED",
+      urgent: command.urgent ?? incomingCall.urgent,
+      recordingUrl: command.recordingUrl
+    });
+    const callbackResult = await this.executeCallbackTask({
+      businessId: incomingCall.businessId,
+      incomingCallId: incomingCall.id,
+      callerPhone: incomingCall.fromNumber ?? undefined,
+      transcript: command.transcript,
+      recordingUrl: command.recordingUrl,
+      priority: command.urgent || incomingCall.urgent ? "URGENT" : "NORMAL",
+      sourceCallId: incomingCall.plivoCallId,
+      idempotencyKey: stableIdempotencyKey("plivo_recording", `${incomingCall.plivoCallId}:${command.urgent || incomingCall.urgent ? "urgent" : "normal"}`)
+    });
+    const transcript = await this.callTranscripts.create({
+      businessId: incomingCall.businessId,
+      incomingCallId: incomingCall.id,
+      transcript: command.transcript,
+      taskId: "task" in callbackResult ? callbackResult.task.id : undefined,
+      provider: command.provider,
+      confidence: command.confidence
+    });
+    await this.audit.record({
+      businessId: incomingCall.businessId,
+      actorType: "system",
+      source: "telephony",
+      entityType: "call_transcript",
+      entityId: transcript.id,
+      action: "CREATE_CALL_TRANSCRIPT",
+      after: transcript as Prisma.InputJsonValue
+    });
+
+    return {
+      incomingCall: updatedCall,
+      transcript,
+      callback: callbackResult
+    };
+  }
+
   @Post("internal/tasks/callback")
   async createCallbackTask(@Headers() headers: RequestHeaders, @Body() body: unknown) {
     this.requireInternalSecret(headers);
     const command = CreateCallbackTaskSchema.parse(body);
-    const existing = await this.tasks.findByIdempotencyKey(command.businessId, command.idempotencyKey);
-    if (existing) {
-      return { duplicate: true, task: existing };
-    }
-
-    const urgentPrefix = command.priority === "URGENT" ? "[URGENT] " : "";
-    const task = await this.tasks.create({
-      businessId: command.businessId,
-      title: `${urgentPrefix}לחזור ללקוח`,
-      description: buildCallbackTaskDescription(command.callerPhone, command.transcript),
-      priority: command.priority,
-      source: "telephony",
-      sourceRef: command.sourceCallId,
-      idempotencyKey: command.idempotencyKey
-    });
-
-    const notification = await this.notifications.create({
-      businessId: command.businessId,
-      taskId: task.id,
-      title: command.priority === "URGENT" ? "הודעת לקוח דחופה" : "בקשת חזרה ללקוח",
-      body: buildCallbackNotificationBody(command.callerPhone, command.transcript),
-      payload: {
-        source: "telephony",
-        sourceCallId: command.sourceCallId,
-        callerPhone: command.callerPhone ?? null,
-        priority: command.priority
-      }
-    });
-
-    log("info", "callback task created", { businessId: command.businessId, taskId: task.id });
-
-    return { duplicate: false, task, notification };
+    return this.executeCallbackTask(command);
   }
 
   @Post("owner-actions/execute")
@@ -211,6 +430,16 @@ class CoreController {
         actionType: action.type,
         payload: action.payload as Prisma.InputJsonValue,
         missingFields: action.missingFields
+      });
+      await this.audit.record({
+        businessId: request.businessId,
+        actorType: "user",
+        actorId: user.id,
+        source: "ai_owner_command",
+        entityType: "pending_action",
+        entityId: pending.id,
+        action: "CREATE_PENDING_ACTION",
+        after: pending as Prisma.InputJsonValue
       });
       return { status: "PENDING_MISSING_INFORMATION", pending };
     }
@@ -231,6 +460,16 @@ class CoreController {
         sourceRef: action.idempotencyKey,
         idempotencyKey: action.idempotencyKey
       });
+      await this.audit.record({
+        businessId: request.businessId,
+        actorType: "user",
+        actorId: user.id,
+        source: "ai_owner_command",
+        entityType: "task",
+        entityId: task.id,
+        action: "CREATE_TASK_FROM_OWNER_ACTION",
+        after: task as Prisma.InputJsonValue
+      });
       return { status: "EXECUTED", duplicate: false, task };
     }
 
@@ -248,7 +487,7 @@ class CoreController {
 
   @Post("businesses/:businessId/tasks")
   async createTask(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Body() body: unknown) {
-    await this.requireBusinessAccess(headers, businessId);
+    const user = await this.requireBusinessAccess(headers, businessId);
     const command = CreateTaskSchema.parse(body);
     const task = await this.tasks.create({
       businessId,
@@ -258,6 +497,16 @@ class CoreController {
       priority: command.priority,
       dueAt: parseOptionalDate(command.dueAt) ?? undefined,
       source: "app"
+    });
+    await this.audit.record({
+      businessId,
+      actorType: "user",
+      actorId: user.id,
+      source: "core",
+      entityType: "task",
+      entityId: task.id,
+      action: "CREATE_TASK",
+      after: task as Prisma.InputJsonValue
     });
     return { task };
   }
@@ -269,7 +518,7 @@ class CoreController {
     @Param("taskId") taskId: string,
     @Body() body: unknown
   ) {
-    await this.requireBusinessAccess(headers, businessId);
+    const user = await this.requireBusinessAccess(headers, businessId);
     const command = UpdateTaskSchema.parse(body);
     const task = await this.tasks.update({
       businessId,
@@ -286,23 +535,43 @@ class CoreController {
       throw new NotFoundException("Task not found");
     }
 
+    await this.audit.record({
+      businessId,
+      actorType: "user",
+      actorId: user.id,
+      source: "core",
+      entityType: "task",
+      entityId: task.id,
+      action: "UPDATE_TASK",
+      after: task as Prisma.InputJsonValue
+    });
     return { task };
   }
 
   @Post("businesses/:businessId/tasks/:taskId/complete")
   async completeTask(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Param("taskId") taskId: string) {
-    await this.requireBusinessAccess(headers, businessId);
+    const user = await this.requireBusinessAccess(headers, businessId);
     const task = await this.tasks.complete(businessId, taskId);
     if (!task) {
       throw new NotFoundException("Task not found");
     }
 
+    await this.audit.record({
+      businessId,
+      actorType: "user",
+      actorId: user.id,
+      source: "core",
+      entityType: "task",
+      entityId: task.id,
+      action: "COMPLETE_TASK",
+      after: task as Prisma.InputJsonValue
+    });
     return { task };
   }
 
   @Post("businesses/:businessId/customers")
   async createCustomer(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Body() body: unknown) {
-    await this.requireBusinessAccess(headers, businessId);
+    const user = await this.requireBusinessAccess(headers, businessId);
     const command = CreateCustomerSchema.parse(body);
     const customer = await this.customers.create({
       businessId,
@@ -310,6 +579,16 @@ class CoreController {
       phone: command.phone,
       email: command.email,
       address: command.address
+    });
+    await this.audit.record({
+      businessId,
+      actorType: "user",
+      actorId: user.id,
+      source: "core",
+      entityType: "customer",
+      entityId: customer.id,
+      action: "CREATE_CUSTOMER",
+      after: customer as Prisma.InputJsonValue
     });
     return { customer };
   }
@@ -338,7 +617,7 @@ class CoreController {
     @Param("customerId") customerId: string,
     @Body() body: unknown
   ) {
-    await this.requireBusinessAccess(headers, businessId);
+    const user = await this.requireBusinessAccess(headers, businessId);
     const command = UpdateCustomerSchema.parse(body);
     const customer = await this.customers.update({
       businessId,
@@ -353,6 +632,16 @@ class CoreController {
       throw new NotFoundException("Customer not found");
     }
 
+    await this.audit.record({
+      businessId,
+      actorType: "user",
+      actorId: user.id,
+      source: "core",
+      entityType: "customer",
+      entityId: customer.id,
+      action: "UPDATE_CUSTOMER",
+      after: customer as Prisma.InputJsonValue
+    });
     return { customer };
   }
 
@@ -363,7 +652,7 @@ class CoreController {
     @Param("customerId") customerId: string,
     @Body() body: unknown
   ) {
-    await this.requireBusinessAccess(headers, businessId);
+    const user = await this.requireBusinessAccess(headers, businessId);
     const command = CreateCustomerNoteSchema.parse(body);
     const note = await this.customerNotes.create({
       businessId,
@@ -375,6 +664,16 @@ class CoreController {
       throw new NotFoundException("Customer not found");
     }
 
+    await this.audit.record({
+      businessId,
+      actorType: "user",
+      actorId: user.id,
+      source: "core",
+      entityType: "customer_note",
+      entityId: note.id,
+      action: "CREATE_CUSTOMER_NOTE",
+      after: note as Prisma.InputJsonValue
+    });
     return { note };
   }
 
@@ -389,10 +688,262 @@ class CoreController {
     return { notes };
   }
 
+  @Get("businesses/:businessId/calls")
+  async listIncomingCalls(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string) {
+    await this.requireBusinessAccess(headers, businessId);
+    return { calls: await this.incomingCalls.listByBusiness(businessId) };
+  }
+
+  @Get("businesses/:businessId/appointments")
+  async listAppointments(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string) {
+    await this.requireBusinessAccess(headers, businessId);
+    return { appointments: await this.appointments.listByBusiness(businessId) };
+  }
+
+  @Post("businesses/:businessId/appointments")
+  async createAppointment(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Body() body: unknown) {
+    const user = await this.requireBusinessAccess(headers, businessId);
+    const command = CreateAppointmentSchema.parse(body);
+    const appointment = await this.appointments.create({
+      businessId,
+      customerId: command.customerId,
+      title: command.title,
+      startsAt: parseRequiredDate(command.startsAt),
+      endsAt: parseOptionalDate(command.endsAt)
+    });
+    await this.audit.record({
+      businessId,
+      actorType: "user",
+      actorId: user.id,
+      source: "core",
+      entityType: "appointment",
+      entityId: appointment.id,
+      action: "CREATE_APPOINTMENT",
+      after: appointment as Prisma.InputJsonValue
+    });
+    return { appointment };
+  }
+
+  @Patch("businesses/:businessId/appointments/:appointmentId")
+  async updateAppointment(
+    @Headers() headers: RequestHeaders,
+    @Param("businessId") businessId: string,
+    @Param("appointmentId") appointmentId: string,
+    @Body() body: unknown
+  ) {
+    const user = await this.requireBusinessAccess(headers, businessId);
+    const command = UpdateAppointmentSchema.parse(body);
+    const appointment = await this.appointments.update({
+      businessId,
+      appointmentId,
+      customerId: command.customerId,
+      title: command.title,
+      startsAt: command.startsAt ? parseRequiredDate(command.startsAt) : undefined,
+      endsAt: parseOptionalDate(command.endsAt),
+      status: command.status
+    });
+    if (!appointment) {
+      throw new NotFoundException("Appointment not found");
+    }
+    await this.audit.record({
+      businessId,
+      actorType: "user",
+      actorId: user.id,
+      source: "core",
+      entityType: "appointment",
+      entityId: appointment.id,
+      action: "UPDATE_APPOINTMENT",
+      after: appointment as Prisma.InputJsonValue
+    });
+    return { appointment };
+  }
+
+  @Post("businesses/:businessId/appointments/:appointmentId/cancel")
+  async cancelAppointment(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Param("appointmentId") appointmentId: string) {
+    const user = await this.requireBusinessAccess(headers, businessId);
+    const appointment = await this.appointments.update({
+      businessId,
+      appointmentId,
+      status: "CANCELLED"
+    });
+    if (!appointment) {
+      throw new NotFoundException("Appointment not found");
+    }
+    await this.audit.record({
+      businessId,
+      actorType: "user",
+      actorId: user.id,
+      source: "core",
+      entityType: "appointment",
+      entityId: appointment.id,
+      action: "CANCEL_APPOINTMENT",
+      after: appointment as Prisma.InputJsonValue
+    });
+    return { appointment };
+  }
+
+  @Post("businesses/:businessId/appointments/:appointmentId/complete")
+  async completeAppointment(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Param("appointmentId") appointmentId: string) {
+    const user = await this.requireBusinessAccess(headers, businessId);
+    const appointment = await this.appointments.update({
+      businessId,
+      appointmentId,
+      status: "COMPLETED"
+    });
+    if (!appointment) {
+      throw new NotFoundException("Appointment not found");
+    }
+    await this.audit.record({
+      businessId,
+      actorType: "user",
+      actorId: user.id,
+      source: "core",
+      entityType: "appointment",
+      entityId: appointment.id,
+      action: "COMPLETE_APPOINTMENT",
+      after: appointment as Prisma.InputJsonValue
+    });
+    return { appointment };
+  }
+
+  @Get("businesses/:businessId/jobs")
+  async listJobs(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string) {
+    await this.requireBusinessAccess(headers, businessId);
+    return { jobs: await this.jobs.listByBusiness(businessId) };
+  }
+
+  @Post("businesses/:businessId/jobs")
+  async createJob(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Body() body: unknown) {
+    const user = await this.requireBusinessAccess(headers, businessId);
+    const command = CreateJobSchema.parse(body);
+    const job = await this.jobs.create({
+      businessId,
+      customerId: command.customerId,
+      title: command.title,
+      description: command.description,
+      status: command.status
+    });
+    await this.audit.record({
+      businessId,
+      actorType: "user",
+      actorId: user.id,
+      source: "core",
+      entityType: "job",
+      entityId: job.id,
+      action: "CREATE_JOB",
+      after: job as Prisma.InputJsonValue
+    });
+    return { job };
+  }
+
+  @Patch("businesses/:businessId/jobs/:jobId")
+  async updateJob(
+    @Headers() headers: RequestHeaders,
+    @Param("businessId") businessId: string,
+    @Param("jobId") jobId: string,
+    @Body() body: unknown
+  ) {
+    const user = await this.requireBusinessAccess(headers, businessId);
+    const command = UpdateJobSchema.parse(body);
+    const job = await this.jobs.update({
+      businessId,
+      jobId,
+      customerId: command.customerId,
+      title: command.title,
+      description: command.description,
+      status: command.status
+    });
+    if (!job) {
+      throw new NotFoundException("Job not found");
+    }
+    await this.audit.record({
+      businessId,
+      actorType: "user",
+      actorId: user.id,
+      source: "core",
+      entityType: "job",
+      entityId: job.id,
+      action: "UPDATE_JOB",
+      after: job as Prisma.InputJsonValue
+    });
+    return { job };
+  }
+
   @Get("businesses/:businessId/notifications")
   async listNotifications(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string) {
     await this.requireBusinessAccess(headers, businessId);
     return { notifications: await this.notifications.listByBusiness(businessId) };
+  }
+
+  @Get("businesses/:businessId/audit-events")
+  async listAuditEvents(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string) {
+    await this.requireBusinessAccess(headers, businessId);
+    return { auditEvents: await this.audit.listByBusiness(businessId) };
+  }
+
+  private async executeCallbackTask(command: {
+    businessId: string;
+    incomingCallId?: string;
+    callerPhone?: string;
+    transcript?: string;
+    recordingUrl?: string;
+    priority: "NORMAL" | "URGENT";
+    sourceCallId: string;
+    idempotencyKey: string;
+  }) {
+    const existing = await this.tasks.findByIdempotencyKey(command.businessId, command.idempotencyKey);
+    if (existing) {
+      return { duplicate: true, task: existing };
+    }
+
+    const urgentPrefix = command.priority === "URGENT" ? "[URGENT] " : "";
+    const task = await this.tasks.create({
+      businessId: command.businessId,
+      title: `${urgentPrefix}לחזור ללקוח`,
+      description: buildCallbackTaskDescription(command.callerPhone, command.transcript),
+      priority: command.priority,
+      source: "telephony",
+      sourceRef: command.sourceCallId,
+      idempotencyKey: command.idempotencyKey
+    });
+
+    const notification = await this.notifications.create({
+      businessId: command.businessId,
+      taskId: task.id,
+      title: command.priority === "URGENT" ? "הודעת לקוח דחופה" : "בקשת חזרה ללקוח",
+      body: buildCallbackNotificationBody(command.callerPhone, command.transcript),
+      payload: {
+        source: "telephony",
+        sourceCallId: command.sourceCallId,
+        incomingCallId: command.incomingCallId ?? null,
+        callerPhone: command.callerPhone ?? null,
+        recordingUrl: command.recordingUrl ?? null,
+        priority: command.priority
+      }
+    });
+
+    await this.audit.record({
+      businessId: command.businessId,
+      actorType: "system",
+      source: "telephony",
+      entityType: "task",
+      entityId: task.id,
+      action: "CREATE_CALLBACK_TASK",
+      after: task as Prisma.InputJsonValue
+    });
+    await this.audit.record({
+      businessId: command.businessId,
+      actorType: "system",
+      source: "telephony",
+      entityType: "notification",
+      entityId: notification.id,
+      action: "CREATE_CALLBACK_NOTIFICATION",
+      after: notification as Prisma.InputJsonValue
+    });
+
+    log("info", "callback task created", { businessId: command.businessId, taskId: task.id });
+
+    return { duplicate: false, task, notification };
   }
 
   private async requireAuthenticatedUser(headers: RequestHeaders): Promise<AuthenticatedUser> {
@@ -425,11 +976,18 @@ class CoreController {
   controllers: [CoreController],
   providers: [
     PrismaService,
+    AuditRepository,
     AuthRepository,
     BusinessesRepository,
+    BusinessSettingsRepository,
+    BusinessPhoneNumbersRepository,
+    IncomingCallsRepository,
+    CallTranscriptsRepository,
     CustomersRepository,
     TasksRepository,
     CustomerNotesRepository,
+    AppointmentsRepository,
+    JobsRepository,
     NotificationsRepository,
     PendingActionsRepository
   ]

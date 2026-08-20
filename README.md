@@ -82,6 +82,19 @@ For example, after registering with `firebaseUid` `firebase_demo_1`, call protec
 
 Core internal endpoints are service-to-service only and require `x-internal-secret`.
 
+## Pre-Paid-Provider Product Surface
+
+The backend now supports the product flows that should exist before connecting paid providers:
+
+- business settings for locale, timezone, IVR prompts, working hours and notification phone.
+- mock/Plivo phone numbers assigned to a business.
+- incoming calls resolved by the dialed `to` phone number.
+- persisted call recordings metadata and STT transcripts.
+- callback task and notification creation from recorded calls.
+- internal appointments calendar.
+- jobs/service calls.
+- audit events for business, settings, phone, CRM, appointments, jobs, calls and callback actions.
+
 ## Mock Flow Examples
 
 Register a new business owner:
@@ -97,6 +110,28 @@ Load the current business context after login:
 ```bash
 curl -s http://localhost:3000/auth/me \
   -H 'authorization: Bearer mock:firebase_demo_1'
+```
+
+Get and update business settings:
+
+```bash
+curl -s http://localhost:3000/businesses/<business-id-from-register>/settings \
+  -H 'authorization: Bearer mock:firebase_demo_1'
+
+curl -s http://localhost:3000/businesses/<business-id-from-register>/settings \
+  -X PATCH \
+  -H 'authorization: Bearer mock:firebase_demo_1' \
+  -H 'content-type: application/json' \
+  -d '{"notificationPhone":"+972501111111","greetingText":"שלום, הגעתם לדני תיקונים. לחזרה הקישו 1, הודעה 2, דחוף 3."}'
+```
+
+Assign a mock Plivo number to the business:
+
+```bash
+curl -s http://localhost:3000/businesses/<business-id-from-register>/phone-numbers \
+  -H 'authorization: Bearer mock:firebase_demo_1' \
+  -H 'content-type: application/json' \
+  -d '{"plivoNumber":"+97230000001","displayName":"מספר ראשי"}'
 ```
 
 Owner text command through AI:
@@ -121,7 +156,7 @@ Virtual receptionist callback without LLM:
 ```bash
 curl -s http://localhost:3003/plivo/callback-request \
   -H 'content-type: application/json' \
-  -d '{"businessId":"<business-id-from-register>","callId":"call_1","from":"+972501234567","to":"+97239999999"}'
+  -d '{"callId":"call_1","from":"+972501234567","to":"+97230000001"}'
 ```
 
 Virtual receptionist recording with mock STT:
@@ -129,7 +164,7 @@ Virtual receptionist recording with mock STT:
 ```bash
 curl -s http://localhost:3003/plivo/recording \
   -H 'content-type: application/json' \
-  -d '{"businessId":"<business-id-from-register>","callId":"call_2","from":"+972501234567","transcript":"אשמח שתחזור אליי לגבי התיקון","urgent":true}'
+  -d '{"callId":"call_2","from":"+972501234567","to":"+97230000001","transcript":"אשמח שתחזור אליי לגבי התיקון","urgent":true}'
 ```
 
 The Core service persists callback tasks, owner-created tasks, notifications and pending actions in PostgreSQL through Prisma. Duplicate callback and owner task requests are detected by `Task.idempotencyKey`, so the protection survives service restarts.
@@ -166,6 +201,34 @@ curl -s http://localhost:3000/businesses/<business-id-from-register>/customers/<
   -H 'authorization: Bearer mock:firebase_demo_1' \
   -H 'content-type: application/json' \
   -d '{"text":"לקוח ביקש זמינות בבוקר בלבד"}'
+```
+
+Create an appointment:
+
+```bash
+curl -s http://localhost:3000/businesses/<business-id-from-register>/appointments \
+  -H 'authorization: Bearer mock:firebase_demo_1' \
+  -H 'content-type: application/json' \
+  -d '{"customerId":"<customer-id>","title":"ביקור שירות","startsAt":"2026-08-21T09:00:00.000Z","endsAt":"2026-08-21T10:00:00.000Z"}'
+```
+
+Create a job/service call:
+
+```bash
+curl -s http://localhost:3000/businesses/<business-id-from-register>/jobs \
+  -H 'authorization: Bearer mock:firebase_demo_1' \
+  -H 'content-type: application/json' \
+  -d '{"customerId":"<customer-id>","title":"תיקון מזגן","description":"המזגן לא מקרר"}'
+```
+
+List incoming calls and audit events:
+
+```bash
+curl -s http://localhost:3000/businesses/<business-id-from-register>/calls \
+  -H 'authorization: Bearer mock:firebase_demo_1'
+
+curl -s http://localhost:3000/businesses/<business-id-from-register>/audit-events \
+  -H 'authorization: Bearer mock:firebase_demo_1'
 ```
 
 Complete a task:

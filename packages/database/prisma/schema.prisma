@@ -38,28 +38,48 @@ enum NotificationStatus {
 }
 
 model Business {
-  id           String   @id @default(uuid())
-  name         String
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id        String   @id @default(uuid())
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   users        User[]
+  settings     BusinessSettings?
+  phoneNumbers BusinessPhoneNumber[]
   customers    Customer[]
   jobs         Job[]
   appointments Appointment[]
   tasks        Task[]
+  IncomingCall IncomingCall[]
+}
+
+model BusinessSettings {
+  id                String   @id @default(uuid())
+  businessId        String   @unique
+  locale            String   @default("he-IL")
+  timezone          String   @default("Asia/Jerusalem")
+  greetingText      String?
+  callbackPrompt    String?
+  urgentPrompt      String?
+  workingHours      Json?
+  notificationPhone String?
+  allowUrgentCalls  Boolean  @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  business Business @relation(fields: [businessId], references: [id])
 }
 
 model User {
-  id         String   @id @default(uuid())
-  businessId String
-  email      String   @unique
+  id          String   @id @default(uuid())
+  businessId  String
+  email       String   @unique
   displayName String?
-  firebaseUid String  @unique
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  firebaseUid String   @unique
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
-  business   Business @relation(fields: [businessId], references: [id])
+  business Business @relation(fields: [businessId], references: [id])
 
   @@index([businessId])
 }
@@ -74,11 +94,11 @@ model Customer {
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
-  business   Business @relation(fields: [businessId], references: [id])
-  jobs       Job[]
+  business     Business       @relation(fields: [businessId], references: [id])
+  jobs         Job[]
   appointments Appointment[]
-  tasks      Task[]
-  notes      CustomerNote[]
+  tasks        Task[]
+  notes        CustomerNote[]
 
   @@index([businessId])
 }
@@ -93,47 +113,47 @@ model Job {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  business    Business @relation(fields: [businessId], references: [id])
-  customer    Customer @relation(fields: [customerId], references: [id])
+  business Business @relation(fields: [businessId], references: [id])
+  customer Customer @relation(fields: [customerId], references: [id])
 
   @@index([businessId])
   @@index([businessId, customerId])
 }
 
 model Appointment {
-  id          String            @id @default(uuid())
-  businessId  String
-  customerId  String?
-  title       String
-  startsAt    DateTime
-  endsAt      DateTime?
-  status      AppointmentStatus @default(SCHEDULED)
-  createdAt   DateTime          @default(now())
-  updatedAt   DateTime          @updatedAt
+  id         String            @id @default(uuid())
+  businessId String
+  customerId String?
+  title      String
+  startsAt   DateTime
+  endsAt     DateTime?
+  status     AppointmentStatus @default(SCHEDULED)
+  createdAt  DateTime          @default(now())
+  updatedAt  DateTime          @updatedAt
 
-  business    Business          @relation(fields: [businessId], references: [id])
-  customer    Customer?         @relation(fields: [customerId], references: [id])
+  business Business  @relation(fields: [businessId], references: [id])
+  customer Customer? @relation(fields: [customerId], references: [id])
 
   @@index([businessId])
 }
 
 model Task {
-  id          String       @id @default(uuid())
-  businessId  String
-  customerId  String?
-  title       String
-  description String?
-  status      TaskStatus   @default(OPEN)
-  priority    TaskPriority @default(NORMAL)
-  dueAt       DateTime?
-  source      String       @default("app")
-  sourceRef   String?
-  idempotencyKey String?   @unique
-  createdAt   DateTime     @default(now())
-  updatedAt   DateTime     @updatedAt
+  id             String       @id @default(uuid())
+  businessId     String
+  customerId     String?
+  title          String
+  description    String?
+  status         TaskStatus   @default(OPEN)
+  priority       TaskPriority @default(NORMAL)
+  dueAt          DateTime?
+  source         String       @default("app")
+  sourceRef      String?
+  idempotencyKey String?      @unique
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
 
-  business    Business     @relation(fields: [businessId], references: [id])
-  customer    Customer?    @relation(fields: [customerId], references: [id])
+  business Business  @relation(fields: [businessId], references: [id])
+  customer Customer? @relation(fields: [customerId], references: [id])
 
   @@index([businessId])
   @@index([businessId, sourceRef])
@@ -146,7 +166,7 @@ model CustomerNote {
   text       String
   createdAt  DateTime @default(now())
 
-  customer   Customer @relation(fields: [customerId], references: [id])
+  customer Customer @relation(fields: [customerId], references: [id])
 
   @@index([businessId])
   @@index([businessId, customerId])
@@ -156,30 +176,47 @@ model BusinessPhoneNumber {
   id          String   @id @default(uuid())
   businessId  String
   plivoNumber String   @unique
+  displayName String?
+  status      String   @default("ACTIVE")
   createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  business Business @relation(fields: [businessId], references: [id])
 
   @@index([businessId])
 }
 
 model IncomingCall {
-  id          String   @id @default(uuid())
-  businessId  String
-  plivoCallId String   @unique
-  fromNumber  String?
-  toNumber    String
-  status      String
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id            String   @id @default(uuid())
+  businessId    String
+  plivoCallId   String   @unique
+  fromNumber    String?
+  toNumber      String
+  status        String
+  selectedDigit String?
+  urgent        Boolean  @default(false)
+  recordingUrl  String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  business    Business         @relation(fields: [businessId], references: [id])
+  transcripts CallTranscript[]
 
   @@index([businessId])
+  @@index([businessId, toNumber])
 }
 
 model CallTranscript {
-  id          String   @id @default(uuid())
-  businessId  String
+  id             String   @id @default(uuid())
+  businessId     String
   incomingCallId String
-  transcript  String
-  createdAt   DateTime @default(now())
+  transcript     String
+  taskId         String?
+  provider       String   @default("mock")
+  confidence     Decimal?
+  createdAt      DateTime @default(now())
+
+  incomingCall IncomingCall @relation(fields: [incomingCallId], references: [id])
 
   @@index([businessId])
   @@index([incomingCallId])
@@ -200,57 +237,57 @@ model AiAction {
 }
 
 model PendingAction {
-  id          String   @id @default(uuid())
-  businessId  String
-  userId      String?
-  actionType  String
-  payload     Json
+  id            String   @id @default(uuid())
+  businessId    String
+  userId        String?
+  actionType    String
+  payload       Json
   missingFields String[]
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
   @@index([businessId])
 }
 
 model Notification {
-  id          String             @id @default(uuid())
-  businessId  String
-  taskId      String?
-  title       String
-  body        String
-  status      NotificationStatus @default(PENDING)
-  payload     Json?
-  createdAt   DateTime           @default(now())
-  updatedAt   DateTime           @updatedAt
+  id         String             @id @default(uuid())
+  businessId String
+  taskId     String?
+  title      String
+  body       String
+  status     NotificationStatus @default(PENDING)
+  payload    Json?
+  createdAt  DateTime           @default(now())
+  updatedAt  DateTime           @updatedAt
 
   @@index([businessId])
 }
 
 model AuditEvent {
-  id          String   @id @default(uuid())
-  businessId  String
-  actorType   String
-  actorId     String?
-  source      String
-  entityType  String
-  entityId    String?
-  action      String
-  before      Json?
-  after       Json?
-  result      String
-  createdAt   DateTime @default(now())
+  id         String   @id @default(uuid())
+  businessId String
+  actorType  String
+  actorId    String?
+  source     String
+  entityType String
+  entityId   String?
+  action     String
+  before     Json?
+  after      Json?
+  result     String
+  createdAt  DateTime @default(now())
 
   @@index([businessId])
 }
 
 model UsageEvent {
-  id          String   @id @default(uuid())
-  businessId  String
-  provider    String
-  metric      String
-  quantity    Decimal
-  metadata    Json?
-  createdAt   DateTime @default(now())
+  id         String   @id @default(uuid())
+  businessId String
+  provider   String
+  metric     String
+  quantity   Decimal
+  metadata   Json?
+  createdAt  DateTime @default(now())
 
   @@index([businessId])
 }

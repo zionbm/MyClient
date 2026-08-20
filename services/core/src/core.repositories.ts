@@ -1,5 +1,5 @@
 import { ConflictException, Inject, Injectable, NotFoundException } from "@nestjs/common";
-import type { Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { PrismaService } from "./prisma.service.js";
 
 type CreateTaskInput = {
@@ -69,6 +69,107 @@ type RegisterBusinessInput = {
   email: string;
   displayName: string;
   businessName: string;
+};
+
+type UpdateBusinessSettingsInput = {
+  businessId: string;
+  locale?: string;
+  timezone?: string;
+  greetingText?: string | null;
+  callbackPrompt?: string | null;
+  urgentPrompt?: string | null;
+  workingHours?: Prisma.InputJsonValue | null;
+  notificationPhone?: string | null;
+  allowUrgentCalls?: boolean;
+};
+
+type CreateBusinessPhoneNumberInput = {
+  businessId: string;
+  plivoNumber: string;
+  displayName?: string;
+  status?: string;
+};
+
+type UpdateBusinessPhoneNumberInput = {
+  businessId: string;
+  phoneNumberId: string;
+  displayName?: string | null;
+  status?: string;
+};
+
+type CreateIncomingCallInput = {
+  businessId: string;
+  plivoCallId: string;
+  fromNumber?: string;
+  toNumber: string;
+  selectedDigit?: string;
+  urgent?: boolean;
+  status: string;
+};
+
+type UpdateIncomingCallInput = {
+  plivoCallId: string;
+  status?: string;
+  selectedDigit?: string;
+  urgent?: boolean;
+  recordingUrl?: string;
+};
+
+type CreateCallTranscriptInput = {
+  businessId: string;
+  incomingCallId: string;
+  transcript: string;
+  taskId?: string;
+  provider?: string;
+  confidence?: number;
+};
+
+type CreateAppointmentInput = {
+  businessId: string;
+  customerId?: string;
+  title: string;
+  startsAt: Date;
+  endsAt?: Date | null;
+};
+
+type UpdateAppointmentInput = {
+  businessId: string;
+  appointmentId: string;
+  customerId?: string | null;
+  title?: string;
+  startsAt?: Date;
+  endsAt?: Date | null;
+  status?: "SCHEDULED" | "CANCELLED" | "COMPLETED";
+};
+
+type CreateJobInput = {
+  businessId: string;
+  customerId: string;
+  title: string;
+  description?: string;
+  status?: string;
+};
+
+type UpdateJobInput = {
+  businessId: string;
+  jobId: string;
+  customerId?: string;
+  title?: string;
+  description?: string | null;
+  status?: string;
+};
+
+type AuditEventInput = {
+  businessId: string;
+  actorType: string;
+  actorId?: string;
+  source: string;
+  entityType: string;
+  entityId?: string;
+  action: string;
+  before?: Prisma.InputJsonValue;
+  after?: Prisma.InputJsonValue;
+  result?: string;
 };
 
 @Injectable()
@@ -178,6 +279,235 @@ export class AuthRepository {
     return this.prisma.user.findUnique({
       where: { firebaseUid },
       include: { business: true }
+    });
+  }
+}
+
+@Injectable()
+export class AuditRepository {
+  constructor(@Inject(PrismaService) private readonly prisma: PrismaService) {}
+
+  async record(input: AuditEventInput) {
+    return this.prisma.auditEvent.create({
+      data: {
+        businessId: input.businessId,
+        actorType: input.actorType,
+        actorId: input.actorId,
+        source: input.source,
+        entityType: input.entityType,
+        entityId: input.entityId,
+        action: input.action,
+        before: input.before,
+        after: input.after,
+        result: input.result ?? "SUCCESS"
+      }
+    });
+  }
+
+  async listByBusiness(businessId: string) {
+    return this.prisma.auditEvent.findMany({
+      where: { businessId },
+      orderBy: { createdAt: "desc" }
+    });
+  }
+}
+
+@Injectable()
+export class BusinessSettingsRepository {
+  constructor(
+    @Inject(PrismaService) private readonly prisma: PrismaService,
+    @Inject(BusinessesRepository) private readonly businesses: BusinessesRepository
+  ) {}
+
+  async getByBusiness(businessId: string) {
+    const business = await this.businesses.requireBusiness(businessId);
+    return this.prisma.businessSettings.upsert({
+      where: { businessId },
+      update: {},
+      create: {
+        businessId,
+        locale: "he-IL",
+        timezone: "Asia/Jerusalem",
+        greetingText: `שלום, הגעתם ל${business.name}. לחזרה טלפונית הקישו 1, להשארת הודעה הקישו 2, ולמקרה דחוף הקישו 3.`,
+        callbackPrompt: "הבקשה התקבלה. נחזור אליך בהקדם.",
+        urgentPrompt: "אנא השאר הודעה דחופה אחרי הצליל.",
+        workingHours: {
+          sunday: { open: "09:00", close: "17:00" },
+          monday: { open: "09:00", close: "17:00" },
+          tuesday: { open: "09:00", close: "17:00" },
+          wednesday: { open: "09:00", close: "17:00" },
+          thursday: { open: "09:00", close: "17:00" },
+          friday: { open: "09:00", close: "13:00" },
+          saturday: { open: "00:00", close: "00:00", closed: true }
+        }
+      }
+    });
+  }
+
+  async update(input: UpdateBusinessSettingsInput) {
+    await this.getByBusiness(input.businessId);
+    const workingHours =
+      input.workingHours === null ? Prisma.JsonNull : input.workingHours === undefined ? undefined : input.workingHours;
+    return this.prisma.businessSettings.update({
+      where: { businessId: input.businessId },
+      data: {
+        locale: input.locale,
+        timezone: input.timezone,
+        greetingText: input.greetingText,
+        callbackPrompt: input.callbackPrompt,
+        urgentPrompt: input.urgentPrompt,
+        workingHours,
+        notificationPhone: input.notificationPhone,
+        allowUrgentCalls: input.allowUrgentCalls
+      }
+    });
+  }
+}
+
+@Injectable()
+export class BusinessPhoneNumbersRepository {
+  constructor(
+    @Inject(PrismaService) private readonly prisma: PrismaService,
+    @Inject(BusinessesRepository) private readonly businesses: BusinessesRepository
+  ) {}
+
+  async create(input: CreateBusinessPhoneNumberInput) {
+    await this.businesses.requireBusiness(input.businessId);
+    const existing = await this.prisma.businessPhoneNumber.findUnique({
+      where: { plivoNumber: input.plivoNumber },
+      select: { id: true }
+    });
+    if (existing) {
+      throw new ConflictException("Phone number is already registered");
+    }
+
+    return this.prisma.businessPhoneNumber.create({
+      data: {
+        businessId: input.businessId,
+        plivoNumber: input.plivoNumber,
+        displayName: input.displayName,
+        status: input.status ?? "ACTIVE"
+      }
+    });
+  }
+
+  async listByBusiness(businessId: string) {
+    await this.businesses.requireBusiness(businessId);
+    return this.prisma.businessPhoneNumber.findMany({
+      where: { businessId },
+      orderBy: { createdAt: "desc" }
+    });
+  }
+
+  async update(input: UpdateBusinessPhoneNumberInput) {
+    const existing = await this.prisma.businessPhoneNumber.findFirst({
+      where: {
+        id: input.phoneNumberId,
+        businessId: input.businessId
+      }
+    });
+    if (!existing) {
+      return null;
+    }
+
+    return this.prisma.businessPhoneNumber.update({
+      where: { id: existing.id },
+      data: {
+        displayName: input.displayName,
+        status: input.status
+      }
+    });
+  }
+
+  async findActiveByNumber(plivoNumber: string) {
+    return this.prisma.businessPhoneNumber.findFirst({
+      where: {
+        plivoNumber,
+        status: "ACTIVE"
+      },
+      include: {
+        business: {
+          include: {
+            settings: true
+          }
+        }
+      }
+    });
+  }
+}
+
+@Injectable()
+export class IncomingCallsRepository {
+  constructor(
+    @Inject(PrismaService) private readonly prisma: PrismaService,
+    @Inject(BusinessesRepository) private readonly businesses: BusinessesRepository
+  ) {}
+
+  async createOrUpdate(input: CreateIncomingCallInput) {
+    await this.businesses.requireBusiness(input.businessId);
+    return this.prisma.incomingCall.upsert({
+      where: { plivoCallId: input.plivoCallId },
+      update: {
+        fromNumber: input.fromNumber,
+        toNumber: input.toNumber,
+        status: input.status,
+        selectedDigit: input.selectedDigit,
+        urgent: input.urgent ?? false
+      },
+      create: {
+        businessId: input.businessId,
+        plivoCallId: input.plivoCallId,
+        fromNumber: input.fromNumber,
+        toNumber: input.toNumber,
+        status: input.status,
+        selectedDigit: input.selectedDigit,
+        urgent: input.urgent ?? false
+      }
+    });
+  }
+
+  async update(input: UpdateIncomingCallInput) {
+    return this.prisma.incomingCall.update({
+      where: { plivoCallId: input.plivoCallId },
+      data: {
+        status: input.status,
+        selectedDigit: input.selectedDigit,
+        urgent: input.urgent,
+        recordingUrl: input.recordingUrl
+      }
+    });
+  }
+
+  async findByPlivoCallId(plivoCallId: string) {
+    return this.prisma.incomingCall.findUnique({
+      where: { plivoCallId }
+    });
+  }
+
+  async listByBusiness(businessId: string) {
+    await this.businesses.requireBusiness(businessId);
+    return this.prisma.incomingCall.findMany({
+      where: { businessId },
+      include: { transcripts: true },
+      orderBy: { createdAt: "desc" }
+    });
+  }
+}
+
+@Injectable()
+export class CallTranscriptsRepository {
+  constructor(@Inject(PrismaService) private readonly prisma: PrismaService) {}
+
+  async create(input: CreateCallTranscriptInput) {
+    return this.prisma.callTranscript.create({
+      data: {
+        businessId: input.businessId,
+        incomingCallId: input.incomingCallId,
+        transcript: input.transcript,
+        taskId: input.taskId,
+        provider: input.provider ?? "mock",
+        confidence: input.confidence
+      }
     });
   }
 }
@@ -441,5 +771,150 @@ export class PendingActionsRepository {
         missingFields: input.missingFields
       }
     });
+  }
+}
+
+@Injectable()
+export class AppointmentsRepository {
+  constructor(
+    @Inject(PrismaService) private readonly prisma: PrismaService,
+    @Inject(BusinessesRepository) private readonly businesses: BusinessesRepository
+  ) {}
+
+  async create(input: CreateAppointmentInput) {
+    await this.businesses.requireBusiness(input.businessId);
+    if (input.customerId) {
+      await this.ensureCustomerBelongsToBusiness(input.businessId, input.customerId);
+    }
+
+    return this.prisma.appointment.create({
+      data: {
+        businessId: input.businessId,
+        customerId: input.customerId,
+        title: input.title,
+        startsAt: input.startsAt,
+        endsAt: input.endsAt
+      }
+    });
+  }
+
+  async listByBusiness(businessId: string) {
+    await this.businesses.requireBusiness(businessId);
+    return this.prisma.appointment.findMany({
+      where: { businessId },
+      orderBy: { startsAt: "asc" }
+    });
+  }
+
+  async update(input: UpdateAppointmentInput) {
+    const existing = await this.prisma.appointment.findFirst({
+      where: {
+        businessId: input.businessId,
+        id: input.appointmentId
+      }
+    });
+    if (!existing) {
+      return null;
+    }
+
+    if (input.customerId) {
+      await this.ensureCustomerBelongsToBusiness(input.businessId, input.customerId);
+    }
+
+    return this.prisma.appointment.update({
+      where: { id: existing.id },
+      data: {
+        customerId: input.customerId,
+        title: input.title,
+        startsAt: input.startsAt,
+        endsAt: input.endsAt,
+        status: input.status
+      }
+    });
+  }
+
+  private async ensureCustomerBelongsToBusiness(businessId: string, customerId: string) {
+    const customer = await this.prisma.customer.findFirst({
+      where: {
+        businessId,
+        id: customerId
+      },
+      select: { id: true }
+    });
+
+    if (!customer) {
+      throw new NotFoundException("Customer not found");
+    }
+  }
+}
+
+@Injectable()
+export class JobsRepository {
+  constructor(
+    @Inject(PrismaService) private readonly prisma: PrismaService,
+    @Inject(BusinessesRepository) private readonly businesses: BusinessesRepository
+  ) {}
+
+  async create(input: CreateJobInput) {
+    await this.businesses.requireBusiness(input.businessId);
+    await this.ensureCustomerBelongsToBusiness(input.businessId, input.customerId);
+
+    return this.prisma.job.create({
+      data: {
+        businessId: input.businessId,
+        customerId: input.customerId,
+        title: input.title,
+        description: input.description,
+        status: input.status ?? "OPEN"
+      }
+    });
+  }
+
+  async listByBusiness(businessId: string) {
+    await this.businesses.requireBusiness(businessId);
+    return this.prisma.job.findMany({
+      where: { businessId },
+      orderBy: { createdAt: "desc" }
+    });
+  }
+
+  async update(input: UpdateJobInput) {
+    const existing = await this.prisma.job.findFirst({
+      where: {
+        businessId: input.businessId,
+        id: input.jobId
+      }
+    });
+    if (!existing) {
+      return null;
+    }
+
+    if (input.customerId) {
+      await this.ensureCustomerBelongsToBusiness(input.businessId, input.customerId);
+    }
+
+    return this.prisma.job.update({
+      where: { id: existing.id },
+      data: {
+        customerId: input.customerId,
+        title: input.title,
+        description: input.description,
+        status: input.status
+      }
+    });
+  }
+
+  private async ensureCustomerBelongsToBusiness(businessId: string, customerId: string) {
+    const customer = await this.prisma.customer.findFirst({
+      where: {
+        businessId,
+        id: customerId
+      },
+      select: { id: true }
+    });
+
+    if (!customer) {
+      throw new NotFoundException("Customer not found");
+    }
   }
 }
