@@ -114,6 +114,79 @@ function parseRequiredDate(value: string): Date {
   return parsed;
 }
 
+function getZonedParts(date: Date, timeZone: string) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23"
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return {
+    year: Number(values.year),
+    month: Number(values.month),
+    day: Number(values.day),
+    hour: Number(values.hour),
+    minute: Number(values.minute),
+    second: Number(values.second)
+  };
+}
+
+function getTimeZoneOffsetMs(date: Date, timeZone: string) {
+  const parts = getZonedParts(date, timeZone);
+  const zonedAsUtc = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second);
+  return zonedAsUtc - date.getTime();
+}
+
+function zonedTimeToUtc(parts: { year: number; month: number; day: number; hour: number; minute: number }, timeZone: string) {
+  const guess = new Date(Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, 0));
+  return new Date(guess.getTime() - getTimeZoneOffsetMs(guess, timeZone));
+}
+
+function addLocalDays(parts: { year: number; month: number; day: number }, days: number) {
+  const date = new Date(Date.UTC(parts.year, parts.month - 1, parts.day + days));
+  return {
+    year: date.getUTCFullYear(),
+    month: date.getUTCMonth() + 1,
+    day: date.getUTCDate()
+  };
+}
+
+function defaultAiTaskDueAt(timeZone: string, now = new Date()) {
+  const workdayStartMinutes = 9 * 60;
+  const eveningCutoffMinutes = 19 * 60;
+  const nowParts = getZonedParts(now, timeZone);
+  const nowMinutes = nowParts.hour * 60 + nowParts.minute;
+
+  if (nowMinutes >= workdayStartMinutes && nowMinutes < eveningCutoffMinutes) {
+    const inTwoHours = new Date(now.getTime() + 2 * 60 * 60 * 1000);
+    const inTwoHoursParts = getZonedParts(inTwoHours, timeZone);
+    const inTwoHoursMinutes = inTwoHoursParts.hour * 60 + inTwoHoursParts.minute;
+    const sameLocalDay =
+      inTwoHoursParts.year === nowParts.year &&
+      inTwoHoursParts.month === nowParts.month &&
+      inTwoHoursParts.day === nowParts.day;
+    if (sameLocalDay && inTwoHoursMinutes < eveningCutoffMinutes) {
+      return inTwoHours;
+    }
+  }
+
+  const targetDay = nowMinutes < workdayStartMinutes
+    ? nowParts
+    : addLocalDays(nowParts, 1);
+  return zonedTimeToUtc({
+    year: targetDay.year,
+    month: targetDay.month,
+    day: targetDay.day,
+    hour: 9,
+    minute: 0
+  }, timeZone);
+}
+
 function headerValue(headers: RequestHeaders, name: string): string | undefined {
   const value = headers[name.toLowerCase()] ?? headers[name];
   if (Array.isArray(value)) {
@@ -475,6 +548,7 @@ class CoreController {
         title,
         description: typeof action.payload.description === "string" ? action.payload.description : undefined,
         priority: "NORMAL",
+        dueAt: await this.resolveAiTaskDueAt(request.businessId, action.payload),
         source: "ai_owner_command",
         sourceRef: action.idempotencyKey,
         idempotencyKey: action.idempotencyKey
@@ -1154,7 +1228,7 @@ class CoreController {
         title,
         description: typeof input.payload.description === "string" ? input.payload.description : undefined,
         priority: input.payload.priority === "URGENT" ? "URGENT" : "NORMAL",
-        dueAt: typeof input.payload.dueAt === "string" ? parseRequiredDate(input.payload.dueAt) : undefined,
+        dueAt: await this.resolveAiTaskDueAt(input.businessId, input.payload),
         source: "pending_action",
         sourceRef: input.idempotencyKey,
         idempotencyKey: input.idempotencyKey
@@ -1427,6 +1501,15 @@ class CoreController {
     ) ?? createdCustomers.at(-1);
 
     return matchingCustomer ? { ...payload, customerId: matchingCustomer.id } : payload;
+  }
+
+  private async resolveAiTaskDueAt(businessId: string, payload: Record<string, unknown>) {
+    if (typeof payload.dueAt === "string") {
+      return parseRequiredDate(payload.dueAt);
+    }
+
+    const settings = await this.settings.getByBusiness(businessId);
+    return defaultAiTaskDueAt(settings.timezone);
   }
 
   private async executeCallbackTask(command: {
