@@ -9,7 +9,7 @@ import type { AiAction } from "@myclient/contracts";
 class AiController {
   @Get("health")
   health() {
-    return health("ai", { llm: getEnv("GEMINI_LLM_MODEL", "gemini-2.5-flash") });
+    return health("ai", { llm: getEnv("GEMINI_LLM_MODEL", "gemini-3.6-flash") });
   }
 
   @Post("intent/parse")
@@ -26,7 +26,7 @@ class AiController {
 
   private async geminiAction(text: string, idempotencyKey: string): Promise<AiAction> {
     const apiKey = getEnv("GEMINI_API_KEY");
-    const model = getEnv("GEMINI_LLM_MODEL", "gemini-2.5-flash");
+    const model = getEnv("GEMINI_LLM_MODEL", "gemini-3.6-flash");
     const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
       method: "POST",
       headers: {
