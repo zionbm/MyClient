@@ -112,7 +112,10 @@ class TelephonyController {
     const coreBaseUrl = getEnv("CORE_BASE_URL", "http://localhost:3000");
     const response = await fetch(`${coreBaseUrl}/internal/tasks/callback`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        "x-internal-secret": getEnv("INTERNAL_API_SECRET", "dev-internal-secret")
+      },
       body: JSON.stringify(command)
     });
 

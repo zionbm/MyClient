@@ -8,9 +8,3 @@ export const RegisterBusinessSchema = z.object({
 });
 
 export type RegisterBusiness = z.infer<typeof RegisterBusinessSchema>;
-
-export const AuthMeQuerySchema = z.object({
-  firebaseUid: z.string().trim().min(1)
-});
-
-export type AuthMeQuery = z.infer<typeof AuthMeQuerySchema>;

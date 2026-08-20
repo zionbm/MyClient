@@ -64,7 +64,23 @@ All Nest services return API errors in a consistent JSON shape:
 }
 ```
 
-Common error codes are `BAD_REQUEST`, `VALIDATION_ERROR`, `NOT_FOUND`, `CONFLICT`, `DOWNSTREAM_SERVICE_ERROR` and `INTERNAL_ERROR`.
+Common error codes are `BAD_REQUEST`, `VALIDATION_ERROR`, `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, `DOWNSTREAM_SERVICE_ERROR` and `INTERNAL_ERROR`.
+
+## Authentication
+
+The POC uses Firebase-ready mock bearer tokens. Protected Core endpoints require:
+
+```bash
+Authorization: Bearer mock:<firebaseUid>
+```
+
+For example, after registering with `firebaseUid` `firebase_demo_1`, call protected business APIs with:
+
+```bash
+-H 'authorization: Bearer mock:firebase_demo_1'
+```
+
+Core internal endpoints are service-to-service only and require `x-internal-secret`.
 
 ## Mock Flow Examples
 
@@ -79,7 +95,8 @@ curl -s http://localhost:3000/auth/register-business \
 Load the current business context after login:
 
 ```bash
-curl -s 'http://localhost:3000/auth/me?firebaseUid=firebase_demo_1'
+curl -s http://localhost:3000/auth/me \
+  -H 'authorization: Bearer mock:firebase_demo_1'
 ```
 
 Owner text command through AI:
@@ -94,8 +111,9 @@ Execute the returned action in Core:
 
 ```bash
 curl -s http://localhost:3000/owner-actions/execute \
+  -H 'authorization: Bearer mock:firebase_demo_1' \
   -H 'content-type: application/json' \
-  -d '{"businessId":"biz_1","action":{"type":"CREATE_TASK","idempotencyKey":"ai_example_123","confidence":0.9,"requiresConfirmation":false,"missingFields":[],"payload":{"title":"לחזור לדני מחר"}}}'
+  -d '{"businessId":"<business-id-from-register>","action":{"type":"CREATE_TASK","idempotencyKey":"ai_example_123","confidence":0.9,"requiresConfirmation":false,"missingFields":[],"payload":{"title":"לחזור לדני מחר"}}}'
 ```
 
 Virtual receptionist callback without LLM:
@@ -103,7 +121,7 @@ Virtual receptionist callback without LLM:
 ```bash
 curl -s http://localhost:3003/plivo/callback-request \
   -H 'content-type: application/json' \
-  -d '{"businessId":"biz_1","callId":"call_1","from":"+972501234567","to":"+97239999999"}'
+  -d '{"businessId":"<business-id-from-register>","callId":"call_1","from":"+972501234567","to":"+97239999999"}'
 ```
 
 Virtual receptionist recording with mock STT:
@@ -111,7 +129,7 @@ Virtual receptionist recording with mock STT:
 ```bash
 curl -s http://localhost:3003/plivo/recording \
   -H 'content-type: application/json' \
-  -d '{"businessId":"biz_1","callId":"call_2","from":"+972501234567","transcript":"אשמח שתחזור אליי לגבי התיקון","urgent":true}'
+  -d '{"businessId":"<business-id-from-register>","callId":"call_2","from":"+972501234567","transcript":"אשמח שתחזור אליי לגבי התיקון","urgent":true}'
 ```
 
 The Core service persists callback tasks, owner-created tasks, notifications and pending actions in PostgreSQL through Prisma. Duplicate callback and owner task requests are detected by `Task.idempotencyKey`, so the protection survives service restarts.
@@ -119,13 +137,15 @@ The Core service persists callback tasks, owner-created tasks, notifications and
 List created tasks:
 
 ```bash
-curl -s http://localhost:3000/businesses/biz_1/tasks
+curl -s http://localhost:3000/businesses/<business-id-from-register>/tasks \
+  -H 'authorization: Bearer mock:firebase_demo_1'
 ```
 
 Create a customer:
 
 ```bash
-curl -s http://localhost:3000/businesses/biz_1/customers \
+curl -s http://localhost:3000/businesses/<business-id-from-register>/customers \
+  -H 'authorization: Bearer mock:firebase_demo_1' \
   -H 'content-type: application/json' \
   -d '{"name":"דני כהן","phone":"+972501111111","email":"dani@example.com","address":"הרצל 10, תל אביב"}'
 ```
@@ -133,7 +153,8 @@ curl -s http://localhost:3000/businesses/biz_1/customers \
 Create a task for a customer:
 
 ```bash
-curl -s http://localhost:3000/businesses/biz_1/tasks \
+curl -s http://localhost:3000/businesses/<business-id-from-register>/tasks \
+  -H 'authorization: Bearer mock:firebase_demo_1' \
   -H 'content-type: application/json' \
   -d '{"customerId":"<customer-id>","title":"לקבוע ביקור","description":"לתאם ביקור לתיקון המזגן","priority":"NORMAL","dueAt":"2026-08-21T09:00:00.000Z"}'
 ```
@@ -141,7 +162,8 @@ curl -s http://localhost:3000/businesses/biz_1/tasks \
 Add a customer note:
 
 ```bash
-curl -s http://localhost:3000/businesses/biz_1/customers/<customer-id>/notes \
+curl -s http://localhost:3000/businesses/<business-id-from-register>/customers/<customer-id>/notes \
+  -H 'authorization: Bearer mock:firebase_demo_1' \
   -H 'content-type: application/json' \
   -d '{"text":"לקוח ביקש זמינות בבוקר בלבד"}'
 ```
@@ -149,5 +171,7 @@ curl -s http://localhost:3000/businesses/biz_1/customers/<customer-id>/notes \
 Complete a task:
 
 ```bash
-curl -s http://localhost:3000/businesses/biz_1/tasks/<task-id>/complete -X POST
+curl -s http://localhost:3000/businesses/<business-id-from-register>/tasks/<task-id>/complete \
+  -H 'authorization: Bearer mock:firebase_demo_1' \
+  -X POST
 ```

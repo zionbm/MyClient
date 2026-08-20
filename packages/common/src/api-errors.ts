@@ -5,6 +5,8 @@ import { log } from "./logger.js";
 export type ApiErrorCode =
   | "BAD_REQUEST"
   | "VALIDATION_ERROR"
+  | "UNAUTHORIZED"
+  | "FORBIDDEN"
   | "NOT_FOUND"
   | "CONFLICT"
   | "DOWNSTREAM_SERVICE_ERROR"
@@ -21,6 +23,12 @@ export type ApiErrorResponse = {
 function codeFromStatus(status: number): ApiErrorCode {
   if (status === HttpStatus.BAD_REQUEST) {
     return "BAD_REQUEST";
+  }
+  if (status === HttpStatus.UNAUTHORIZED) {
+    return "UNAUTHORIZED";
+  }
+  if (status === HttpStatus.FORBIDDEN) {
+    return "FORBIDDEN";
   }
   if (status === HttpStatus.NOT_FOUND) {
     return "NOT_FOUND";
