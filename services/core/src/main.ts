@@ -187,6 +187,25 @@ function defaultAiTaskDueAt(timeZone: string, now = new Date()) {
   }, timeZone);
 }
 
+function parseAiDueAt(value: string, timeZone: string) {
+  if (/[zZ]$|[+-]\d{2}:\d{2}$/.test(value)) {
+    return parseRequiredDate(value);
+  }
+
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::\d{2})?$/);
+  if (!match) {
+    return parseRequiredDate(value);
+  }
+
+  return zonedTimeToUtc({
+    year: Number(match[1]),
+    month: Number(match[2]),
+    day: Number(match[3]),
+    hour: Number(match[4]),
+    minute: Number(match[5])
+  }, timeZone);
+}
+
 function headerValue(headers: RequestHeaders, name: string): string | undefined {
   const value = headers[name.toLowerCase()] ?? headers[name];
   if (Array.isArray(value)) {
@@ -1504,11 +1523,11 @@ class CoreController {
   }
 
   private async resolveAiTaskDueAt(businessId: string, payload: Record<string, unknown>) {
+    const settings = await this.settings.getByBusiness(businessId);
     if (typeof payload.dueAt === "string") {
-      return parseRequiredDate(payload.dueAt);
+      return parseAiDueAt(payload.dueAt, settings.timezone);
     }
 
-    const settings = await this.settings.getByBusiness(businessId);
     return defaultAiTaskDueAt(settings.timezone);
   }
 
