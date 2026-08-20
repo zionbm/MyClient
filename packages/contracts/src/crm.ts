@@ -119,3 +119,22 @@ export const UpdateJobSchema = z.object({
 }).refine((value) => Object.keys(value).length > 0, "At least one job field is required");
 
 export type UpdateJob = z.infer<typeof UpdateJobSchema>;
+
+export const ListByStatusQuerySchema = z.object({
+  status: z.string().trim().min(1).optional()
+});
+
+export type ListByStatusQuery = z.infer<typeof ListByStatusQuerySchema>;
+
+export const UpdateNotificationSchema = z.object({
+  status: z.enum(["PENDING", "SENT", "FAILED", "READ"]),
+  failureReason: z.string().trim().min(1).optional()
+});
+
+export type UpdateNotification = z.infer<typeof UpdateNotificationSchema>;
+
+export const CompletePendingActionSchema = z.object({
+  payload: z.record(z.unknown()).optional()
+});
+
+export type CompletePendingAction = z.infer<typeof CompletePendingActionSchema>;

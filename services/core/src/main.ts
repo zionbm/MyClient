@@ -12,6 +12,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   UnauthorizedException
 } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
@@ -29,12 +30,15 @@ import {
   CreateIncomingCallSchema,
   CreateJobSchema,
   CreateTaskSchema,
+  CompletePendingActionSchema,
+  ListByStatusQuerySchema,
   RegisterBusinessSchema,
   UpdateAppointmentSchema,
   UpdateBusinessPhoneNumberSchema,
   UpdateBusinessSettingsSchema,
   UpdateCustomerSchema,
   UpdateJobSchema,
+  UpdateNotificationSchema,
   UpdateTaskSchema
 } from "@myclient/contracts";
 import {
@@ -870,15 +874,284 @@ class CoreController {
   }
 
   @Get("businesses/:businessId/notifications")
-  async listNotifications(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string) {
+  async listNotifications(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Query() query: unknown) {
     await this.requireBusinessAccess(headers, businessId);
-    return { notifications: await this.notifications.listByBusiness(businessId) };
+    const command = ListByStatusQuerySchema.parse(query);
+    return { notifications: await this.notifications.listByBusinessAndStatus(businessId, command.status) };
+  }
+
+  @Patch("businesses/:businessId/notifications/:notificationId")
+  async updateNotification(
+    @Headers() headers: RequestHeaders,
+    @Param("businessId") businessId: string,
+    @Param("notificationId") notificationId: string,
+    @Body() body: unknown
+  ) {
+    const user = await this.requireBusinessAccess(headers, businessId);
+    const command = UpdateNotificationSchema.parse(body);
+    const notification = await this.notifications.updateStatus({
+      businessId,
+      notificationId,
+      status: command.status,
+      failureReason: command.failureReason
+    });
+    if (!notification) {
+      throw new NotFoundException("Notification not found");
+    }
+    await this.audit.record({
+      businessId,
+      actorType: "user",
+      actorId: user.id,
+      source: "core",
+      entityType: "notification",
+      entityId: notification.id,
+      action: `MARK_NOTIFICATION_${command.status}`,
+      after: notification as Prisma.InputJsonValue
+    });
+    return { notification };
+  }
+
+  @Get("businesses/:businessId/pending-actions")
+  async listPendingActions(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Query() query: unknown) {
+    await this.requireBusinessAccess(headers, businessId);
+    const command = ListByStatusQuerySchema.parse(query);
+    return { pendingActions: await this.pendingActions.listByBusinessAndStatus(businessId, command.status) };
+  }
+
+  @Post("businesses/:businessId/pending-actions/:pendingActionId/reject")
+  async rejectPendingAction(
+    @Headers() headers: RequestHeaders,
+    @Param("businessId") businessId: string,
+    @Param("pendingActionId") pendingActionId: string
+  ) {
+    const user = await this.requireBusinessAccess(headers, businessId);
+    const pending = await this.pendingActions.resolve({
+      businessId,
+      pendingActionId,
+      status: "REJECTED",
+      resolution: { rejectedBy: user.id }
+    });
+    if (!pending) {
+      throw new NotFoundException("Pending action not found");
+    }
+    await this.audit.record({
+      businessId,
+      actorType: "user",
+      actorId: user.id,
+      source: "core",
+      entityType: "pending_action",
+      entityId: pending.id,
+      action: "REJECT_PENDING_ACTION",
+      after: pending as Prisma.InputJsonValue
+    });
+    return { pendingAction: pending };
+  }
+
+  @Post("businesses/:businessId/pending-actions/:pendingActionId/complete")
+  async completePendingAction(
+    @Headers() headers: RequestHeaders,
+    @Param("businessId") businessId: string,
+    @Param("pendingActionId") pendingActionId: string,
+    @Body() body: unknown
+  ) {
+    const user = await this.requireBusinessAccess(headers, businessId);
+    const command = CompletePendingActionSchema.parse(body);
+    const existing = await this.pendingActions.findByBusinessAndId(businessId, pendingActionId);
+    if (!existing) {
+      throw new NotFoundException("Pending action not found");
+    }
+    if (existing.status !== "PENDING") {
+      throw new BadRequestException("Pending action is already resolved");
+    }
+
+    const payload = {
+      ...(existing.payload as Record<string, unknown>),
+      ...(command.payload ?? {})
+    };
+    const execution = await this.executeStructuredAction({
+      businessId,
+      userId: user.id,
+      actionType: existing.actionType,
+      payload,
+      idempotencyKey: stableIdempotencyKey("pending_action", existing.id)
+    });
+    const pending = await this.pendingActions.resolve({
+      businessId,
+      pendingActionId,
+      status: "EXECUTED",
+      resolution: {
+        executedBy: user.id,
+        execution
+      } as Prisma.InputJsonValue
+    });
+    await this.audit.record({
+      businessId,
+      actorType: "user",
+      actorId: user.id,
+      source: "core",
+      entityType: "pending_action",
+      entityId: pending?.id,
+      action: "COMPLETE_PENDING_ACTION",
+      after: pending as Prisma.InputJsonValue
+    });
+    return { pendingAction: pending, execution };
   }
 
   @Get("businesses/:businessId/audit-events")
   async listAuditEvents(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string) {
     await this.requireBusinessAccess(headers, businessId);
     return { auditEvents: await this.audit.listByBusiness(businessId) };
+  }
+
+  private async executeStructuredAction(input: {
+    businessId: string;
+    userId: string;
+    actionType: string;
+    payload: Record<string, unknown>;
+    idempotencyKey: string;
+  }) {
+    if (input.actionType === "CREATE_TASK") {
+      const existing = await this.tasks.findByIdempotencyKey(input.businessId, input.idempotencyKey);
+      if (existing) {
+        return { type: input.actionType, duplicate: true, task: existing };
+      }
+      const title = typeof input.payload.title === "string" ? input.payload.title : undefined;
+      if (!title) {
+        throw new BadRequestException("Pending action payload is missing task title");
+      }
+      const task = await this.tasks.create({
+        businessId: input.businessId,
+        customerId: typeof input.payload.customerId === "string" ? input.payload.customerId : undefined,
+        title,
+        description: typeof input.payload.description === "string" ? input.payload.description : undefined,
+        priority: input.payload.priority === "URGENT" ? "URGENT" : "NORMAL",
+        dueAt: typeof input.payload.dueAt === "string" ? parseRequiredDate(input.payload.dueAt) : undefined,
+        source: "pending_action",
+        sourceRef: input.idempotencyKey,
+        idempotencyKey: input.idempotencyKey
+      });
+      await this.audit.record({
+        businessId: input.businessId,
+        actorType: "user",
+        actorId: input.userId,
+        source: "pending_action",
+        entityType: "task",
+        entityId: task.id,
+        action: "CREATE_TASK_FROM_PENDING_ACTION",
+        after: task as Prisma.InputJsonValue
+      });
+      return { type: input.actionType, duplicate: false, task };
+    }
+
+    if (input.actionType === "CREATE_CUSTOMER") {
+      const name = typeof input.payload.name === "string" ? input.payload.name : undefined;
+      if (!name) {
+        throw new BadRequestException("Pending action payload is missing customer name");
+      }
+      const customer = await this.customers.create({
+        businessId: input.businessId,
+        name,
+        phone: typeof input.payload.phone === "string" ? input.payload.phone : undefined,
+        email: typeof input.payload.email === "string" ? input.payload.email : undefined,
+        address: typeof input.payload.address === "string" ? input.payload.address : undefined
+      });
+      await this.audit.record({
+        businessId: input.businessId,
+        actorType: "user",
+        actorId: input.userId,
+        source: "pending_action",
+        entityType: "customer",
+        entityId: customer.id,
+        action: "CREATE_CUSTOMER_FROM_PENDING_ACTION",
+        after: customer as Prisma.InputJsonValue
+      });
+      return { type: input.actionType, customer };
+    }
+
+    if (input.actionType === "CREATE_JOB") {
+      const customerId = typeof input.payload.customerId === "string" ? input.payload.customerId : undefined;
+      const title = typeof input.payload.title === "string" ? input.payload.title : undefined;
+      if (!customerId || !title) {
+        throw new BadRequestException("Pending action payload is missing job customerId or title");
+      }
+      const job = await this.jobs.create({
+        businessId: input.businessId,
+        customerId,
+        title,
+        description: typeof input.payload.description === "string" ? input.payload.description : undefined,
+        status: typeof input.payload.status === "string" ? input.payload.status : undefined
+      });
+      await this.audit.record({
+        businessId: input.businessId,
+        actorType: "user",
+        actorId: input.userId,
+        source: "pending_action",
+        entityType: "job",
+        entityId: job.id,
+        action: "CREATE_JOB_FROM_PENDING_ACTION",
+        after: job as Prisma.InputJsonValue
+      });
+      return { type: input.actionType, job };
+    }
+
+    if (input.actionType === "CREATE_APPOINTMENT") {
+      const title = typeof input.payload.title === "string" ? input.payload.title : undefined;
+      const startsAt = typeof input.payload.startsAt === "string" ? input.payload.startsAt : undefined;
+      if (!title || !startsAt) {
+        throw new BadRequestException("Pending action payload is missing appointment title or startsAt");
+      }
+      const appointment = await this.appointments.create({
+        businessId: input.businessId,
+        customerId: typeof input.payload.customerId === "string" ? input.payload.customerId : undefined,
+        title,
+        startsAt: parseRequiredDate(startsAt),
+        endsAt: typeof input.payload.endsAt === "string" ? parseRequiredDate(input.payload.endsAt) : undefined
+      });
+      await this.audit.record({
+        businessId: input.businessId,
+        actorType: "user",
+        actorId: input.userId,
+        source: "pending_action",
+        entityType: "appointment",
+        entityId: appointment.id,
+        action: "CREATE_APPOINTMENT_FROM_PENDING_ACTION",
+        after: appointment as Prisma.InputJsonValue
+      });
+      return { type: input.actionType, appointment };
+    }
+
+    if (input.actionType === "ADD_CUSTOMER_NOTE") {
+      const customerId = typeof input.payload.customerId === "string" ? input.payload.customerId : undefined;
+      const text = typeof input.payload.text === "string" ? input.payload.text : undefined;
+      if (!customerId || !text) {
+        throw new BadRequestException("Pending action payload is missing note customerId or text");
+      }
+      const note = await this.customerNotes.create({
+        businessId: input.businessId,
+        customerId,
+        text
+      });
+      if (!note) {
+        throw new NotFoundException("Customer not found");
+      }
+      await this.audit.record({
+        businessId: input.businessId,
+        actorType: "user",
+        actorId: input.userId,
+        source: "pending_action",
+        entityType: "customer_note",
+        entityId: note.id,
+        action: "CREATE_CUSTOMER_NOTE_FROM_PENDING_ACTION",
+        after: note as Prisma.InputJsonValue
+      });
+      return { type: input.actionType, note };
+    }
+
+    return {
+      type: input.actionType,
+      status: "MOCK_ACCEPTED",
+      payload: input.payload
+    };
   }
 
   private async executeCallbackTask(command: {

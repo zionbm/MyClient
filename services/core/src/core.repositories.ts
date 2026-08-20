@@ -64,6 +64,20 @@ type CreatePendingActionInput = {
   missingFields: string[];
 };
 
+type UpdateNotificationInput = {
+  businessId: string;
+  notificationId: string;
+  status: "PENDING" | "SENT" | "FAILED" | "READ";
+  failureReason?: string;
+};
+
+type ResolvePendingActionInput = {
+  businessId: string;
+  pendingActionId: string;
+  status: "EXECUTED" | "REJECTED";
+  resolution?: Prisma.InputJsonValue;
+};
+
 type RegisterBusinessInput = {
   firebaseUid: string;
   email: string;
@@ -751,6 +765,41 @@ export class NotificationsRepository {
       orderBy: { createdAt: "desc" }
     });
   }
+
+  async listByBusinessAndStatus(businessId: string, status?: string) {
+    await this.businesses.requireBusiness(businessId);
+    return this.prisma.notification.findMany({
+      where: {
+        businessId,
+        status: status as "PENDING" | "SENT" | "FAILED" | "READ" | undefined
+      },
+      orderBy: { createdAt: "desc" }
+    });
+  }
+
+  async updateStatus(input: UpdateNotificationInput) {
+    const existing = await this.prisma.notification.findFirst({
+      where: {
+        businessId: input.businessId,
+        id: input.notificationId
+      }
+    });
+    if (!existing) {
+      return null;
+    }
+
+    const now = new Date();
+    return this.prisma.notification.update({
+      where: { id: existing.id },
+      data: {
+        status: input.status,
+        readAt: input.status === "READ" ? now : undefined,
+        sentAt: input.status === "SENT" ? now : undefined,
+        failedAt: input.status === "FAILED" ? now : undefined,
+        failureReason: input.status === "FAILED" ? input.failureReason ?? "Unknown failure" : undefined
+      }
+    });
+  }
 }
 
 @Injectable()
@@ -768,7 +817,44 @@ export class PendingActionsRepository {
         userId: input.userId,
         actionType: input.actionType,
         payload: input.payload,
-        missingFields: input.missingFields
+        missingFields: input.missingFields,
+        status: "PENDING"
+      }
+    });
+  }
+
+  async listByBusinessAndStatus(businessId: string, status?: string) {
+    await this.businesses.requireBusiness(businessId);
+    return this.prisma.pendingAction.findMany({
+      where: {
+        businessId,
+        status
+      },
+      orderBy: { createdAt: "desc" }
+    });
+  }
+
+  async findByBusinessAndId(businessId: string, pendingActionId: string) {
+    return this.prisma.pendingAction.findFirst({
+      where: {
+        businessId,
+        id: pendingActionId
+      }
+    });
+  }
+
+  async resolve(input: ResolvePendingActionInput) {
+    const existing = await this.findByBusinessAndId(input.businessId, input.pendingActionId);
+    if (!existing) {
+      return null;
+    }
+
+    return this.prisma.pendingAction.update({
+      where: { id: existing.id },
+      data: {
+        status: input.status,
+        resolution: input.resolution === undefined ? undefined : input.resolution,
+        resolvedAt: new Date()
       }
     });
   }

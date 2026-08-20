@@ -15,6 +15,8 @@
     "dev:voice": "npm run dev -w @myclient/voice",
     "dev:telephony": "npm run dev -w @myclient/telephony",
     "dev:worker": "npm run dev -w @myclient/worker",
+    "seed:demo": "node scripts/seed-demo.mjs",
+    "test:integration": "node scripts/integration-tests.mjs",
     "prisma:generate": "prisma generate --schema packages/database/prisma/schema.prisma",
     "prisma:migrate:dev": "prisma migrate dev --schema packages/database/prisma/schema.prisma"
   },

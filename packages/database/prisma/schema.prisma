@@ -35,6 +35,7 @@ enum NotificationStatus {
   PENDING
   SENT
   FAILED
+  READ
 }
 
 model Business {
@@ -237,30 +238,39 @@ model AiAction {
 }
 
 model PendingAction {
-  id            String   @id @default(uuid())
+  id            String    @id @default(uuid())
   businessId    String
   userId        String?
   actionType    String
   payload       Json
   missingFields String[]
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  status        String    @default("PENDING")
+  resolution    Json?
+  resolvedAt    DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
 
   @@index([businessId])
+  @@index([businessId, status])
 }
 
 model Notification {
-  id         String             @id @default(uuid())
-  businessId String
-  taskId     String?
-  title      String
-  body       String
-  status     NotificationStatus @default(PENDING)
-  payload    Json?
-  createdAt  DateTime           @default(now())
-  updatedAt  DateTime           @updatedAt
+  id            String             @id @default(uuid())
+  businessId    String
+  taskId        String?
+  title         String
+  body          String
+  status        NotificationStatus @default(PENDING)
+  payload       Json?
+  readAt        DateTime?
+  sentAt        DateTime?
+  failedAt      DateTime?
+  failureReason String?
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
 
   @@index([businessId])
+  @@index([businessId, status])
 }
 
 model AuditEvent {

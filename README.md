@@ -45,6 +45,18 @@ Run with Docker Compose:
 docker compose up --build
 ```
 
+Run the full integration flow against Docker:
+
+```bash
+npm run test:integration
+```
+
+Create demo data for manual testing:
+
+```bash
+npm run seed:demo
+```
+
 ## API Errors
 
 All Nest services return API errors in a consistent JSON shape:
