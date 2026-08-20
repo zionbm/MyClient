@@ -8,6 +8,28 @@ import { AiActionSchema, CreateCallbackTaskSchema } from "@myclient/contracts";
 import { BusinessesRepository, NotificationsRepository, PendingActionsRepository, TasksRepository } from "./core.repositories.js";
 import { PrismaService } from "./prisma.service.js";
 
+function formatCaller(callerPhone: string | undefined): string {
+  return callerPhone ?? "unknown caller";
+}
+
+function buildCallbackTaskDescription(callerPhone: string | undefined, transcript: string | undefined): string {
+  const caller = formatCaller(callerPhone);
+  if (transcript) {
+    return `Caller: ${caller}\nMessage: ${transcript}`;
+  }
+
+  return `Caller: ${caller}\nThe customer asked you to call them back.`;
+}
+
+function buildCallbackNotificationBody(callerPhone: string | undefined, transcript: string | undefined): string {
+  const caller = formatCaller(callerPhone);
+  if (transcript) {
+    return `${caller}: ${transcript}`;
+  }
+
+  return `${caller} asked for a callback.`;
+}
+
 @Controller()
 class CoreController {
   constructor(
@@ -33,7 +55,7 @@ class CoreController {
     const task = await this.tasks.create({
       businessId: command.businessId,
       title: `${urgentPrefix}Call back customer`,
-      description: command.transcript ?? "The customer asked you to call them back.",
+      description: buildCallbackTaskDescription(command.callerPhone, command.transcript),
       priority: command.priority,
       source: "telephony",
       sourceRef: command.sourceCallId,
@@ -44,7 +66,7 @@ class CoreController {
       businessId: command.businessId,
       taskId: task.id,
       title: command.priority === "URGENT" ? "Urgent customer message" : "Customer callback",
-      body: command.transcript ?? `Caller ${command.callerPhone ?? "unknown"} asked for a callback.`,
+      body: buildCallbackNotificationBody(command.callerPhone, command.transcript),
       payload: {
         source: "telephony",
         sourceCallId: command.sourceCallId,
