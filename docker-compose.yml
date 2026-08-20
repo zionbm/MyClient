@@ -55,12 +55,10 @@ services:
       NODE_ENV: development
       VOICE_PORT: 3002
       MOCK_STT_PROVIDER: ${MOCK_STT_PROVIDER:-false}
-      MOCK_TTS_PROVIDER: ${MOCK_TTS_PROVIDER:-false}
+      MOCK_TTS_PROVIDER: true
       DEFAULT_LOCALE: he-IL
-      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      GEMINI_STT_MODEL: ${GEMINI_STT_MODEL:-gemini-2.5-flash}
-      GEMINI_TTS_MODEL: ${GEMINI_TTS_MODEL:-gemini-3.1-flash-tts-preview}
-      GEMINI_TTS_VOICE: ${GEMINI_TTS_VOICE:-Kore}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_STT_MODEL: ${OPENAI_STT_MODEL:-gpt-4o-mini-transcribe}
     ports:
       - "3002:3002"
 

@@ -1290,7 +1290,7 @@ class CoreController {
   }): Promise<{ provider: string; model?: string; languageCode: string; transcript: string; confidence: number }> {
     const voiceBaseUrl = getEnv("VOICE_BASE_URL", "http://localhost:3002");
     const audioBody = input.audio.buffer.slice(input.audio.byteOffset, input.audio.byteOffset + input.audio.byteLength) as ArrayBuffer;
-    const response = await fetch(`${voiceBaseUrl}/stt/gemini`, {
+    const response = await fetch(`${voiceBaseUrl}/stt/openai`, {
       method: "POST",
       headers: {
         "content-type": input.contentType,

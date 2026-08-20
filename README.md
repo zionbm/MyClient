@@ -6,7 +6,7 @@ Server-side POC monorepo for MyClient: CRM, AI business assistant and virtual re
 
 - `services/core` - business logic, validation, task creation and mock notifications.
 - `services/ai` - Gemini/mock LLM provider that returns allowlisted structured action JSON.
-- `services/voice` - Gemini/mock STT and TTS provider.
+- `services/voice` - OpenAI/mock STT provider and mock TTS provider.
 - `services/telephony` - mock Plivo IVR/webhook flow. It does not call the LLM.
 - `services/worker` - mock background queue/scheduler surface.
 - `packages/contracts` - shared request/action schemas.
@@ -57,7 +57,7 @@ Create demo data for manual testing:
 npm run seed:demo
 ```
 
-Owner voice commands use server-side Gemini STT and Gemini LLM. Set `GEMINI_API_KEY`, record a short `m4a/aac` command in Hebrew, and upload it to:
+Owner voice commands use server-side OpenAI STT and Gemini LLM. Set `OPENAI_API_KEY` and `GEMINI_API_KEY`, record a short `m4a/aac` command in Hebrew, and upload it to:
 
 ```bash
 curl -s http://localhost:3000/businesses/<business-id>/voice-commands/audio \
