@@ -1,0 +1,255 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum AppointmentStatus {
+  SCHEDULED
+  CANCELLED
+  COMPLETED
+}
+
+enum TaskStatus {
+  OPEN
+  COMPLETED
+  CANCELLED
+}
+
+enum TaskPriority {
+  NORMAL
+  URGENT
+}
+
+enum ActionStatus {
+  PENDING
+  EXECUTED
+  FAILED
+  REVIEW_REQUIRED
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+model Business {
+  id           String   @id @default(uuid())
+  name         String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  users        User[]
+  customers    Customer[]
+  jobs         Job[]
+  appointments Appointment[]
+  tasks        Task[]
+}
+
+model User {
+  id         String   @id @default(uuid())
+  businessId String
+  email      String   @unique
+  displayName String?
+  firebaseUid String  @unique
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  business   Business @relation(fields: [businessId], references: [id])
+
+  @@index([businessId])
+}
+
+model Customer {
+  id         String   @id @default(uuid())
+  businessId String
+  name       String
+  phone      String?
+  email      String?
+  address    String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  business   Business @relation(fields: [businessId], references: [id])
+  jobs       Job[]
+  appointments Appointment[]
+  tasks      Task[]
+  notes      CustomerNote[]
+
+  @@index([businessId])
+}
+
+model Job {
+  id          String   @id @default(uuid())
+  businessId  String
+  customerId  String
+  title       String
+  description String?
+  status      String   @default("OPEN")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  business    Business @relation(fields: [businessId], references: [id])
+  customer    Customer @relation(fields: [customerId], references: [id])
+
+  @@index([businessId])
+  @@index([businessId, customerId])
+}
+
+model Appointment {
+  id          String            @id @default(uuid())
+  businessId  String
+  customerId  String?
+  title       String
+  startsAt    DateTime
+  endsAt      DateTime?
+  status      AppointmentStatus @default(SCHEDULED)
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  business    Business          @relation(fields: [businessId], references: [id])
+  customer    Customer?         @relation(fields: [customerId], references: [id])
+
+  @@index([businessId])
+}
+
+model Task {
+  id          String       @id @default(uuid())
+  businessId  String
+  customerId  String?
+  title       String
+  description String?
+  status      TaskStatus   @default(OPEN)
+  priority    TaskPriority @default(NORMAL)
+  dueAt       DateTime?
+  source      String       @default("app")
+  sourceRef   String?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  business    Business     @relation(fields: [businessId], references: [id])
+  customer    Customer?    @relation(fields: [customerId], references: [id])
+
+  @@index([businessId])
+  @@index([businessId, sourceRef])
+}
+
+model CustomerNote {
+  id         String   @id @default(uuid())
+  businessId String
+  customerId String
+  text       String
+  createdAt  DateTime @default(now())
+
+  customer   Customer @relation(fields: [customerId], references: [id])
+
+  @@index([businessId])
+  @@index([businessId, customerId])
+}
+
+model BusinessPhoneNumber {
+  id          String   @id @default(uuid())
+  businessId  String
+  plivoNumber String   @unique
+  createdAt   DateTime @default(now())
+
+  @@index([businessId])
+}
+
+model IncomingCall {
+  id          String   @id @default(uuid())
+  businessId  String
+  plivoCallId String   @unique
+  fromNumber  String?
+  toNumber    String
+  status      String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([businessId])
+}
+
+model CallTranscript {
+  id          String   @id @default(uuid())
+  businessId  String
+  incomingCallId String
+  transcript  String
+  createdAt   DateTime @default(now())
+
+  @@index([businessId])
+  @@index([incomingCallId])
+}
+
+model AiAction {
+  id             String       @id @default(uuid())
+  businessId     String
+  userId         String?
+  actionType     String
+  payload        Json
+  status         ActionStatus @default(PENDING)
+  idempotencyKey String       @unique
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@index([businessId])
+}
+
+model PendingAction {
+  id          String   @id @default(uuid())
+  businessId  String
+  userId      String?
+  actionType  String
+  payload     Json
+  missingFields String[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([businessId])
+}
+
+model Notification {
+  id          String             @id @default(uuid())
+  businessId  String
+  taskId      String?
+  title       String
+  body        String
+  status      NotificationStatus @default(PENDING)
+  payload     Json?
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+
+  @@index([businessId])
+}
+
+model AuditEvent {
+  id          String   @id @default(uuid())
+  businessId  String
+  actorType   String
+  actorId     String?
+  source      String
+  entityType  String
+  entityId    String?
+  action      String
+  before      Json?
+  after       Json?
+  result      String
+  createdAt   DateTime @default(now())
+
+  @@index([businessId])
+}
+
+model UsageEvent {
+  id          String   @id @default(uuid())
+  businessId  String
+  provider    String
+  metric      String
+  quantity    Decimal
+  metadata    Json?
+  createdAt   DateTime @default(now())
+
+  @@index([businessId])
+}

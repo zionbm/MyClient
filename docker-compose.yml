@@ -1,0 +1,85 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: myclient
+      POSTGRES_USER: myclient
+      POSTGRES_PASSWORD: myclient
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U myclient -d myclient"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  core:
+    build:
+      context: .
+      dockerfile: services/core/Dockerfile
+    environment:
+      NODE_ENV: development
+      CORE_PORT: 3000
+      DATABASE_URL: postgresql://myclient:myclient@postgres:5432/myclient?schema=public
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  ai:
+    build:
+      context: .
+      dockerfile: services/ai/Dockerfile
+    environment:
+      NODE_ENV: development
+      AI_PORT: 3001
+      MOCK_LLM_PROVIDER: true
+    ports:
+      - "3001:3001"
+
+  voice:
+    build:
+      context: .
+      dockerfile: services/voice/Dockerfile
+    environment:
+      NODE_ENV: development
+      VOICE_PORT: 3002
+      MOCK_STT_PROVIDER: true
+      MOCK_TTS_PROVIDER: true
+    ports:
+      - "3002:3002"
+
+  telephony:
+    build:
+      context: .
+      dockerfile: services/telephony/Dockerfile
+    environment:
+      NODE_ENV: development
+      TELEPHONY_PORT: 3003
+      CORE_BASE_URL: http://core:3000
+      VOICE_BASE_URL: http://voice:3002
+      MOCK_PLIVO_PROVIDER: true
+    ports:
+      - "3003:3003"
+    depends_on:
+      - core
+      - voice
+
+  worker:
+    build:
+      context: .
+      dockerfile: services/worker/Dockerfile
+    environment:
+      NODE_ENV: development
+      WORKER_PORT: 3004
+      CORE_BASE_URL: http://core:3000
+    ports:
+      - "3004:3004"
+    depends_on:
+      - core
+
+volumes:
+  postgres-data:

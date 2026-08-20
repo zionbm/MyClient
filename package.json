@@ -1,0 +1,40 @@
+{
+  "name": "myclient-backend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MyClient server-side POC monorepo",
+  "workspaces": [
+    "services/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "check": "tsc -b tsconfig.json",
+    "dev:core": "npm run dev -w @myclient/core",
+    "dev:ai": "npm run dev -w @myclient/ai",
+    "dev:voice": "npm run dev -w @myclient/voice",
+    "dev:telephony": "npm run dev -w @myclient/telephony",
+    "dev:worker": "npm run dev -w @myclient/worker",
+    "prisma:generate": "prisma generate --schema packages/database/prisma/schema.prisma",
+    "prisma:migrate:dev": "prisma migrate dev --schema packages/database/prisma/schema.prisma"
+  },
+  "dependencies": {
+    "@nestjs/common": "^11.1.6",
+    "@nestjs/core": "^11.1.6",
+    "@nestjs/platform-fastify": "^11.1.6",
+    "@prisma/client": "^6.12.0",
+    "fastify": "^5.4.0",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "prisma": "^6.12.0",
+    "tsx": "^4.20.4",
+    "typescript": "^5.9.2"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

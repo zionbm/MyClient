@@ -1,0 +1,13 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/contracts" },
+    { "path": "packages/common" },
+    { "path": "packages/database" },
+    { "path": "services/core" },
+    { "path": "services/ai" },
+    { "path": "services/voice" },
+    { "path": "services/telephony" },
+    { "path": "services/worker" }
+  ]
+}
