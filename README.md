@@ -86,3 +86,33 @@ List created tasks:
 ```bash
 curl -s http://localhost:3000/businesses/biz_1/tasks
 ```
+
+Create a customer:
+
+```bash
+curl -s http://localhost:3000/businesses/biz_1/customers \
+  -H 'content-type: application/json' \
+  -d '{"name":"דני כהן","phone":"+972501111111","email":"dani@example.com","address":"הרצל 10, תל אביב"}'
+```
+
+Create a task for a customer:
+
+```bash
+curl -s http://localhost:3000/businesses/biz_1/tasks \
+  -H 'content-type: application/json' \
+  -d '{"customerId":"<customer-id>","title":"לקבוע ביקור","description":"לתאם ביקור לתיקון המזגן","priority":"NORMAL","dueAt":"2026-08-21T09:00:00.000Z"}'
+```
+
+Add a customer note:
+
+```bash
+curl -s http://localhost:3000/businesses/biz_1/customers/<customer-id>/notes \
+  -H 'content-type: application/json' \
+  -d '{"text":"לקוח ביקש זמינות בבוקר בלבד"}'
+```
+
+Complete a task:
+
+```bash
+curl -s http://localhost:3000/businesses/biz_1/tasks/<task-id>/complete -X POST
+```

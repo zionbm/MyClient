@@ -1,11 +1,26 @@
 import "reflect-metadata";
-import { Body, Controller, Get, Inject, Module, Param, Post } from "@nestjs/common";
+import { BadRequestException, Body, Controller, Get, Inject, Module, NotFoundException, Param, Patch, Post } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { FastifyAdapter, type NestFastifyApplication } from "@nestjs/platform-fastify";
 import type { Prisma } from "@prisma/client";
 import { getPort, health, log } from "@myclient/common";
-import { AiActionSchema, CreateCallbackTaskSchema } from "@myclient/contracts";
-import { BusinessesRepository, NotificationsRepository, PendingActionsRepository, TasksRepository } from "./core.repositories.js";
+import {
+  AiActionSchema,
+  CreateCallbackTaskSchema,
+  CreateCustomerNoteSchema,
+  CreateCustomerSchema,
+  CreateTaskSchema,
+  UpdateCustomerSchema,
+  UpdateTaskSchema
+} from "@myclient/contracts";
+import {
+  BusinessesRepository,
+  CustomerNotesRepository,
+  CustomersRepository,
+  NotificationsRepository,
+  PendingActionsRepository,
+  TasksRepository
+} from "./core.repositories.js";
 import { PrismaService } from "./prisma.service.js";
 
 function formatCaller(callerPhone: string | undefined): string {
@@ -30,10 +45,27 @@ function buildCallbackNotificationBody(callerPhone: string | undefined, transcri
   return `${caller} ביקש שתחזור אליו.`;
 }
 
+function parseOptionalDate(value: string | null | undefined): Date | null | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value === null) {
+    return null;
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new BadRequestException(`Invalid date: ${value}`);
+  }
+  return parsed;
+}
+
 @Controller()
 class CoreController {
   constructor(
+    @Inject(CustomersRepository) private readonly customers: CustomersRepository,
     @Inject(TasksRepository) private readonly tasks: TasksRepository,
+    @Inject(CustomerNotesRepository) private readonly customerNotes: CustomerNotesRepository,
     @Inject(NotificationsRepository) private readonly notifications: NotificationsRepository,
     @Inject(PendingActionsRepository) private readonly pendingActions: PendingActionsRepository
   ) {}
@@ -128,6 +160,137 @@ class CoreController {
     return { tasks: await this.tasks.listByBusiness(businessId) };
   }
 
+  @Post("businesses/:businessId/tasks")
+  async createTask(@Param("businessId") businessId: string, @Body() body: unknown) {
+    const command = CreateTaskSchema.parse(body);
+    const task = await this.tasks.create({
+      businessId,
+      customerId: command.customerId,
+      title: command.title,
+      description: command.description,
+      priority: command.priority,
+      dueAt: parseOptionalDate(command.dueAt) ?? undefined,
+      source: "app"
+    });
+    return { task };
+  }
+
+  @Patch("businesses/:businessId/tasks/:taskId")
+  async updateTask(
+    @Param("businessId") businessId: string,
+    @Param("taskId") taskId: string,
+    @Body() body: unknown
+  ) {
+    const command = UpdateTaskSchema.parse(body);
+    const task = await this.tasks.update({
+      businessId,
+      taskId,
+      customerId: command.customerId,
+      title: command.title,
+      description: command.description,
+      priority: command.priority,
+      dueAt: parseOptionalDate(command.dueAt),
+      status: command.status
+    });
+
+    if (!task) {
+      throw new NotFoundException("Task not found");
+    }
+
+    return { task };
+  }
+
+  @Post("businesses/:businessId/tasks/:taskId/complete")
+  async completeTask(@Param("businessId") businessId: string, @Param("taskId") taskId: string) {
+    const task = await this.tasks.complete(businessId, taskId);
+    if (!task) {
+      throw new NotFoundException("Task not found");
+    }
+
+    return { task };
+  }
+
+  @Post("businesses/:businessId/customers")
+  async createCustomer(@Param("businessId") businessId: string, @Body() body: unknown) {
+    const command = CreateCustomerSchema.parse(body);
+    const customer = await this.customers.create({
+      businessId,
+      name: command.name,
+      phone: command.phone,
+      email: command.email,
+      address: command.address
+    });
+    return { customer };
+  }
+
+  @Get("businesses/:businessId/customers")
+  async listCustomers(@Param("businessId") businessId: string) {
+    return { customers: await this.customers.listByBusiness(businessId) };
+  }
+
+  @Get("businesses/:businessId/customers/:customerId")
+  async getCustomer(@Param("businessId") businessId: string, @Param("customerId") customerId: string) {
+    const customer = await this.customers.findByBusinessAndId(businessId, customerId);
+    if (!customer) {
+      throw new NotFoundException("Customer not found");
+    }
+
+    return { customer };
+  }
+
+  @Patch("businesses/:businessId/customers/:customerId")
+  async updateCustomer(
+    @Param("businessId") businessId: string,
+    @Param("customerId") customerId: string,
+    @Body() body: unknown
+  ) {
+    const command = UpdateCustomerSchema.parse(body);
+    const customer = await this.customers.update({
+      businessId,
+      customerId,
+      name: command.name,
+      phone: command.phone,
+      email: command.email,
+      address: command.address
+    });
+
+    if (!customer) {
+      throw new NotFoundException("Customer not found");
+    }
+
+    return { customer };
+  }
+
+  @Post("businesses/:businessId/customers/:customerId/notes")
+  async createCustomerNote(
+    @Param("businessId") businessId: string,
+    @Param("customerId") customerId: string,
+    @Body() body: unknown
+  ) {
+    const command = CreateCustomerNoteSchema.parse(body);
+    const note = await this.customerNotes.create({
+      businessId,
+      customerId,
+      text: command.text
+    });
+
+    if (!note) {
+      throw new NotFoundException("Customer not found");
+    }
+
+    return { note };
+  }
+
+  @Get("businesses/:businessId/customers/:customerId/notes")
+  async listCustomerNotes(@Param("businessId") businessId: string, @Param("customerId") customerId: string) {
+    const notes = await this.customerNotes.listByCustomer(businessId, customerId);
+    if (!notes) {
+      throw new NotFoundException("Customer not found");
+    }
+
+    return { notes };
+  }
+
   @Get("businesses/:businessId/notifications")
   async listNotifications(@Param("businessId") businessId: string) {
     return { notifications: await this.notifications.listByBusiness(businessId) };
@@ -139,7 +302,9 @@ class CoreController {
   providers: [
     PrismaService,
     BusinessesRepository,
+    CustomersRepository,
     TasksRepository,
+    CustomerNotesRepository,
     NotificationsRepository,
     PendingActionsRepository
   ]
