@@ -42,8 +42,8 @@ services:
       AI_PORT: 3001
       MOCK_LLM_PROVIDER: ${MOCK_LLM_PROVIDER:-false}
       DEFAULT_LOCALE: he-IL
-      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      GEMINI_LLM_MODEL: ${GEMINI_LLM_MODEL:-gemini-2.5-flash}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_LLM_MODEL: ${OPENAI_LLM_MODEL:-gpt-5-mini}
     ports:
       - "3001:3001"
 

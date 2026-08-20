@@ -21,7 +21,7 @@ Current paid-provider boundaries:
 
 Implementation order for paid services:
 
-1. OpenAI STT and Gemini LLM for owner voice commands.
+1. OpenAI STT and LLM for owner voice commands.
 2. Plivo inbound webhook integration, using existing phone-number-to-business resolution.
 3. TTS live provider for business IVR prompts.
 4. Notification provider for delivery, updating notification status to `SENT` or `FAILED`.
@@ -31,5 +31,5 @@ The business logic should stay inside Core. Paid provider services should transl
 Owner voice command flow:
 
 ```text
-App m4a upload -> Core /voice-commands/audio -> Voice /stt/openai -> AI /intent/parse via Gemini -> Core action execution
+App m4a upload -> Core /voice-commands/audio -> Voice /stt/openai -> AI /intent/parse -> Core action execution
 ```
