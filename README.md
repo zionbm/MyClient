@@ -1,6 +1,6 @@
 # MyClient Backend POC
 
-Server-side POC monorepo for MyClient: CRM, AI business assistant and virtual receptionist for self-employed professionals.
+Server-side POC monorepo for MyClient: CRM, AI business assistant and virtual receptionist for self-employed professionals. Hebrew (`he-IL`) is the default POC language for voice, IVR prompts, callback tasks and notification text.
 
 ## Structure
 
@@ -52,7 +52,7 @@ Owner text command through AI:
 ```bash
 curl -s http://localhost:3001/intent/parse \
   -H 'content-type: application/json' \
-  -d '{"businessId":"biz_1","userId":"user_1","text":"Call Dani tomorrow"}'
+  -d '{"businessId":"biz_1","userId":"user_1","text":"תזכיר לי לחזור לדני מחר"}'
 ```
 
 Execute the returned action in Core:
@@ -60,7 +60,7 @@ Execute the returned action in Core:
 ```bash
 curl -s http://localhost:3000/owner-actions/execute \
   -H 'content-type: application/json' \
-  -d '{"businessId":"biz_1","action":{"type":"CREATE_TASK","idempotencyKey":"ai_example_123","confidence":0.9,"requiresConfirmation":false,"missingFields":[],"payload":{"title":"Call Dani tomorrow"}}}'
+  -d '{"businessId":"biz_1","action":{"type":"CREATE_TASK","idempotencyKey":"ai_example_123","confidence":0.9,"requiresConfirmation":false,"missingFields":[],"payload":{"title":"לחזור לדני מחר"}}}'
 ```
 
 Virtual receptionist callback without LLM:
@@ -76,7 +76,7 @@ Virtual receptionist recording with mock STT:
 ```bash
 curl -s http://localhost:3003/plivo/recording \
   -H 'content-type: application/json' \
-  -d '{"businessId":"biz_1","callId":"call_2","from":"+972501234567","transcript":"Please call me back about the repair","urgent":true}'
+  -d '{"businessId":"biz_1","callId":"call_2","from":"+972501234567","transcript":"אשמח שתחזור אליי לגבי התיקון","urgent":true}'
 ```
 
 The Core service persists callback tasks, owner-created tasks, notifications and pending actions in PostgreSQL through Prisma. Duplicate callback and owner task requests are detected by `Task.idempotencyKey`, so the protection survives service restarts.

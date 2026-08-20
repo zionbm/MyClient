@@ -13,7 +13,7 @@ class VoiceController {
 
   @Post("stt/mock")
   transcribe(@Body() body: { transcript?: string; recordingUrl?: string; languageCode?: string }) {
-    const transcript = body.transcript?.trim() || "Mock transcript: customer asked for a callback.";
+    const transcript = body.transcript?.trim() || "תמלול לדוגמה: הלקוח ביקש שתחזור אליו.";
     const result = {
       provider: "mock-google-stt",
       languageCode: body.languageCode ?? "he-IL",

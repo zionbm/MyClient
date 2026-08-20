@@ -9,16 +9,16 @@ import { BusinessesRepository, NotificationsRepository, PendingActionsRepository
 import { PrismaService } from "./prisma.service.js";
 
 function formatCaller(callerPhone: string | undefined): string {
-  return callerPhone ?? "unknown caller";
+  return callerPhone ?? "מספר לא מזוהה";
 }
 
 function buildCallbackTaskDescription(callerPhone: string | undefined, transcript: string | undefined): string {
   const caller = formatCaller(callerPhone);
   if (transcript) {
-    return `Caller: ${caller}\nMessage: ${transcript}`;
+    return `מתקשר: ${caller}\nהודעה: ${transcript}`;
   }
 
-  return `Caller: ${caller}\nThe customer asked you to call them back.`;
+  return `מתקשר: ${caller}\nהלקוח ביקש שתחזור אליו.`;
 }
 
 function buildCallbackNotificationBody(callerPhone: string | undefined, transcript: string | undefined): string {
@@ -27,7 +27,7 @@ function buildCallbackNotificationBody(callerPhone: string | undefined, transcri
     return `${caller}: ${transcript}`;
   }
 
-  return `${caller} asked for a callback.`;
+  return `${caller} ביקש שתחזור אליו.`;
 }
 
 @Controller()
@@ -54,7 +54,7 @@ class CoreController {
     const urgentPrefix = command.priority === "URGENT" ? "[URGENT] " : "";
     const task = await this.tasks.create({
       businessId: command.businessId,
-      title: `${urgentPrefix}Call back customer`,
+      title: `${urgentPrefix}לחזור ללקוח`,
       description: buildCallbackTaskDescription(command.callerPhone, command.transcript),
       priority: command.priority,
       source: "telephony",
@@ -65,7 +65,7 @@ class CoreController {
     const notification = await this.notifications.create({
       businessId: command.businessId,
       taskId: task.id,
-      title: command.priority === "URGENT" ? "Urgent customer message" : "Customer callback",
+      title: command.priority === "URGENT" ? "הודעת לקוח דחופה" : "בקשת חזרה ללקוח",
       body: buildCallbackNotificationBody(command.callerPhone, command.transcript),
       payload: {
         source: "telephony",

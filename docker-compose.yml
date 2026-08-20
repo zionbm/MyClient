@@ -23,6 +23,7 @@ services:
       NODE_ENV: development
       CORE_PORT: 3000
       DATABASE_URL: postgresql://myclient:myclient@postgres:5432/myclient?schema=public
+      DEFAULT_LOCALE: he-IL
     ports:
       - "3000:3000"
     depends_on:
@@ -37,6 +38,7 @@ services:
       NODE_ENV: development
       AI_PORT: 3001
       MOCK_LLM_PROVIDER: true
+      DEFAULT_LOCALE: he-IL
     ports:
       - "3001:3001"
 
@@ -49,6 +51,7 @@ services:
       VOICE_PORT: 3002
       MOCK_STT_PROVIDER: true
       MOCK_TTS_PROVIDER: true
+      DEFAULT_LOCALE: he-IL
     ports:
       - "3002:3002"
 
@@ -62,6 +65,7 @@ services:
       CORE_BASE_URL: http://core:3000
       VOICE_BASE_URL: http://voice:3002
       MOCK_PLIVO_PROVIDER: true
+      DEFAULT_LOCALE: he-IL
     ports:
       - "3003:3003"
     depends_on:
@@ -76,6 +80,7 @@ services:
       NODE_ENV: development
       WORKER_PORT: 3004
       CORE_BASE_URL: http://core:3000
+      DEFAULT_LOCALE: he-IL
     ports:
       - "3004:3004"
     depends_on:

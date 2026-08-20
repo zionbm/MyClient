@@ -22,14 +22,14 @@ class TelephonyController {
       return {
         mode: "RECORD_MESSAGE",
         reason: "CALLER_ID_MISSING",
-        prompt: "Please state your name and callback number after the tone."
+        prompt: "אנא ציין את שמך ואת מספר הטלפון לחזרה אחרי הצליל."
       };
     }
 
     if (!digit) {
       return {
         mode: "PLAY_MENU",
-        prompt: "Press 1 for callback, 2 to leave a message, or 3 for urgent."
+        prompt: "לחזרה טלפונית הקש 1, להשארת הודעה הקש 2, ולמקרה דחוף הקש 3."
       };
     }
 
