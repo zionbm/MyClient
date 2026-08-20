@@ -2,7 +2,7 @@ import "reflect-metadata";
 import { Body, Controller, Get, Module, Post } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { FastifyAdapter, type NestFastifyApplication } from "@nestjs/platform-fastify";
-import { getPort, health, log, stableIdempotencyKey } from "@myclient/common";
+import { ApiExceptionFilter, getPort, health, log, stableIdempotencyKey } from "@myclient/common";
 import type { AiAction } from "@myclient/contracts";
 
 @Controller()
@@ -77,6 +77,7 @@ class AiModule {}
 
 async function bootstrap() {
   const app = await NestFactory.create<NestFastifyApplication>(AiModule, new FastifyAdapter());
+  app.useGlobalFilters(new ApiExceptionFilter("ai"));
   const port = getPort("AI_PORT", 3001);
   await app.listen(port, "0.0.0.0");
   log("info", "ai service listening", { port });

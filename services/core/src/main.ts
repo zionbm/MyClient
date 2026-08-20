@@ -3,7 +3,7 @@ import { BadRequestException, Body, Controller, Get, Inject, Module, NotFoundExc
 import { NestFactory } from "@nestjs/core";
 import { FastifyAdapter, type NestFastifyApplication } from "@nestjs/platform-fastify";
 import type { Prisma } from "@prisma/client";
-import { getPort, health, log } from "@myclient/common";
+import { ApiExceptionFilter, getPort, health, log } from "@myclient/common";
 import {
   AiActionSchema,
   AuthMeQuerySchema,
@@ -161,7 +161,7 @@ class CoreController {
   async executeOwnerAction(@Body() body: unknown) {
     const request = body as { businessId?: string; action?: unknown };
     if (!request.businessId) {
-      throw new Error("businessId is required");
+      throw new BadRequestException("businessId is required");
     }
 
     const action = AiActionSchema.parse(request.action);
@@ -359,6 +359,7 @@ class CoreModule {}
 
 async function bootstrap() {
   const app = await NestFactory.create<NestFastifyApplication>(CoreModule, new FastifyAdapter());
+  app.useGlobalFilters(new ApiExceptionFilter("core"));
   const port = getPort("CORE_PORT", 3000);
   await app.listen(port, "0.0.0.0");
   log("info", "core service listening", { port });

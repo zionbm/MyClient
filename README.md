@@ -45,6 +45,27 @@ Run with Docker Compose:
 docker compose up --build
 ```
 
+## API Errors
+
+All Nest services return API errors in a consistent JSON shape:
+
+```json
+{
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "Invalid request data",
+    "details": [
+      {
+        "path": "email",
+        "message": "Invalid email"
+      }
+    ]
+  }
+}
+```
+
+Common error codes are `BAD_REQUEST`, `VALIDATION_ERROR`, `NOT_FOUND`, `CONFLICT`, `DOWNSTREAM_SERVICE_ERROR` and `INTERNAL_ERROR`.
+
 ## Mock Flow Examples
 
 Register a new business owner:

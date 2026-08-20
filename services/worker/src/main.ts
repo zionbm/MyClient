@@ -2,7 +2,7 @@ import "reflect-metadata";
 import { Body, Controller, Get, Module, Post } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { FastifyAdapter, type NestFastifyApplication } from "@nestjs/platform-fastify";
-import { getPort, health, log } from "@myclient/common";
+import { ApiExceptionFilter, getPort, health, log } from "@myclient/common";
 
 type MockJob = {
   id: string;
@@ -48,6 +48,7 @@ class WorkerModule {}
 
 async function bootstrap() {
   const app = await NestFactory.create<NestFastifyApplication>(WorkerModule, new FastifyAdapter());
+  app.useGlobalFilters(new ApiExceptionFilter("worker"));
   const port = getPort("WORKER_PORT", 3004);
   await app.listen(port, "0.0.0.0");
   log("info", "worker service listening", { port });

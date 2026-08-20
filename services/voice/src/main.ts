@@ -2,7 +2,7 @@ import "reflect-metadata";
 import { Body, Controller, Get, Module, Post } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { FastifyAdapter, type NestFastifyApplication } from "@nestjs/platform-fastify";
-import { getPort, health, log, stableIdempotencyKey } from "@myclient/common";
+import { ApiExceptionFilter, getPort, health, log, stableIdempotencyKey } from "@myclient/common";
 
 @Controller()
 class VoiceController {
@@ -44,6 +44,7 @@ class VoiceModule {}
 
 async function bootstrap() {
   const app = await NestFactory.create<NestFastifyApplication>(VoiceModule, new FastifyAdapter());
+  app.useGlobalFilters(new ApiExceptionFilter("voice"));
   const port = getPort("VOICE_PORT", 3002);
   await app.listen(port, "0.0.0.0");
   log("info", "voice service listening", { port });

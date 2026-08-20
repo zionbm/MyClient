@@ -1,11 +1,19 @@
 import "reflect-metadata";
-import { Body, Controller, Get, Module, Post } from "@nestjs/common";
+import { BadGatewayException, Body, Controller, Get, Module, Post } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { FastifyAdapter, type NestFastifyApplication } from "@nestjs/platform-fastify";
-import { getEnv, getPort, health, log, stableIdempotencyKey } from "@myclient/common";
+import { ApiExceptionFilter, getEnv, getPort, health, log, stableIdempotencyKey } from "@myclient/common";
 import type { CreateCallbackTask } from "@myclient/contracts";
 
 type IvrDigit = "1" | "2" | "3";
+
+async function readDownstreamError(response: Response): Promise<unknown> {
+  const contentType = response.headers.get("content-type") ?? "";
+  if (contentType.includes("application/json")) {
+    return response.json();
+  }
+  return response.text();
+}
 
 @Controller()
 class TelephonyController {
@@ -79,7 +87,10 @@ class TelephonyController {
     });
 
     if (!sttResponse.ok) {
-      throw new Error(`Voice service failed with ${sttResponse.status}`);
+      throw new BadGatewayException({
+        message: `Voice service failed with ${sttResponse.status}`,
+        details: await readDownstreamError(sttResponse)
+      });
     }
 
     const stt = (await sttResponse.json()) as { transcript?: string };
@@ -106,7 +117,10 @@ class TelephonyController {
     });
 
     if (!response.ok) {
-      throw new Error(`Core service failed with ${response.status}`);
+      throw new BadGatewayException({
+        message: `Core service failed with ${response.status}`,
+        details: await readDownstreamError(response)
+      });
     }
 
     const result = await response.json();
@@ -126,6 +140,7 @@ class TelephonyModule {}
 
 async function bootstrap() {
   const app = await NestFactory.create<NestFastifyApplication>(TelephonyModule, new FastifyAdapter());
+  app.useGlobalFilters(new ApiExceptionFilter("telephony"));
   const port = getPort("TELEPHONY_PORT", 3003);
   await app.listen(port, "0.0.0.0");
   log("info", "telephony service listening", { port });
