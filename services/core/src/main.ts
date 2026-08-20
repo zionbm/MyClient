@@ -20,6 +20,7 @@ import { FastifyAdapter, type NestFastifyApplication } from "@nestjs/platform-fa
 import type { Business, Prisma, User } from "@prisma/client";
 import { ApiExceptionFilter, getEnv, getPort, health, log, stableIdempotencyKey } from "@myclient/common";
 import {
+  AiActionBatchSchema,
   AiActionSchema,
   CreateAppointmentSchema,
   CreateBusinessPhoneNumberSchema,
@@ -42,6 +43,7 @@ import {
   UpdateNotificationSchema,
   UpdateTaskSchema
 } from "@myclient/contracts";
+import type { AiAction } from "@myclient/contracts";
 import {
   AppointmentsRepository,
   AuthRepository,
@@ -555,15 +557,14 @@ class CoreController {
       voiceCommand = await this.ownerVoiceCommands.update({
         id: voiceCommand.id,
         llmProvider: intent.provider,
-        llmAction: intent.action as Prisma.InputJsonValue,
+        llmAction: { actions: intent.actions } as Prisma.InputJsonValue,
         executionStatus: "PARSED"
       });
 
-      const execution = await this.executeVoiceCommandAction({
+      const execution = await this.executeVoiceCommandActions({
         businessId,
         userId: user.id,
-        action: intent.action,
-        idempotencyKey: commandHeaders.idempotencyKey
+        actions: intent.actions
       });
       voiceCommand = await this.ownerVoiceCommands.update({
         id: voiceCommand.id,
@@ -1341,60 +1342,91 @@ class CoreController {
         idempotencyKey: input.idempotencyKey
       })
     });
-    const result = (await response.json().catch(() => ({}))) as { provider?: string; action?: unknown };
+    const result = (await response.json().catch(() => ({}))) as { provider?: string; action?: unknown; actions?: unknown };
     if (!response.ok) {
       throw new BadRequestException({
         message: `AI intent parsing failed with ${response.status}`,
         details: result
       });
     }
-    const action = AiActionSchema.parse(result.action);
+    const actions = result.actions
+      ? AiActionBatchSchema.parse({ actions: result.actions }).actions
+      : [AiActionSchema.parse(result.action)];
     return {
       provider: result.provider ?? "openai",
-      action
+      action: actions[0],
+      actions
     };
   }
 
-  private async executeVoiceCommandAction(input: {
+  private async executeVoiceCommandActions(input: {
     businessId: string;
     userId: string;
-    action: {
-      type: string;
-      payload: Record<string, unknown>;
-      missingFields: string[];
-      requiresConfirmation: boolean;
-    };
-    idempotencyKey: string;
+    actions: AiAction[];
   }) {
-    if (input.action.missingFields.length > 0 || input.action.requiresConfirmation) {
-      const pending = await this.pendingActions.create({
+    const results = [];
+    const createdCustomers: Array<{ id: string; name?: string | null; phone?: string | null }> = [];
+
+    for (const action of input.actions) {
+      const payload = this.resolveVoiceActionPayload(action.payload, createdCustomers);
+      if (action.missingFields.length > 0 || action.requiresConfirmation) {
+        const pending = await this.pendingActions.create({
+          businessId: input.businessId,
+          userId: input.userId,
+          actionType: action.type,
+          payload: payload as Prisma.InputJsonValue,
+          missingFields: action.missingFields
+        });
+        await this.audit.record({
+          businessId: input.businessId,
+          actorType: "user",
+          actorId: input.userId,
+          source: "owner_voice_command",
+          entityType: "pending_action",
+          entityId: pending.id,
+          action: "CREATE_PENDING_ACTION_FROM_VOICE_COMMAND",
+          after: pending as Prisma.InputJsonValue
+        });
+        results.push({ status: "PENDING", actionType: action.type, idempotencyKey: action.idempotencyKey, pendingAction: pending });
+        continue;
+      }
+
+      const result = await this.executeStructuredAction({
         businessId: input.businessId,
         userId: input.userId,
-        actionType: input.action.type,
-        payload: input.action.payload as Prisma.InputJsonValue,
-        missingFields: input.action.missingFields
+        actionType: action.type,
+        payload,
+        idempotencyKey: action.idempotencyKey
       });
-      await this.audit.record({
-        businessId: input.businessId,
-        actorType: "user",
-        actorId: input.userId,
-        source: "owner_voice_command",
-        entityType: "pending_action",
-        entityId: pending.id,
-        action: "CREATE_PENDING_ACTION_FROM_VOICE_COMMAND",
-        after: pending as Prisma.InputJsonValue
-      });
-      return { status: "PENDING", pendingAction: pending };
+
+      if (action.type === "CREATE_CUSTOMER" && "customer" in result && result.customer) {
+        createdCustomers.push(result.customer);
+      }
+      results.push({ status: "EXECUTED", actionType: action.type, idempotencyKey: action.idempotencyKey, result });
     }
 
-    const result = await this.executeStructuredAction({
-      businessId: input.businessId,
-      userId: input.userId,
-      actionType: input.action.type,
-      payload: input.action.payload,
-      idempotencyKey: input.idempotencyKey
-    });
-    return { status: "EXECUTED", result };
+    const hasPending = results.some((result) => result.status === "PENDING");
+    return {
+      status: hasPending ? "PARTIAL_PENDING" : "EXECUTED",
+      results
+    };
+  }
+
+  private resolveVoiceActionPayload(
+    payload: Record<string, unknown>,
+    createdCustomers: Array<{ id: string; name?: string | null; phone?: string | null }>
+  ): Record<string, unknown> {
+    if (typeof payload.customerId === "string" || createdCustomers.length === 0) {
+      return payload;
+    }
+
+    const phone = typeof payload.phone === "string" ? payload.phone : undefined;
+    const name = typeof payload.name === "string" ? payload.name : undefined;
+    const matchingCustomer = createdCustomers.find((customer) =>
+      (phone && customer.phone === phone) || (name && customer.name === name)
+    ) ?? createdCustomers.at(-1);
+
+    return matchingCustomer ? { ...payload, customerId: matchingCustomer.id } : payload;
   }
 
   private async executeCallbackTask(command: {

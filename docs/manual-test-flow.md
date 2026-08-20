@@ -63,7 +63,7 @@ curl -s http://localhost:3000/businesses/<businessId>/notifications/<notificatio
 
 ## Owner Voice Command With Server STT
 
-After setting `OPENAI_API_KEY`, record a short Hebrew command in the app as `m4a/aac` and upload it to Core:
+After setting `OPENAI_API_KEY`, record a short Hebrew command in the app as `m4a/aac` and upload it to Core. One recording can include multiple instructions, for example creating a customer and adding a reminder task in the same sentence:
 
 ```bash
 curl -s http://localhost:3000/businesses/<businessId>/voice-commands/audio \

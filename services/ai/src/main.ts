@@ -5,6 +5,26 @@ import { FastifyAdapter, type NestFastifyApplication } from "@nestjs/platform-fa
 import { ApiExceptionFilter, getEnv, getPort, health, log, stableIdempotencyKey } from "@myclient/common";
 import type { AiAction } from "@myclient/contracts";
 
+type AiIntent = {
+  actions: AiAction[];
+};
+
+function normalizeActions(intent: AiIntent, idempotencyKey: string): AiAction[] {
+  return intent.actions.map((action, index) => ({
+    ...action,
+    idempotencyKey: intent.actions.length === 1 ? idempotencyKey : `${idempotencyKey}:${index + 1}`
+  }));
+}
+
+function parseMockCustomerPayload(text: string): Record<string, unknown> {
+  const name = text.match(/בשם\s+([^,]+)/)?.[1]?.trim();
+  const phone = text.match(/(?:טלפון|מספר טלפון)\s+([0-9+\-\s]+)/)?.[1]?.trim();
+  return {
+    ...(name ? { name } : { rawText: text }),
+    ...(phone ? { phone } : {})
+  };
+}
+
 @Controller()
 class AiController {
   @Get("health")
@@ -17,14 +37,18 @@ class AiController {
     const text = (body.text ?? "").trim();
     const idempotencyKey = body.idempotencyKey ?? stableIdempotencyKey("ai", `${body.businessId}:${body.userId}:${text}`);
 
-    const action = getEnv("MOCK_LLM_PROVIDER", "false") === "true"
-      ? this.mockAction(text, idempotencyKey)
-      : await this.openAiAction(text, idempotencyKey);
-    log("info", "intent parsed", { businessId: body.businessId, actionType: action.type });
-    return { provider: getEnv("MOCK_LLM_PROVIDER", "false") === "true" ? "mock-gemini" : "openai", action };
+    const actions = getEnv("MOCK_LLM_PROVIDER", "false") === "true"
+      ? this.mockActions(text, idempotencyKey)
+      : await this.openAiActions(text, idempotencyKey);
+    log("info", "intent parsed", { businessId: body.businessId, actionTypes: actions.map((action) => action.type) });
+    return {
+      provider: getEnv("MOCK_LLM_PROVIDER", "false") === "true" ? "mock-gemini" : "openai",
+      action: actions[0],
+      actions
+    };
   }
 
-  private async openAiAction(text: string, idempotencyKey: string): Promise<AiAction> {
+  private async openAiActions(text: string, idempotencyKey: string): Promise<AiAction[]> {
     const apiKey = getEnv("OPENAI_API_KEY");
     const model = getEnv("OPENAI_LLM_MODEL", "gpt-5-mini");
     const response = await fetch("https://api.openai.com/v1/responses", {
@@ -40,7 +64,10 @@ class AiController {
             role: "system",
             content:
               "אתה ממיר פקודות קוליות של בעל עסק בעברית ל-JSON פעולה עבור שרת CRM. " +
-              "החזר רק פעולה אחת. אם המשתמש מבקש תזכורת, משימה או לחזור למישהו, השתמש ב-CREATE_TASK. " +
+              "החזר מערך actions לפי סדר הביצוע. אם המשתמש מבקש כמה דברים באותו משפט, החזר כמה פעולות. " +
+              "אם המשתמש מבקש תזכורת, משימה או לחזור למישהו, השתמש ב-CREATE_TASK. " +
+              "לתזכורת ללא מועד מדויק כמו 'מאוחר יותר' או 'בהמשך', צור CREATE_TASK בלי dueAt ובלי requiresConfirmation. " +
+              "אם פעולה מאוחרת מתייחסת ללקוח שנוצר בפעולה קודמת, כלול name ו-phone בפעולה המאוחרת כשאפשר. " +
               "אם חסר מידע קריטי, מלא missingFields. אל תמציא מספרי טלפון או לקוחות."
           },
           {
@@ -56,42 +83,54 @@ class AiController {
             schema: {
               type: "object",
               additionalProperties: false,
-              required: ["type", "idempotencyKey", "confidence", "requiresConfirmation", "missingFields", "payload"],
+              required: ["actions"],
               properties: {
-                type: {
-                  type: "string",
-                  enum: [
-                    "CREATE_CUSTOMER",
-                    "UPDATE_CUSTOMER",
-                    "CREATE_JOB",
-                    "UPDATE_JOB",
-                    "CREATE_APPOINTMENT",
-                    "UPDATE_APPOINTMENT",
-                    "CANCEL_APPOINTMENT",
-                    "CREATE_TASK",
-                    "UPDATE_TASK",
-                    "COMPLETE_TASK",
-                    "ADD_CUSTOMER_NOTE"
-                  ]
-                },
-                idempotencyKey: { type: "string" },
-                confidence: { type: "number", minimum: 0, maximum: 1 },
-                requiresConfirmation: { type: "boolean" },
-                missingFields: { type: "array", items: { type: "string" } },
-                payload: {
-                  type: "object",
-                  additionalProperties: true,
-                  properties: {
-                    title: { type: "string" },
-                    description: { type: "string" },
-                    dueAt: { type: "string" },
-                    priority: { type: "string", enum: ["NORMAL", "URGENT"] },
-                    name: { type: "string" },
-                    phone: { type: "string" },
-                    customerId: { type: "string" },
-                    startsAt: { type: "string" },
-                    endsAt: { type: "string" },
-                    text: { type: "string" }
+                actions: {
+                  type: "array",
+                  minItems: 1,
+                  maxItems: 5,
+                  items: {
+                    type: "object",
+                    additionalProperties: false,
+                    required: ["type", "idempotencyKey", "confidence", "requiresConfirmation", "missingFields", "payload"],
+                    properties: {
+                      type: {
+                        type: "string",
+                        enum: [
+                          "CREATE_CUSTOMER",
+                          "UPDATE_CUSTOMER",
+                          "CREATE_JOB",
+                          "UPDATE_JOB",
+                          "CREATE_APPOINTMENT",
+                          "UPDATE_APPOINTMENT",
+                          "CANCEL_APPOINTMENT",
+                          "CREATE_TASK",
+                          "UPDATE_TASK",
+                          "COMPLETE_TASK",
+                          "ADD_CUSTOMER_NOTE"
+                        ]
+                      },
+                      idempotencyKey: { type: "string" },
+                      confidence: { type: "number", minimum: 0, maximum: 1 },
+                      requiresConfirmation: { type: "boolean" },
+                      missingFields: { type: "array", items: { type: "string" } },
+                      payload: {
+                        type: "object",
+                        additionalProperties: true,
+                        properties: {
+                          title: { type: "string" },
+                          description: { type: "string" },
+                          dueAt: { type: "string" },
+                          priority: { type: "string", enum: ["NORMAL", "URGENT"] },
+                          name: { type: "string" },
+                          phone: { type: "string" },
+                          customerId: { type: "string" },
+                          startsAt: { type: "string" },
+                          endsAt: { type: "string" },
+                          text: { type: "string" }
+                        }
+                      }
+                    }
                   }
                 }
               }
@@ -118,48 +157,60 @@ class AiController {
       throw new BadGatewayException("OpenAI LLM returned empty output");
     }
 
-    const action = JSON.parse(outputText) as AiAction;
-    return {
-      ...action,
-      idempotencyKey
-    };
+    return normalizeActions(JSON.parse(outputText) as AiIntent, idempotencyKey);
   }
 
-  private mockAction(text: string, idempotencyKey: string): AiAction {
+  private mockActions(text: string, idempotencyKey: string): AiAction[] {
     if (!text) {
-      return {
+      return [{
         type: "CREATE_TASK",
         idempotencyKey,
         confidence: 0.2,
         requiresConfirmation: false,
         missingFields: ["text"],
         payload: {}
-      };
+      }];
     }
 
     if (text.includes("פגישה") || text.toLowerCase().includes("appointment")) {
-      return {
+      return [{
         type: "CREATE_APPOINTMENT",
         idempotencyKey,
         confidence: 0.72,
         requiresConfirmation: true,
         missingFields: ["startsAt"],
         payload: { title: text }
-      };
+      }];
     }
 
     if (text.includes("לקוח") || text.toLowerCase().includes("customer")) {
-      return {
+      const action: AiAction = {
         type: "CREATE_CUSTOMER",
         idempotencyKey,
         confidence: 0.68,
         requiresConfirmation: false,
-        missingFields: ["name"],
-        payload: { rawText: text }
+        missingFields: text.match(/בשם\s+([^,]+)/) ? [] : ["name"],
+        payload: parseMockCustomerPayload(text)
       };
+      return text.includes("תזכיר") || text.includes("להתקשר")
+        ? [
+            { ...action, idempotencyKey: `${idempotencyKey}:1` },
+            {
+              type: "CREATE_TASK",
+              idempotencyKey: `${idempotencyKey}:2`,
+              confidence: 0.7,
+              requiresConfirmation: false,
+              missingFields: [],
+              payload: {
+                ...parseMockCustomerPayload(text),
+                title: text.includes("להתקשר") ? `להתקשר ל${parseMockCustomerPayload(text).name ?? "לקוח"} מאוחר יותר` : text
+              }
+            }
+          ]
+        : [action];
     }
 
-    return {
+    return [{
       type: "CREATE_TASK",
       idempotencyKey,
       confidence: 0.82,
@@ -169,7 +220,7 @@ class AiController {
         title: text,
         description: `Created from owner command: ${text}`
       }
-    };
+    }];
   }
 }
 

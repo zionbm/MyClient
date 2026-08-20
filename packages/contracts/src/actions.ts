@@ -27,6 +27,12 @@ export const AiActionSchema = z.object({
 
 export type AiAction = z.infer<typeof AiActionSchema>;
 
+export const AiActionBatchSchema = z.object({
+  actions: z.array(AiActionSchema).min(1).max(5)
+});
+
+export type AiActionBatch = z.infer<typeof AiActionBatchSchema>;
+
 export const CallbackTaskPrioritySchema = z.enum(["NORMAL", "URGENT"]);
 export type CallbackTaskPriority = z.infer<typeof CallbackTaskPrioritySchema>;
 

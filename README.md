@@ -57,7 +57,7 @@ Create demo data for manual testing:
 npm run seed:demo
 ```
 
-Owner voice commands use server-side OpenAI STT and LLM. Set `OPENAI_API_KEY`, record a short `m4a/aac` command in Hebrew, and upload it to:
+Owner voice commands use server-side OpenAI STT and LLM. A single voice command can produce multiple ordered CRM actions, such as creating a customer and then creating a follow-up task for that customer. Set `OPENAI_API_KEY`, record a short `m4a/aac` command in Hebrew, and upload it to:
 
 ```bash
 curl -s http://localhost:3000/businesses/<business-id>/voice-commands/audio \
