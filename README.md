@@ -8,7 +8,7 @@ Server-side POC monorepo for MyClient: CRM, AI business assistant and virtual re
 - `services/ai` - mock LLM provider that returns allowlisted structured action JSON.
 - `services/voice` - mock STT/TTS provider.
 - `services/telephony` - mock Plivo IVR/webhook flow. It does not call the LLM.
-- `services/worker` - mock background queue/scheduler surface.
+- `services/worker` - background reminder polling service.
 - `packages/contracts` - shared request/action schemas.
 - `packages/common` - shared env, health, logging and idempotency helpers.
 - `packages/database` - Prisma schema and database package placeholder.
@@ -46,6 +46,8 @@ docker compose up --build
 ```
 
 Firebase Cloud Messaging can be enabled locally by setting `MOCK_FCM_PROVIDER=false` and `GOOGLE_APPLICATION_CREDENTIALS` to the absolute path of a Firebase Admin SDK service account JSON file. The mobile app should register its FCM device token with `POST /businesses/<business-id>/device-tokens`.
+
+Task reminders are processed by the worker. It polls Core every `WORKER_REMINDER_POLL_INTERVAL_MS` milliseconds, finds open tasks whose `dueAt` has passed and `reminderSentAt` is empty, then asks Core to create and send the notification.
 
 Run the full integration flow against Docker:
 

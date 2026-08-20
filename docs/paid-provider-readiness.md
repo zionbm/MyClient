@@ -28,6 +28,12 @@ Implementation order for paid services:
 
 The business logic should stay inside Core. Paid provider services should translate external payloads into the existing contracts and call Core internal endpoints.
 
+Reminder flow:
+
+```text
+Worker interval -> Core /internal/reminders/due -> Core creates notification -> NotificationProvider sends via FCM/mock -> Task.reminderSentAt prevents duplicates
+```
+
 Owner voice command flow:
 
 ```text

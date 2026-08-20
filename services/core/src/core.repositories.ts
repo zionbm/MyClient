@@ -647,6 +647,20 @@ export class TasksRepository {
     });
   }
 
+  async listDueReminders(limit: number) {
+    return this.prisma.task.findMany({
+      where: {
+        status: "OPEN",
+        dueAt: {
+          lte: new Date()
+        },
+        reminderSentAt: null
+      },
+      orderBy: { dueAt: "asc" },
+      take: limit
+    });
+  }
+
   async findByBusinessAndId(businessId: string, taskId: string) {
     return this.prisma.task.findFirst({
       where: {
@@ -688,6 +702,13 @@ export class TasksRepository {
     return this.prisma.task.update({
       where: { id: existing.id },
       data: { status: "COMPLETED" }
+    });
+  }
+
+  async markReminderSent(taskId: string) {
+    return this.prisma.task.update({
+      where: { id: taskId },
+      data: { reminderSentAt: new Date() }
     });
   }
 

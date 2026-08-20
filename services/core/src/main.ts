@@ -103,6 +103,10 @@ function buildCallbackNotificationBody(callerPhone: string | undefined, transcri
   return `${caller} ביקש שתחזור אליו.`;
 }
 
+function buildTaskReminderBody(task: { title: string; description?: string | null }) {
+  return task.description ? `${task.title}\n${task.description}` : task.title;
+}
+
 function parseOptionalDate(value: string | null | undefined): Date | null | undefined {
   if (value === undefined) {
     return undefined;
@@ -589,6 +593,52 @@ class CoreController {
     this.requireInternalSecret(headers);
     const command = CreateCallbackTaskSchema.parse(body);
     return this.executeCallbackTask(command);
+  }
+
+  @Post("internal/reminders/due")
+  async processDueReminders(@Headers() headers: RequestHeaders, @Body() body: unknown) {
+    this.requireInternalSecret(headers);
+    const requestedLimit = Number((body as { limit?: unknown })?.limit ?? 20);
+    const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 100)) : 20;
+    const tasks = await this.tasks.listDueReminders(limit);
+    const reminders = [];
+
+    for (const task of tasks) {
+      const notification = await this.notifications.create({
+        businessId: task.businessId,
+        taskId: task.id,
+        title: "תזכורת למשימה",
+        body: buildTaskReminderBody(task),
+        payload: {
+          source: "task_reminder",
+          taskId: task.id,
+          dueAt: task.dueAt?.toISOString() ?? null,
+          priority: task.priority
+        }
+      });
+      const notificationDelivery = await this.sendNotification(notification);
+      const updatedTask = await this.tasks.markReminderSent(task.id);
+      await this.audit.record({
+        businessId: task.businessId,
+        actorType: "system",
+        source: "worker",
+        entityType: "task",
+        entityId: task.id,
+        action: "SEND_TASK_REMINDER",
+        after: updatedTask as Prisma.InputJsonValue,
+        result: notificationDelivery.status
+      });
+      reminders.push({
+        task: updatedTask,
+        notification: notificationDelivery.notification,
+        notificationDelivery
+      });
+    }
+
+    return {
+      processed: reminders.length,
+      reminders
+    };
   }
 
   @Post("owner-actions/execute")

@@ -52,6 +52,14 @@ curl -s http://localhost:3000/businesses/<businessId>/audit-events \
   -H 'authorization: Bearer mock:<firebaseUid>'
 ```
 
+Run due reminder polling manually:
+
+```bash
+curl -s http://localhost:3004/reminders/run -X POST
+
+curl -s http://localhost:3004/reminders/status
+```
+
 Simulate a recorded call:
 
 ```bash

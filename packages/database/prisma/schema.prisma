@@ -150,6 +150,7 @@ model Task {
   status         TaskStatus   @default(OPEN)
   priority       TaskPriority @default(NORMAL)
   dueAt          DateTime?
+  reminderSentAt DateTime?
   source         String       @default("app")
   sourceRef      String?
   idempotencyKey String?      @unique
@@ -161,6 +162,7 @@ model Task {
 
   @@index([businessId])
   @@index([businessId, sourceRef])
+  @@index([status, dueAt, reminderSentAt])
 }
 
 model CustomerNote {
