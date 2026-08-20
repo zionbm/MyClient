@@ -26,7 +26,7 @@ class VoiceController {
   @Get("health")
   health() {
     return health("voice", {
-      stt: getEnv("GEMINI_STT_MODEL", "gemini-3.6-flash"),
+      stt: getEnv("GEMINI_STT_MODEL", "gemini-2.5-flash"),
       tts: getEnv("GEMINI_TTS_MODEL", "gemini-3.1-flash-tts-preview")
     });
   }
@@ -49,7 +49,7 @@ class VoiceController {
   async transcribeGemini(@Headers() headers: RequestHeaders, @Body() body: unknown) {
     const audio = requireAudio(body);
     const apiKey = getEnv("GEMINI_API_KEY");
-    const model = getEnv("GEMINI_STT_MODEL", "gemini-3.6-flash");
+    const model = getEnv("GEMINI_STT_MODEL", "gemini-2.5-flash");
     const contentType = headerValue(headers, "content-type") ?? "audio/mp4";
     const languageCode = headerValue(headers, "x-language-code") ?? "he-IL";
 
