@@ -45,6 +45,8 @@ Run with Docker Compose:
 docker compose up --build
 ```
 
+Firebase Cloud Messaging can be enabled locally by setting `MOCK_FCM_PROVIDER=false` and `GOOGLE_APPLICATION_CREDENTIALS` to the absolute path of a Firebase Admin SDK service account JSON file. The mobile app should register its FCM device token with `POST /businesses/<business-id>/device-tokens`.
+
 Run the full integration flow against Docker:
 
 ```bash

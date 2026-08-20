@@ -27,6 +27,10 @@ services:
       INTERNAL_API_SECRET: dev-internal-secret
       AI_BASE_URL: http://ai:3001
       VOICE_BASE_URL: http://voice:3002
+      MOCK_FCM_PROVIDER: ${MOCK_FCM_PROVIDER:-true}
+      GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/firebase-adminsdk.json
+    volumes:
+      - ${GOOGLE_APPLICATION_CREDENTIALS:-/dev/null}:/run/secrets/firebase-adminsdk.json:ro
     ports:
       - "3000:3000"
     depends_on:

@@ -25,6 +25,14 @@ export const UpdateBusinessSettingsSchema = z.object({
 
 export type UpdateBusinessSettings = z.infer<typeof UpdateBusinessSettingsSchema>;
 
+export const RegisterDeviceTokenSchema = z.object({
+  token: z.string().trim().min(1),
+  platform: z.enum(["ios", "android", "web"]).optional(),
+  appVersion: OptionalNonEmptyStringSchema
+});
+
+export type RegisterDeviceToken = z.infer<typeof RegisterDeviceTokenSchema>;
+
 export const CreateBusinessPhoneNumberSchema = z.object({
   plivoNumber: z.string().trim().min(1),
   displayName: OptionalNonEmptyStringSchema,

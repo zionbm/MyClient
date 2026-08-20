@@ -5,3 +5,5 @@ dist/
 coverage/
 *.log
 *.tsbuildinfo
+*firebase-adminsdk*.json
+service-account*.json

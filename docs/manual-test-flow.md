@@ -27,6 +27,15 @@ curl -s http://localhost:3000/auth/me \
   -H 'authorization: Bearer mock:<firebaseUid>'
 ```
 
+Register an FCM device token for push notifications:
+
+```bash
+curl -s http://localhost:3000/businesses/<businessId>/device-tokens \
+  -H 'authorization: Bearer mock:<firebaseUid>' \
+  -H 'content-type: application/json' \
+  -d '{"token":"<fcm-device-token>","platform":"android","appVersion":"0.1.0"}'
+```
+
 List calls, notifications, pending actions and audit events:
 
 ```bash

@@ -71,6 +71,14 @@ type UpdateNotificationInput = {
   failureReason?: string;
 };
 
+type RegisterDeviceTokenInput = {
+  businessId: string;
+  userId: string;
+  token: string;
+  platform?: string;
+  appVersion?: string;
+};
+
 type ResolvePendingActionInput = {
   businessId: string;
   pendingActionId: string;
@@ -866,6 +874,54 @@ export class NotificationsRepository {
         failedAt: input.status === "FAILED" ? now : undefined,
         failureReason: input.status === "FAILED" ? input.failureReason ?? "Unknown failure" : undefined
       }
+    });
+  }
+}
+
+@Injectable()
+export class DeviceTokensRepository {
+  constructor(
+    @Inject(PrismaService) private readonly prisma: PrismaService,
+    @Inject(BusinessesRepository) private readonly businesses: BusinessesRepository
+  ) {}
+
+  async register(input: RegisterDeviceTokenInput) {
+    await this.businesses.requireBusiness(input.businessId);
+    return this.prisma.deviceToken.upsert({
+      where: { token: input.token },
+      update: {
+        businessId: input.businessId,
+        userId: input.userId,
+        platform: input.platform,
+        appVersion: input.appVersion,
+        status: "ACTIVE",
+        lastSeenAt: new Date()
+      },
+      create: {
+        businessId: input.businessId,
+        userId: input.userId,
+        token: input.token,
+        platform: input.platform,
+        appVersion: input.appVersion
+      }
+    });
+  }
+
+  async listActiveByBusiness(businessId: string) {
+    await this.businesses.requireBusiness(businessId);
+    return this.prisma.deviceToken.findMany({
+      where: {
+        businessId,
+        status: "ACTIVE"
+      },
+      orderBy: { lastSeenAt: "desc" }
+    });
+  }
+
+  async deactivate(token: string) {
+    return this.prisma.deviceToken.updateMany({
+      where: { token },
+      data: { status: "INACTIVE" }
     });
   }
 }

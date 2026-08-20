@@ -53,6 +53,7 @@ model Business {
   tasks         Task[]
   IncomingCall  IncomingCall[]
   voiceCommands OwnerVoiceCommand[]
+  deviceTokens  DeviceToken[]
 }
 
 model BusinessSettings {
@@ -81,7 +82,8 @@ model User {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  business Business @relation(fields: [businessId], references: [id])
+  business     Business      @relation(fields: [businessId], references: [id])
+  deviceTokens DeviceToken[]
 
   @@index([businessId])
 }
@@ -294,6 +296,26 @@ model Notification {
 
   @@index([businessId])
   @@index([businessId, status])
+}
+
+model DeviceToken {
+  id         String   @id @default(uuid())
+  businessId String
+  userId     String
+  token      String   @unique
+  platform   String?
+  appVersion String?
+  status     String   @default("ACTIVE")
+  lastSeenAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  business Business @relation(fields: [businessId], references: [id])
+  user     User     @relation(fields: [userId], references: [id])
+
+  @@index([businessId])
+  @@index([businessId, status])
+  @@index([userId])
 }
 
 model AuditEvent {

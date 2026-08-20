@@ -17,7 +17,7 @@ Current paid-provider boundaries:
 - `SttProvider`: speech-to-text transcription.
 - `TtsProvider`: prompt-to-audio generation.
 - `LlmProvider`: owner command parsing into structured actions.
-- `NotificationProvider`: push/SMS/WhatsApp/email delivery.
+- `NotificationProvider`: Firebase Cloud Messaging now, push/SMS/WhatsApp/email providers later.
 
 Implementation order for paid services:
 

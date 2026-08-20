@@ -18,6 +18,8 @@ import {
 import { NestFactory } from "@nestjs/core";
 import { FastifyAdapter, type NestFastifyApplication } from "@nestjs/platform-fastify";
 import type { Business, Prisma, User } from "@prisma/client";
+import { applicationDefault, getApps, initializeApp } from "firebase-admin/app";
+import { getMessaging } from "firebase-admin/messaging";
 import { ApiExceptionFilter, getEnv, getPort, health, log, stableIdempotencyKey } from "@myclient/common";
 import {
   AiActionBatchSchema,
@@ -35,6 +37,7 @@ import {
   ListByStatusQuerySchema,
   OwnerVoiceCommandHeadersSchema,
   RegisterBusinessSchema,
+  RegisterDeviceTokenSchema,
   UpdateAppointmentSchema,
   UpdateBusinessPhoneNumberSchema,
   UpdateBusinessSettingsSchema,
@@ -54,6 +57,7 @@ import {
   CallTranscriptsRepository,
   CustomerNotesRepository,
   CustomersRepository,
+  DeviceTokensRepository,
   IncomingCallsRepository,
     JobsRepository,
     NotificationsRepository,
@@ -67,6 +71,14 @@ type RequestHeaders = Record<string, string | string[] | undefined>;
 
 type AuthenticatedUser = User & {
   business: Business;
+};
+
+type NotificationSendInput = {
+  businessId: string;
+  notificationId: string;
+  title: string;
+  body: string;
+  payload?: Prisma.JsonValue | null;
 };
 
 function formatCaller(callerPhone: string | undefined): string {
@@ -239,6 +251,59 @@ function requireAudioBody(body: unknown): Buffer {
   return body;
 }
 
+function notificationProviderName() {
+  return getEnv("MOCK_FCM_PROVIDER", "true") === "true" ? "mock-fcm" : "firebase-fcm";
+}
+
+function notificationPayloadData(payload: Prisma.JsonValue | null | undefined, notificationId: string) {
+  const data: Record<string, string> = {
+    notificationId
+  };
+  if (payload !== undefined && payload !== null) {
+    data.payload = JSON.stringify(payload);
+  }
+  return data;
+}
+
+function publicDeviceToken(deviceToken: {
+  id: string;
+  businessId: string;
+  userId: string;
+  platform: string | null;
+  appVersion: string | null;
+  status: string;
+  lastSeenAt: Date;
+  createdAt: Date;
+  updatedAt: Date;
+}) {
+  return {
+    id: deviceToken.id,
+    businessId: deviceToken.businessId,
+    userId: deviceToken.userId,
+    platform: deviceToken.platform,
+    appVersion: deviceToken.appVersion,
+    status: deviceToken.status,
+    lastSeenAt: deviceToken.lastSeenAt,
+    createdAt: deviceToken.createdAt,
+    updatedAt: deviceToken.updatedAt
+  };
+}
+
+async function sendFirebaseMulticast(tokens: string[], input: NotificationSendInput) {
+  if (getApps().length === 0) {
+    initializeApp({ credential: applicationDefault() });
+  }
+
+  return getMessaging().sendEachForMulticast({
+    tokens,
+    notification: {
+      title: input.title,
+      body: input.body
+    },
+    data: notificationPayloadData(input.payload, input.notificationId)
+  });
+}
+
 @Controller()
 class CoreController {
   constructor(
@@ -254,13 +319,14 @@ class CoreController {
     @Inject(AppointmentsRepository) private readonly appointments: AppointmentsRepository,
     @Inject(JobsRepository) private readonly jobs: JobsRepository,
     @Inject(NotificationsRepository) private readonly notifications: NotificationsRepository,
+    @Inject(DeviceTokensRepository) private readonly deviceTokens: DeviceTokensRepository,
     @Inject(OwnerVoiceCommandsRepository) private readonly ownerVoiceCommands: OwnerVoiceCommandsRepository,
     @Inject(PendingActionsRepository) private readonly pendingActions: PendingActionsRepository
   ) {}
 
   @Get("health")
   health() {
-    return health("core", { database: "postgresql-prisma", notifications: "mock-fcm" });
+    return health("core", { database: "postgresql-prisma", notifications: notificationProviderName() });
   }
 
   @Post("auth/register-business")
@@ -1102,6 +1168,36 @@ class CoreController {
     return { notifications: await this.notifications.listByBusinessAndStatus(businessId, command.status) };
   }
 
+  @Post("businesses/:businessId/device-tokens")
+  async registerDeviceToken(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Body() body: unknown) {
+    const user = await this.requireBusinessAccess(headers, businessId);
+    const command = RegisterDeviceTokenSchema.parse(body);
+    const deviceToken = await this.deviceTokens.register({
+      businessId,
+      userId: user.id,
+      token: command.token,
+      platform: command.platform,
+      appVersion: command.appVersion
+    });
+    await this.audit.record({
+      businessId,
+      actorType: "user",
+      actorId: user.id,
+      source: "core",
+      entityType: "device_token",
+      entityId: deviceToken.id,
+      action: "REGISTER_DEVICE_TOKEN",
+      after: {
+        id: deviceToken.id,
+        platform: deviceToken.platform,
+        appVersion: deviceToken.appVersion,
+        status: deviceToken.status,
+        lastSeenAt: deviceToken.lastSeenAt
+      } as Prisma.InputJsonValue
+    });
+    return { deviceToken: publicDeviceToken(deviceToken) };
+  }
+
   @Patch("businesses/:businessId/notifications/:notificationId")
   async updateNotification(
     @Headers() headers: RequestHeaders,
@@ -1571,6 +1667,7 @@ class CoreController {
         priority: command.priority
       }
     });
+    const notificationDelivery = await this.sendNotification(notification);
 
     await this.audit.record({
       businessId: command.businessId,
@@ -1588,12 +1685,71 @@ class CoreController {
       entityType: "notification",
       entityId: notification.id,
       action: "CREATE_CALLBACK_NOTIFICATION",
-      after: notification as Prisma.InputJsonValue
+      after: notification as Prisma.InputJsonValue,
+      result: notificationDelivery.status
     });
 
     log("info", "callback task created", { businessId: command.businessId, taskId: task.id });
 
-    return { duplicate: false, task, notification };
+    return { duplicate: false, task, notification: notificationDelivery.notification, notificationDelivery };
+  }
+
+  private async sendNotification(notification: {
+    id: string;
+    businessId: string;
+    title: string;
+    body: string;
+    payload: Prisma.JsonValue | null;
+  }) {
+    if (getEnv("MOCK_FCM_PROVIDER", "true") === "true") {
+      const sent = await this.notifications.updateStatus({
+        businessId: notification.businessId,
+        notificationId: notification.id,
+        status: "SENT"
+      });
+      return { provider: "mock-fcm", status: "SENT", notification: sent ?? notification };
+    }
+
+    const tokens = await this.deviceTokens.listActiveByBusiness(notification.businessId);
+    if (tokens.length === 0) {
+      const failed = await this.notifications.updateStatus({
+        businessId: notification.businessId,
+        notificationId: notification.id,
+        status: "FAILED",
+        failureReason: "No active FCM device tokens"
+      });
+      return { provider: "firebase-fcm", status: "FAILED", notification: failed ?? notification };
+    }
+
+    const response = await sendFirebaseMulticast(tokens.map((deviceToken) => deviceToken.token), {
+      businessId: notification.businessId,
+      notificationId: notification.id,
+      title: notification.title,
+      body: notification.body,
+      payload: notification.payload
+    });
+
+    await Promise.all(response.responses.map((result, index) =>
+      result.success
+        ? Promise.resolve()
+        : this.deviceTokens.deactivate(tokens[index].token)
+    ));
+
+    const failedCount = response.failureCount;
+    const sent = await this.notifications.updateStatus({
+      businessId: notification.businessId,
+      notificationId: notification.id,
+      status: response.successCount > 0 ? "SENT" : "FAILED",
+      failureReason: failedCount > 0 ? `${failedCount} FCM deliveries failed` : undefined
+    });
+
+    return {
+      provider: "firebase-fcm",
+      status: response.successCount > 0 ? "SENT" : "FAILED",
+      successCount: response.successCount,
+      failureCount: response.failureCount,
+      notification: sent ?? notification
+    };
   }
 
   private async requireAuthenticatedUser(headers: RequestHeaders): Promise<AuthenticatedUser> {
@@ -1639,6 +1795,7 @@ class CoreController {
     AppointmentsRepository,
     JobsRepository,
     NotificationsRepository,
+    DeviceTokensRepository,
     OwnerVoiceCommandsRepository,
     PendingActionsRepository
   ]

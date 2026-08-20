@@ -86,9 +86,9 @@ expectStatus(request("POST", `${telephony}/plivo/recording`, {
   recordingUrl: `mock://recording/it_call_${suffix}`
 }), 201, "recording flow");
 
-const notifications = request("GET", `${core}/businesses/${businessId}/notifications?status=PENDING`, undefined, { authorization: token });
+const notifications = request("GET", `${core}/businesses/${businessId}/notifications`, undefined, { authorization: token });
 expectStatus(notifications, 200, "list notifications");
-assert(notifications.body.notifications.length > 0, "expected at least one pending notification");
+assert(notifications.body.notifications.length > 0, "expected at least one notification");
 const notificationId = notifications.body.notifications[0].id;
 
 expectStatus(request("PATCH", `${core}/businesses/${businessId}/notifications/${notificationId}`, {
