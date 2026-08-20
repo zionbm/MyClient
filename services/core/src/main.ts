@@ -19,6 +19,7 @@ import { NestFactory } from "@nestjs/core";
 import { FastifyAdapter, type NestFastifyApplication } from "@nestjs/platform-fastify";
 import type { Business, Prisma, User } from "@prisma/client";
 import { applicationDefault, getApps, initializeApp } from "firebase-admin/app";
+import { getAuth, type DecodedIdToken } from "firebase-admin/auth";
 import { getMessaging } from "firebase-admin/messaging";
 import { ApiExceptionFilter, getEnv, getPort, health, log, stableIdempotencyKey } from "@myclient/common";
 import {
@@ -71,6 +72,12 @@ type RequestHeaders = Record<string, string | string[] | undefined>;
 
 type AuthenticatedUser = User & {
   business: Business;
+};
+
+type VerifiedAuth = {
+  firebaseUid: string;
+  email?: string;
+  displayName?: string;
 };
 
 type NotificationSendInput = {
@@ -245,6 +252,36 @@ function parseMockFirebaseUid(headers: RequestHeaders): string {
   return firebaseUid;
 }
 
+function authProviderName() {
+  return getEnv("AUTH_PROVIDER", "mock");
+}
+
+function firebaseApp() {
+  if (getApps().length === 0) {
+    initializeApp({ credential: applicationDefault() });
+  }
+}
+
+function parseBearerToken(headers: RequestHeaders): string {
+  const authorization = headerValue(headers, "authorization");
+  const prefix = "Bearer ";
+  if (!authorization?.startsWith(prefix)) {
+    throw new UnauthorizedException("Missing or invalid authorization token");
+  }
+
+  const token = authorization.slice(prefix.length).trim();
+  if (!token) {
+    throw new UnauthorizedException("Missing or invalid authorization token");
+  }
+
+  return token;
+}
+
+function displayNameFromToken(decoded: DecodedIdToken): string | undefined {
+  const value = decoded.name ?? decoded.email;
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
 function requireAudioBody(body: unknown): Buffer {
   if (!Buffer.isBuffer(body) || body.byteLength === 0) {
     throw new BadRequestException("Audio body is required");
@@ -294,9 +331,7 @@ function publicDeviceToken(deviceToken: {
 }
 
 async function sendFirebaseMulticast(tokens: string[], input: NotificationSendInput) {
-  if (getApps().length === 0) {
-    initializeApp({ credential: applicationDefault() });
-  }
+  firebaseApp();
 
   return getMessaging().sendEachForMulticast({
     tokens,
@@ -330,13 +365,34 @@ class CoreController {
 
   @Get("health")
   health() {
-    return health("core", { database: "postgresql-prisma", notifications: notificationProviderName() });
+    return health("core", {
+      database: "postgresql-prisma",
+      auth: authProviderName(),
+      notifications: notificationProviderName()
+    });
   }
 
   @Post("auth/register-business")
-  async registerBusiness(@Body() body: unknown) {
+  async registerBusiness(@Headers() headers: RequestHeaders, @Body() body: unknown) {
     const command = RegisterBusinessSchema.parse(body);
-    const result = await this.auth.registerBusiness(command);
+    const verifiedAuth = await this.verifyAuth(headers, {
+      mockFallback: command.firebaseUid
+    });
+    const email = command.email ?? verifiedAuth.email;
+    const displayName = command.displayName ?? verifiedAuth.displayName ?? email;
+    if (!email) {
+      throw new BadRequestException("Email is required when it is not present in the Firebase token");
+    }
+    if (!displayName) {
+      throw new BadRequestException("Display name is required when it is not present in the Firebase token");
+    }
+
+    const result = await this.auth.registerBusiness({
+      firebaseUid: verifiedAuth.firebaseUid,
+      email,
+      displayName,
+      businessName: command.businessName
+    });
     await this.settings.getByBusiness(result.business.id);
     return {
       created: result.created,
@@ -1803,7 +1859,7 @@ class CoreController {
   }
 
   private async requireAuthenticatedUser(headers: RequestHeaders): Promise<AuthenticatedUser> {
-    const firebaseUid = parseMockFirebaseUid(headers);
+    const { firebaseUid } = await this.verifyAuth(headers);
     const user = await this.auth.getMe(firebaseUid);
     if (!user) {
       throw new UnauthorizedException("Authenticated user was not found");
@@ -1825,6 +1881,27 @@ class CoreController {
     if (actual !== expected) {
       throw new UnauthorizedException("Missing or invalid internal secret");
     }
+  }
+
+  private async verifyAuth(headers: RequestHeaders, options?: { mockFallback?: string }): Promise<VerifiedAuth> {
+    if (authProviderName() === "firebase") {
+      const token = parseBearerToken(headers);
+      try {
+        firebaseApp();
+        const decoded = await getAuth().verifyIdToken(token);
+        return {
+          firebaseUid: decoded.uid,
+          email: decoded.email,
+          displayName: displayNameFromToken(decoded)
+        };
+      } catch {
+        throw new UnauthorizedException("Missing or invalid Firebase ID token");
+      }
+    }
+
+    return {
+      firebaseUid: options?.mockFallback ?? parseMockFirebaseUid(headers)
+    };
   }
 }
 

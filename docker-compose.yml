@@ -25,6 +25,7 @@ services:
       DATABASE_URL: postgresql://myclient:myclient@postgres:5432/myclient?schema=public
       DEFAULT_LOCALE: he-IL
       INTERNAL_API_SECRET: dev-internal-secret
+      AUTH_PROVIDER: ${AUTH_PROVIDER:-mock}
       AI_BASE_URL: http://ai:3001
       VOICE_BASE_URL: http://voice:3002
       MOCK_FCM_PROVIDER: ${MOCK_FCM_PROVIDER:-true}

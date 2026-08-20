@@ -1,9 +1,9 @@
 import { z } from "zod";
 
 export const RegisterBusinessSchema = z.object({
-  firebaseUid: z.string().trim().min(1),
-  email: z.string().trim().email(),
-  displayName: z.string().trim().min(1),
+  firebaseUid: z.string().trim().min(1).optional(),
+  email: z.string().trim().email().optional(),
+  displayName: z.string().trim().min(1).optional(),
   businessName: z.string().trim().min(1)
 });
 

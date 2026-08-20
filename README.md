@@ -97,7 +97,12 @@ Common error codes are `BAD_REQUEST`, `VALIDATION_ERROR`, `UNAUTHORIZED`, `FORBI
 
 ## Authentication
 
-The POC uses Firebase-ready mock bearer tokens. Protected Core endpoints require:
+The backend supports two auth modes:
+
+- `AUTH_PROVIDER=mock` for local tests and scripts.
+- `AUTH_PROVIDER=firebase` for real Firebase Authentication ID tokens verified by Firebase Admin SDK.
+
+In mock mode, protected Core endpoints require:
 
 ```bash
 Authorization: Bearer mock:<firebaseUid>
@@ -107,6 +112,21 @@ For example, after registering with `firebaseUid` `firebase_demo_1`, call protec
 
 ```bash
 -H 'authorization: Bearer mock:firebase_demo_1'
+```
+
+In Firebase mode, the mobile app should sign in with Firebase Authentication and send the Firebase ID token:
+
+```bash
+Authorization: Bearer <firebase-id-token>
+```
+
+When `AUTH_PROVIDER=firebase`, `POST /auth/register-business` reads `firebaseUid`, `email` and display name from the verified token. The request body only has to include the business fields:
+
+```bash
+curl -s http://localhost:3000/auth/register-business \
+  -H 'authorization: Bearer <firebase-id-token>' \
+  -H 'content-type: application/json' \
+  -d '{"businessName":"דני תיקונים"}'
 ```
 
 Core internal endpoints are service-to-service only and require `x-internal-secret`.
