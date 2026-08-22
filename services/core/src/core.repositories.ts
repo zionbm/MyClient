@@ -1,4 +1,4 @@
-import { ConflictException, Inject, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "./prisma.service.js";
 
@@ -23,6 +23,18 @@ type UpdateTaskInput = {
   priority?: "NORMAL" | "URGENT";
   dueAt?: Date | null;
   status?: "OPEN" | "COMPLETED" | "CANCELLED";
+};
+
+type CreateBusinessMemberInput = {
+  businessId: string;
+  phoneNumber: string;
+  memberType?: "OWNER" | "EMPLOYEE";
+  addedByUserId?: string;
+};
+
+type DisableBusinessMemberInput = {
+  businessId: string;
+  memberId: string;
 };
 
 type CreateCustomerInput = {
@@ -51,6 +63,8 @@ type CreateCustomerNoteInput = {
 type CreateNotificationInput = {
   businessId: string;
   taskId?: string;
+  itemType?: string;
+  itemId?: string;
   title: string;
   body: string;
   payload?: Prisma.InputJsonValue;
@@ -60,8 +74,19 @@ type CreatePendingActionInput = {
   businessId: string;
   userId?: string;
   actionType: string;
+  source?: string;
+  confidence?: number;
+  reviewReason?: string;
   payload: Prisma.InputJsonValue;
   missingFields: string[];
+};
+
+type UpdatePendingActionInput = {
+  businessId: string;
+  pendingActionId: string;
+  payload?: Prisma.InputJsonValue;
+  missingFields?: string[];
+  reviewReason?: string | null;
 };
 
 type UpdateNotificationInput = {
@@ -106,7 +131,8 @@ type UpdateOwnerVoiceCommandInput = {
 
 type RegisterBusinessInput = {
   firebaseUid: string;
-  email: string;
+  email?: string;
+  phoneNumber?: string;
   displayName: string;
   businessName: string;
 };
@@ -168,6 +194,8 @@ type CreateAppointmentInput = {
   businessId: string;
   customerId?: string;
   title: string;
+  location?: string;
+  notes?: string;
   startsAt: Date;
   endsAt?: Date | null;
 };
@@ -177,9 +205,34 @@ type UpdateAppointmentInput = {
   appointmentId: string;
   customerId?: string | null;
   title?: string;
+  location?: string | null;
+  notes?: string | null;
   startsAt?: Date;
   endsAt?: Date | null;
   status?: "SCHEDULED" | "CANCELLED" | "COMPLETED";
+};
+
+type CreateQuoteInput = {
+  businessId: string;
+  customerId?: string;
+  title: string;
+  description?: string;
+  estimatedAmount?: Prisma.Decimal | number | string;
+  dueAt: Date;
+  source?: string;
+  sourceRef?: string;
+  idempotencyKey?: string;
+};
+
+type UpdateQuoteInput = {
+  businessId: string;
+  quoteId: string;
+  customerId?: string | null;
+  title?: string;
+  description?: string | null;
+  estimatedAmount?: Prisma.Decimal | number | string | null;
+  dueAt?: Date;
+  status?: "OPEN" | "PAID";
 };
 
 type CreateJobInput = {
@@ -250,13 +303,26 @@ export class AuthRepository {
       };
     }
 
-    const emailUser = await this.prisma.user.findUnique({
-      where: { email: input.email },
-      select: { id: true }
-    });
+    if (input.email) {
+      const emailUser = await this.prisma.user.findUnique({
+        where: { email: input.email },
+        select: { id: true }
+      });
 
-    if (emailUser) {
-      throw new ConflictException("Email is already registered");
+      if (emailUser) {
+        throw new ConflictException("Email is already registered");
+      }
+    }
+
+    if (input.phoneNumber) {
+      const phoneUser = await this.prisma.user.findUnique({
+        where: { phoneNumber: input.phoneNumber },
+        select: { id: true }
+      });
+
+      if (phoneUser) {
+        throw new ConflictException("Phone number is already registered");
+      }
     }
 
     return this.prisma.$transaction(async (tx) => {
@@ -270,10 +336,24 @@ export class AuthRepository {
         data: {
           businessId: business.id,
           email: input.email,
+          phoneNumber: input.phoneNumber,
           displayName: input.displayName,
           firebaseUid: input.firebaseUid
         }
       });
+
+      const member = input.phoneNumber
+        ? await tx.businessMember.create({
+          data: {
+            businessId: business.id,
+            userId: user.id,
+            phoneNumber: input.phoneNumber,
+            memberType: "OWNER",
+            status: "ACTIVE",
+            linkedAt: new Date()
+          }
+        })
+        : null;
 
       await tx.auditEvent.createMany({
         data: [
@@ -300,6 +380,7 @@ export class AuthRepository {
             result: "SUCCESS",
             after: {
               email: user.email,
+              phoneNumber: user.phoneNumber,
               displayName: user.displayName,
               firebaseUid: user.firebaseUid
             }
@@ -310,15 +391,150 @@ export class AuthRepository {
       return {
         created: true,
         business,
-        user
+        user,
+        member
       };
     });
   }
 
-  async getMe(firebaseUid: string) {
+  async getMe(firebaseUid: string, phoneNumber?: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { firebaseUid },
+      include: {
+        business: true,
+        memberships: {
+          where: { status: "ACTIVE" },
+          include: { business: true },
+          take: 1
+        }
+      }
+    });
+
+    if (!user) {
+      return null;
+    }
+
+    if (!user.phoneNumber && phoneNumber) {
+      await this.prisma.user.update({
+        where: { id: user.id },
+        data: { phoneNumber }
+      });
+    }
+
+    if (user.memberships.length > 0) {
+      return user;
+    }
+
+    const effectivePhoneNumber = phoneNumber ?? user.phoneNumber;
+    if (!effectivePhoneNumber) {
+      return user;
+    }
+
+    const pendingMember = await this.prisma.businessMember.findFirst({
+      where: {
+        phoneNumber: effectivePhoneNumber,
+        userId: null,
+        status: "PENDING"
+      },
+      include: { business: true },
+      orderBy: { createdAt: "asc" }
+    });
+    if (!pendingMember) {
+      return user;
+    }
+
+    await this.prisma.$transaction([
+      this.prisma.businessMember.update({
+        where: { id: pendingMember.id },
+        data: {
+          userId: user.id,
+          status: "ACTIVE",
+          linkedAt: new Date()
+        }
+      }),
+      this.prisma.user.update({
+        where: { id: user.id },
+        data: {
+          businessId: pendingMember.businessId,
+          phoneNumber: effectivePhoneNumber
+        }
+      })
+    ]);
+
     return this.prisma.user.findUnique({
       where: { firebaseUid },
-      include: { business: true }
+      include: {
+        business: true,
+        memberships: {
+          where: { status: "ACTIVE" },
+          include: { business: true },
+          take: 1
+        }
+      }
+    });
+  }
+}
+
+@Injectable()
+export class BusinessMembersRepository {
+  constructor(
+    @Inject(PrismaService) private readonly prisma: PrismaService,
+    @Inject(BusinessesRepository) private readonly businesses: BusinessesRepository
+  ) {}
+
+  async listByBusiness(businessId: string) {
+    await this.businesses.requireBusiness(businessId);
+    return this.prisma.businessMember.findMany({
+      where: { businessId },
+      orderBy: [{ status: "asc" }, { createdAt: "desc" }]
+    });
+  }
+
+  async upsertByPhone(input: CreateBusinessMemberInput) {
+    await this.businesses.requireBusiness(input.businessId);
+    const existingUser = await this.prisma.user.findUnique({
+      where: { phoneNumber: input.phoneNumber },
+      select: { id: true }
+    });
+    return this.prisma.businessMember.upsert({
+      where: {
+        businessId_phoneNumber: {
+          businessId: input.businessId,
+          phoneNumber: input.phoneNumber
+        }
+      },
+      update: {
+        userId: existingUser?.id,
+        memberType: input.memberType ?? "EMPLOYEE",
+        status: existingUser ? "ACTIVE" : "PENDING",
+        linkedAt: existingUser ? new Date() : undefined,
+        addedByUserId: input.addedByUserId
+      },
+      create: {
+        businessId: input.businessId,
+        userId: existingUser?.id,
+        phoneNumber: input.phoneNumber,
+        memberType: input.memberType ?? "EMPLOYEE",
+        status: existingUser ? "ACTIVE" : "PENDING",
+        linkedAt: existingUser ? new Date() : undefined,
+        addedByUserId: input.addedByUserId
+      }
+    });
+  }
+
+  async disable(input: DisableBusinessMemberInput) {
+    const existing = await this.prisma.businessMember.findFirst({
+      where: {
+        id: input.memberId,
+        businessId: input.businessId
+      }
+    });
+    if (!existing) {
+      return null;
+    }
+    return this.prisma.businessMember.update({
+      where: { id: existing.id },
+      data: { status: "DISABLED" }
     });
   }
 }
@@ -642,8 +858,57 @@ export class TasksRepository {
   async listByBusiness(businessId: string) {
     await this.businesses.requireBusiness(businessId);
     return this.prisma.task.findMany({
-      where: { businessId },
+      where: { businessId, deletedAt: null },
+      include: { customer: true },
       orderBy: { createdAt: "desc" }
+    });
+  }
+
+  async listCallbacksByBusiness(businessId: string) {
+    await this.businesses.requireBusiness(businessId);
+    return this.prisma.task.findMany({
+      where: {
+        businessId,
+        deletedAt: null
+      },
+      include: { customer: true },
+      orderBy: [{ dueAt: "asc" }, { createdAt: "desc" }]
+    });
+  }
+
+  async listCallbacksForDate(input: { businessId: string; start: Date; end: Date; search?: string; urgentOnly?: boolean }) {
+    await this.businesses.requireBusiness(input.businessId);
+    return this.prisma.task.findMany({
+      where: {
+        businessId: input.businessId,
+        deletedAt: null,
+        dueAt: {
+          gte: input.start,
+          lt: input.end
+        },
+        priority: input.urgentOnly ? "URGENT" : undefined,
+        OR: input.search ? [
+          { title: { contains: input.search, mode: "insensitive" } },
+          { description: { contains: input.search, mode: "insensitive" } },
+          { customer: { name: { contains: input.search, mode: "insensitive" } } },
+          { customer: { phone: { contains: input.search, mode: "insensitive" } } }
+        ] : undefined
+      },
+      include: { customer: true },
+      orderBy: [{ priority: "desc" }, { dueAt: "asc" }, { createdAt: "desc" }]
+    });
+  }
+
+  async listByCustomer(businessId: string, customerId: string) {
+    await this.ensureCustomerBelongsToBusiness(businessId, customerId);
+    return this.prisma.task.findMany({
+      where: {
+        businessId,
+        customerId,
+        deletedAt: null
+      },
+      include: { customer: true },
+      orderBy: [{ dueAt: "asc" }, { createdAt: "desc" }]
     });
   }
 
@@ -651,6 +916,7 @@ export class TasksRepository {
     return this.prisma.task.findMany({
       where: {
         status: "OPEN",
+        deletedAt: null,
         dueAt: {
           lte: new Date()
         },
@@ -705,6 +971,34 @@ export class TasksRepository {
     });
   }
 
+  async softDelete(businessId: string, taskId: string) {
+    const existing = await this.findByBusinessAndId(businessId, taskId);
+    if (!existing) {
+      return null;
+    }
+
+    return this.prisma.task.update({
+      where: { id: existing.id },
+      data: { deletedAt: new Date() }
+    });
+  }
+
+  async snooze(businessId: string, taskId: string, dueAt: Date) {
+    const existing = await this.findByBusinessAndId(businessId, taskId);
+    if (!existing || existing.deletedAt) {
+      return null;
+    }
+
+    return this.prisma.task.update({
+      where: { id: existing.id },
+      data: {
+        dueAt,
+        reminderSentAt: null,
+        status: "OPEN"
+      }
+    });
+  }
+
   async markReminderSent(taskId: string) {
     return this.prisma.task.update({
       where: { id: taskId },
@@ -750,7 +1044,11 @@ export class CustomersRepository {
   async listByBusiness(businessId: string) {
     await this.businesses.requireBusiness(businessId);
     return this.prisma.customer.findMany({
-      where: { businessId },
+      where: {
+        businessId,
+        deletedAt: null,
+        mergedIntoCustomerId: null
+      },
       orderBy: { createdAt: "desc" }
     });
   }
@@ -759,7 +1057,8 @@ export class CustomersRepository {
     return this.prisma.customer.findFirst({
       where: {
         businessId,
-        id: customerId
+        id: customerId,
+        deletedAt: null
       }
     });
   }
@@ -778,6 +1077,76 @@ export class CustomersRepository {
         email: input.email,
         address: input.address
       }
+    });
+  }
+
+  async findDuplicateByPhone(businessId: string, phone?: string) {
+    if (!phone) {
+      return null;
+    }
+    return this.prisma.customer.findFirst({
+      where: {
+        businessId,
+        phone,
+        deletedAt: null,
+        mergedIntoCustomerId: null
+      }
+    });
+  }
+
+  async merge(input: { businessId: string; sourceCustomerId: string; targetCustomerId: string; mergedByUserId: string }) {
+    if (input.sourceCustomerId === input.targetCustomerId) {
+      throw new BadRequestException("Source and target customer must be different");
+    }
+    const [source, target] = await Promise.all([
+      this.findByBusinessAndId(input.businessId, input.sourceCustomerId),
+      this.findByBusinessAndId(input.businessId, input.targetCustomerId)
+    ]);
+    if (!source || !target) {
+      return null;
+    }
+    if (source.phone && target.phone && source.phone !== target.phone) {
+      throw new BadRequestException("Cannot merge customers with conflicting phone numbers in the POC");
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const [tasks, appointments, quotes, notes] = await Promise.all([
+        tx.task.updateMany({
+          where: { businessId: input.businessId, customerId: source.id },
+          data: { customerId: target.id }
+        }),
+        tx.appointment.updateMany({
+          where: { businessId: input.businessId, customerId: source.id },
+          data: { customerId: target.id }
+        }),
+        tx.quote.updateMany({
+          where: { businessId: input.businessId, customerId: source.id },
+          data: { customerId: target.id }
+        }),
+        tx.customerNote.updateMany({
+          where: { businessId: input.businessId, customerId: source.id },
+          data: { customerId: target.id }
+        })
+      ]);
+      const mergedSource = await tx.customer.update({
+        where: { id: source.id },
+        data: {
+          deletedAt: new Date(),
+          mergedIntoCustomerId: target.id,
+          mergedAt: new Date(),
+          mergedByUserId: input.mergedByUserId
+        }
+      });
+      return {
+        sourceCustomer: mergedSource,
+        targetCustomer: target,
+        moved: {
+          callbacks: tasks.count,
+          homeVisits: appointments.count,
+          quotes: quotes.count,
+          notes: notes.count
+        }
+      };
     });
   }
 }
@@ -848,6 +1217,8 @@ export class NotificationsRepository {
       data: {
         businessId: input.businessId,
         taskId: input.taskId,
+        itemType: input.itemType,
+        itemId: input.itemId,
         title: input.title,
         body: input.body,
         payload: input.payload
@@ -894,6 +1265,31 @@ export class NotificationsRepository {
         sentAt: input.status === "SENT" ? now : undefined,
         failedAt: input.status === "FAILED" ? now : undefined,
         failureReason: input.status === "FAILED" ? input.failureReason ?? "Unknown failure" : undefined
+      }
+    });
+  }
+
+  async findByBusinessAndId(businessId: string, notificationId: string) {
+    return this.prisma.notification.findFirst({
+      where: {
+        businessId,
+        id: notificationId
+      }
+    });
+  }
+
+  async markAllRead(businessId: string) {
+    await this.businesses.requireBusiness(businessId);
+    return this.prisma.notification.updateMany({
+      where: {
+        businessId,
+        status: {
+          not: "READ"
+        }
+      },
+      data: {
+        status: "READ",
+        readAt: new Date()
       }
     });
   }
@@ -961,6 +1357,9 @@ export class PendingActionsRepository {
         businessId: input.businessId,
         userId: input.userId,
         actionType: input.actionType,
+        source: input.source ?? "ai",
+        confidence: input.confidence,
+        reviewReason: input.reviewReason,
         payload: input.payload,
         missingFields: input.missingFields,
         status: "PENDING"
@@ -1003,6 +1402,24 @@ export class PendingActionsRepository {
       }
     });
   }
+
+  async update(input: UpdatePendingActionInput) {
+    const existing = await this.findByBusinessAndId(input.businessId, input.pendingActionId);
+    if (!existing) {
+      return null;
+    }
+    if (existing.status !== "PENDING") {
+      throw new BadRequestException("Pending action is already resolved");
+    }
+    return this.prisma.pendingAction.update({
+      where: { id: existing.id },
+      data: {
+        payload: input.payload,
+        missingFields: input.missingFields,
+        reviewReason: input.reviewReason
+      }
+    });
+  }
 }
 
 @Injectable()
@@ -1023,6 +1440,8 @@ export class AppointmentsRepository {
         businessId: input.businessId,
         customerId: input.customerId,
         title: input.title,
+        location: input.location,
+        notes: input.notes,
         startsAt: input.startsAt,
         endsAt: input.endsAt
       }
@@ -1032,7 +1451,44 @@ export class AppointmentsRepository {
   async listByBusiness(businessId: string) {
     await this.businesses.requireBusiness(businessId);
     return this.prisma.appointment.findMany({
-      where: { businessId },
+      where: { businessId, deletedAt: null },
+      include: { customer: true },
+      orderBy: { startsAt: "asc" }
+    });
+  }
+
+  async listForDate(input: { businessId: string; start: Date; end: Date; search?: string }) {
+    await this.businesses.requireBusiness(input.businessId);
+    return this.prisma.appointment.findMany({
+      where: {
+        businessId: input.businessId,
+        deletedAt: null,
+        startsAt: {
+          gte: input.start,
+          lt: input.end
+        },
+        OR: input.search ? [
+          { title: { contains: input.search, mode: "insensitive" } },
+          { location: { contains: input.search, mode: "insensitive" } },
+          { notes: { contains: input.search, mode: "insensitive" } },
+          { customer: { name: { contains: input.search, mode: "insensitive" } } },
+          { customer: { phone: { contains: input.search, mode: "insensitive" } } }
+        ] : undefined
+      },
+      include: { customer: true },
+      orderBy: { startsAt: "asc" }
+    });
+  }
+
+  async listByCustomer(businessId: string, customerId: string) {
+    await this.ensureCustomerBelongsToBusiness(businessId, customerId);
+    return this.prisma.appointment.findMany({
+      where: {
+        businessId,
+        customerId,
+        deletedAt: null
+      },
+      include: { customer: true },
       orderBy: { startsAt: "asc" }
     });
   }
@@ -1057,10 +1513,28 @@ export class AppointmentsRepository {
       data: {
         customerId: input.customerId,
         title: input.title,
+        location: input.location,
+        notes: input.notes,
         startsAt: input.startsAt,
         endsAt: input.endsAt,
         status: input.status
       }
+    });
+  }
+
+  async softDelete(businessId: string, appointmentId: string) {
+    const existing = await this.prisma.appointment.findFirst({
+      where: {
+        businessId,
+        id: appointmentId
+      }
+    });
+    if (!existing) {
+      return null;
+    }
+    return this.prisma.appointment.update({
+      where: { id: existing.id },
+      data: { deletedAt: new Date() }
     });
   }
 
@@ -1069,6 +1543,169 @@ export class AppointmentsRepository {
       where: {
         businessId,
         id: customerId
+      },
+      select: { id: true }
+    });
+
+    if (!customer) {
+      throw new NotFoundException("Customer not found");
+    }
+  }
+}
+
+@Injectable()
+export class QuotesRepository {
+  constructor(
+    @Inject(PrismaService) private readonly prisma: PrismaService,
+    @Inject(BusinessesRepository) private readonly businesses: BusinessesRepository
+  ) {}
+
+  async findByIdempotencyKey(businessId: string, idempotencyKey: string) {
+    return this.prisma.quote.findFirst({
+      where: {
+        businessId,
+        idempotencyKey
+      }
+    });
+  }
+
+  async create(input: CreateQuoteInput) {
+    await this.businesses.requireBusiness(input.businessId);
+    if (input.customerId) {
+      await this.ensureCustomerBelongsToBusiness(input.businessId, input.customerId);
+    }
+    return this.prisma.quote.create({
+      data: {
+        businessId: input.businessId,
+        customerId: input.customerId,
+        title: input.title,
+        description: input.description,
+        estimatedAmount: input.estimatedAmount,
+        dueAt: input.dueAt,
+        source: input.source ?? "app",
+        sourceRef: input.sourceRef,
+        idempotencyKey: input.idempotencyKey
+      }
+    });
+  }
+
+  async listByBusiness(businessId: string) {
+    await this.businesses.requireBusiness(businessId);
+    return this.prisma.quote.findMany({
+      where: { businessId, deletedAt: null },
+      include: { customer: true },
+      orderBy: [{ dueAt: "asc" }, { createdAt: "desc" }]
+    });
+  }
+
+  async listForDate(input: { businessId: string; start: Date; end: Date; search?: string }) {
+    await this.businesses.requireBusiness(input.businessId);
+    return this.prisma.quote.findMany({
+      where: {
+        businessId: input.businessId,
+        deletedAt: null,
+        dueAt: {
+          gte: input.start,
+          lt: input.end
+        },
+        OR: input.search ? [
+          { title: { contains: input.search, mode: "insensitive" } },
+          { description: { contains: input.search, mode: "insensitive" } },
+          { customer: { name: { contains: input.search, mode: "insensitive" } } },
+          { customer: { phone: { contains: input.search, mode: "insensitive" } } }
+        ] : undefined
+      },
+      include: { customer: true },
+      orderBy: [{ dueAt: "asc" }, { createdAt: "desc" }]
+    });
+  }
+
+  async listByCustomer(businessId: string, customerId: string) {
+    await this.ensureCustomerBelongsToBusiness(businessId, customerId);
+    return this.prisma.quote.findMany({
+      where: {
+        businessId,
+        customerId,
+        deletedAt: null
+      },
+      include: { customer: true },
+      orderBy: [{ dueAt: "asc" }, { createdAt: "desc" }]
+    });
+  }
+
+  async findByBusinessAndId(businessId: string, quoteId: string) {
+    return this.prisma.quote.findFirst({
+      where: {
+        businessId,
+        id: quoteId
+      }
+    });
+  }
+
+  async update(input: UpdateQuoteInput) {
+    const existing = await this.findByBusinessAndId(input.businessId, input.quoteId);
+    if (!existing) {
+      return null;
+    }
+    if (input.customerId) {
+      await this.ensureCustomerBelongsToBusiness(input.businessId, input.customerId);
+    }
+    return this.prisma.quote.update({
+      where: { id: existing.id },
+      data: {
+        customerId: input.customerId,
+        title: input.title,
+        description: input.description,
+        estimatedAmount: input.estimatedAmount,
+        dueAt: input.dueAt,
+        status: input.status
+      }
+    });
+  }
+
+  async markPaid(businessId: string, quoteId: string) {
+    const existing = await this.findByBusinessAndId(businessId, quoteId);
+    if (!existing) {
+      return null;
+    }
+    return this.prisma.quote.update({
+      where: { id: existing.id },
+      data: { status: "PAID" }
+    });
+  }
+
+  async softDelete(businessId: string, quoteId: string) {
+    const existing = await this.findByBusinessAndId(businessId, quoteId);
+    if (!existing) {
+      return null;
+    }
+    return this.prisma.quote.update({
+      where: { id: existing.id },
+      data: { deletedAt: new Date() }
+    });
+  }
+
+  async snooze(businessId: string, quoteId: string, dueAt: Date) {
+    const existing = await this.findByBusinessAndId(businessId, quoteId);
+    if (!existing || existing.deletedAt) {
+      return null;
+    }
+    return this.prisma.quote.update({
+      where: { id: existing.id },
+      data: {
+        dueAt,
+        reminderSentAt: null,
+        status: "OPEN"
+      }
+    });
+  }
+
+  private async ensureCustomerBelongsToBusiness(businessId: string, customerId: string) {
+    const customer = await this.prisma.customer.findFirst({
+      where: {
+        businessId,
+        id: customerId,
+        deletedAt: null
       },
       select: { id: true }
     });

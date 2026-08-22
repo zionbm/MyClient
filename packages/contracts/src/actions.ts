@@ -11,7 +11,17 @@ export const ActionTypeSchema = z.enum([
   "CREATE_TASK",
   "UPDATE_TASK",
   "COMPLETE_TASK",
-  "ADD_CUSTOMER_NOTE"
+  "ADD_CUSTOMER_NOTE",
+  "CREATE_CALLBACK",
+  "UPDATE_CALLBACK",
+  "COMPLETE_CALLBACK",
+  "DELETE_TREATMENT_ITEM",
+  "CREATE_HOME_VISIT",
+  "UPDATE_HOME_VISIT",
+  "CREATE_QUOTE",
+  "UPDATE_QUOTE",
+  "MARK_QUOTE_PAID",
+  "MERGE_CUSTOMERS"
 ]);
 
 export type ActionType = z.infer<typeof ActionTypeSchema>;

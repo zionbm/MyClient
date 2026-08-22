@@ -1,6 +1,6 @@
 # MyClient Server Handoff
 
-Last updated: 2026-08-20
+Last updated: 2026-08-22
 
 This document is the continuity handoff for the backend. In a new chat, read this file first to understand what was built, what product decisions were made, and what still needs to be done.
 
@@ -85,15 +85,99 @@ FCM:
 
 ## What Is Already Built
 
+### Mobile Server Readiness Status
+
+As of 2026-08-22, the local backend is ready for starting mobile client development against stable product-facing APIs.
+
+Completed for the mobile POC:
+
+- Phone-first auth flow:
+  - `User.email` is optional.
+  - `User.phoneNumber` exists and is unique when present.
+  - Firebase mode reads verified `phone_number`.
+  - Mock mode supports `x-mock-phone-number` for local testing.
+- `BusinessMember` model and team endpoints:
+  - `GET /businesses/:businessId/members`
+  - `POST /businesses/:businessId/members`
+  - `POST /businesses/:businessId/members/:memberId/disable`
+  - `GET /auth/me` can auto-link a pending member by verified phone number.
+- Mobile-facing work item APIs:
+  - `GET /businesses/:businessId/home`
+  - `GET|POST|PATCH|DELETE /businesses/:businessId/callbacks`
+  - `POST /businesses/:businessId/callbacks/:callbackId/complete`
+  - `GET|POST|PATCH|DELETE /businesses/:businessId/home-visits`
+  - `POST /businesses/:businessId/home-visits/:homeVisitId/complete`
+  - `GET|POST|PATCH|DELETE /businesses/:businessId/quotes`
+  - `POST /businesses/:businessId/quotes/:quoteId/mark-paid`
+- Product-facing status mapping:
+  - callback: `OPEN` / `DONE`
+  - home visit: `OPEN` / `DONE`
+  - quote: `OPEN` / `PAID`
+- Soft delete for mobile treatment items.
+- Quote persistence through a dedicated `Quote` model.
+- Customer detail activity feed with callbacks, home visits, quotes and notes.
+- Customer merge endpoint:
+  - `POST /businesses/:businessId/customers/:sourceCustomerId/merge`
+- Calls list now returns a mobile-shaped response:
+  - `ivrSelection`
+  - `displayStatus`
+  - `transcriptPreview`
+  - `relatedTask`
+  - `customer`
+- Notification app flow:
+  - list notifications
+  - mark one as read
+  - mark all as read
+  - snooze a notification linked to a callback or quote
+- AI pending action aliases for the mobile app:
+  - `GET /businesses/:businessId/ai-pending-actions`
+  - `PATCH /businesses/:businessId/ai-pending-actions/:id`
+  - `POST /businesses/:businessId/ai-pending-actions/:id/approve`
+  - `POST /businesses/:businessId/ai-pending-actions/:id/reject`
+- Owner voice action allowlist and Core execution now cover the mobile POC action set:
+  - create/update customer
+  - create/update/complete callback
+  - create/update home visit
+  - create/update quote
+  - mark quote paid
+  - add customer note
+  - soft-delete treatment item
+  - merge customers
+
+Still not complete:
+
+- Real telephony provider integration is not connected yet.
+- The telephony service is still mock/Plivo-shaped and should be generalized before Telnyx/Twilio.
+- TTS for the IVR is still mocked.
+- Usage/cost tracking exists as a model but is not fully wired.
+- Admin/debug tooling for a real 10-business POC is still minimal.
+- Production hardening is still needed before external users.
+
 ### Auth and Registration
 
 - Business registration endpoint exists: `POST /auth/register-business`.
 - Current local mode supports mock auth.
 - Firebase Auth support was added:
   - Core verifies Firebase ID tokens when `AUTH_PROVIDER=firebase`.
-  - In Firebase mode, registration uses `uid`, `email`, and display name from the verified token.
+  - Product decision: the mobile POC uses phone number authentication only. In Firebase mode, registration should use `uid`, verified `phone_number`, and optional display name from the verified token.
   - In mock mode, registration still supports local scripts and tests.
-- `GET /auth/me` returns the authenticated user and business context.
+- `GET /auth/me` returns the authenticated user, business context, active membership if available, and `onboardingState`.
+- `GET /auth/me` auto-links a pending `BusinessMember` row by verified phone number when possible.
+- `User.businessId` is now optional and kept for compatibility while business access is moving to membership-based authorization.
+- `User.email` is optional. `User.phoneNumber` is unique when present.
+
+Target user identity fields for mobile POC:
+
+```text
+User
+- id
+- firebaseUid unique
+- phoneNumber unique for mobile users
+- email optional
+- displayName optional
+```
+
+Email can be collected later for invoices, reports, support, or future Google/Apple login, but it is not part of first-run authentication.
 
 ### CRM Surface
 
@@ -108,12 +192,13 @@ Core supports:
   - urgent prompt
   - working hours
   - notification phone
-  - urgent calls toggle
+  - urgent calls toggle exists technically, but is not exposed in the mobile POC settings screen.
 - Customers.
 - Customer notes.
 - Tasks.
 - Appointments.
-- Jobs/service calls.
+- Quotes.
+- Jobs/service calls exist technically, but there is no standalone service-calls screen in the mobile POC.
 - Business phone numbers.
 - Incoming call records.
 - Call transcripts.
@@ -121,6 +206,110 @@ Core supports:
 - Notifications.
 - Audit events.
 - Usage events model exists, but real usage tracking is not fully wired.
+
+Mobile product decisions that affect Core:
+
+- The first mobile version does not need a standalone tasks screen.
+- The main mobile tab is called Home (`בית`), not Agenda / Daily Schedule.
+- The mobile product language should use clear field-worker terms:
+  - `CALLBACK` / חזרה ללקוח
+  - `HOME_VISIT` / ביקור בית, replacing the generic appointment wording in the app
+  - `NOTE` / הערה
+  - `QUOTE` / הצעת מחיר
+- Any dated treatment item, including callback, home visit or quote follow-up, must have a `dueAt`; no undated treatment items in the POC.
+- If AI or manual creation does not provide an explicit time, Core should assign the existing default due time.
+- The mobile Home screen needs search across agenda/work items: callbacks, home visits, quotes, notifications, customer name, phone and related notes where available.
+- Existing `Task` and `Appointment` persistence can be reused internally if that is fastest, but the mobile API should expose product-facing item types rather than generic task/appointment labels.
+- Quote support is implemented as a dated work item with title, optional customer, optional description, optional estimated amount and a simple status. A full quote document/PDF is future work.
+- Keep mobile-facing statuses intentionally minimal:
+  - callback: `OPEN` / `DONE`
+  - home visit: `OPEN` / `DONE`
+  - quote: `OPEN` / `PAID`
+- Do not model "cancelled" as a user-facing status in the mobile POC. If an item is no longer relevant, the user deletes it.
+- Treatment item deletion should be soft delete, not hard delete. Hide deleted items from default mobile lists, but keep them for audit/debug.
+- The mobile POC requires an active network connection. No offline sync, local mutation queue or conflict resolution is required for the first version.
+
+Mobile POC business settings decisions:
+
+- The app settings screen exposes only business identity, locale/timezone, working hours, virtual receptionist text prompts, owner notification phone and the assigned virtual receptionist phone number as read-only information.
+- The owner cannot add, edit, remove or request business phone numbers from the mobile POC.
+- Business phone assignment is an internal MyClient/admin responsibility. The mobile app should show only the assigned number, without provider/technical status. If no virtual receptionist number is assigned, the app should show an empty state such as "No virtual number has been assigned yet."
+- The app does not expose AI settings. Core/product rules decide which AI actions can be executed automatically and which become pending actions.
+- The app does not expose per-business IVR menu editing in the POC. All businesses use the same IVR option structure; only message text can vary.
+- The app does not expose urgent-call configuration in the POC. Urgency rules are owned by product/server behavior.
+- The app does not expose notification filtering. The owner receives all notification types the product decides to send.
+
+Business phone routing decision:
+
+- A single provider line/account can serve more than one business.
+- Core/telephony should route each inbound call to the correct business by the original dialed number, for example the provider `toNumber` / DID.
+- The business owner only sees the virtual number assigned to their business.
+- Admin/internal tooling must support assigning a virtual number to a business.
+- Incoming calls should persist both `fromNumber` and the original `toNumber` so the calls list and routing are auditable.
+
+Mobile WhatsApp decision:
+
+- The mobile POC should support opening WhatsApp / WhatsApp Business for a specific customer when that customer has a phone number.
+- This is a client-side deep link action, not server-side message sending in the POC.
+- No WhatsApp templates, provider integration or outbound message persistence is required for the first version.
+
+### Calls Screen API Requirements
+
+The mobile Calls screen is an incoming-call log for the virtual receptionist. It is not a generic task list.
+
+Already built:
+
+- `IncomingCall` persists incoming call records.
+- `CallTranscript` persists transcripts.
+- `GET /businesses/:businessId/calls` lists calls for a business.
+- Telephony-created callback tasks use `source="telephony"` and `sourceRef=<provider call id>`.
+- Recorded calls can store `CallTranscript.taskId` when a callback task was created.
+
+Implemented mobile response behavior:
+
+- Return a product-shaped calls list response so the app does not need to infer display state from raw persistence fields.
+- Include the IVR/menu selection as a stable enum, for example:
+  - `CALLBACK_REQUESTED`
+  - `MESSAGE_RECORDED`
+  - `URGENT_MESSAGE`
+  - `NO_SELECTION`
+- Include a display status, for example:
+  - `TASK_CREATED`
+  - `TASK_COMPLETED`
+  - `CUSTOMER_LINKED`
+  - `NO_ACTION`
+- Include `transcriptPreview` when a transcript exists.
+- Include `relatedTask` when a callback task was created, including at least `id`, `status`, `dueAt` and `priority`.
+- Include `customer` when the caller phone matches or is linked to a known customer.
+- Include `durationSeconds` if the telephony provider supplies call duration. The current mock returns `null`.
+- Calls with no IVR selection should stay visible in Calls with `NO_SELECTION` / `NO_ACTION`, but should not appear in Home unless a callback/action was created.
+
+Suggested response shape:
+
+```json
+{
+  "calls": [
+    {
+      "id": "call_id",
+      "fromNumber": "0521234567",
+      "toNumber": "03...",
+      "calledAt": "2026-08-21T09:15:00.000Z",
+      "durationSeconds": 27,
+      "ivrSelection": "URGENT_MESSAGE",
+      "displayStatus": "TASK_CREATED",
+      "urgent": true,
+      "transcriptPreview": "אשמח שתחזרו אליי לגבי התיקון",
+      "relatedTask": {
+        "id": "task_id",
+        "status": "OPEN",
+        "dueAt": "2026-08-21T11:15:00.000Z",
+        "priority": "URGENT"
+      },
+      "customer": null
+    }
+  ]
+}
+```
 
 ### Owner Voice Commands
 
@@ -148,6 +337,16 @@ Implemented behavior:
   - Before 09:00: today at 09:00.
   - At or after 19:00: next day at 09:00.
 - Owner voice command history is persisted.
+- Core can execute the mobile POC action set from structured AI actions:
+  - create/update customer
+  - create/update/complete callback
+  - create/update home visit
+  - create/update quote
+  - mark quote as paid
+  - add customer note
+  - soft-delete treatment item
+  - merge customers
+- Ambiguous or risky actions should still be emitted with `requiresConfirmation` or missing fields so Core stores them as pending actions.
 
 ### Notifications
 
@@ -163,6 +362,12 @@ POST /businesses/:businessId/device-tokens
 - If no active device token exists, notification is marked `FAILED`.
 - Invalid FCM tokens are deactivated.
 - Notification status can be updated, including marking as `READ`.
+- Mobile notification snooze is implemented for notifications linked to dated treatment items supported by the current reminder model.
+- First presets:
+  - `IN_15_MINUTES`
+  - `IN_2_HOURS`
+  - `TOMORROW_09_00`
+- Snoozing updates the linked item/reminder so a new notification is sent at the selected future time.
 
 ### Reminder Worker
 
@@ -221,7 +426,7 @@ Important product rule:
 The following real audio tests passed with OpenAI:
 
 - `command1.m4a`: created a customer.
-- `command2.m4a`: created a customer and a reminder task for "tomorrow at 14:00"; timezone handling was corrected so Israel 14:00 stores as UTC 11:00.
+- `command2.m4a`: created a customer and a callback reminder for "tomorrow at 14:00"; timezone handling was corrected so Israel 14:00 stores as UTC 11:00.
 
 The audio files are in:
 
@@ -229,15 +434,31 @@ The audio files are in:
 /Users/zionbm/Downloads/MyClient
 ```
 
-Docker and integration tests have passed after the Firebase Auth infrastructure change:
+Docker and integration tests have passed after the Firebase Auth infrastructure and mobile server readiness changes:
 
 ```bash
+npm run prisma:generate
 npm run check
 docker compose up -d --build
+DATABASE_URL='postgresql://myclient:myclient@localhost:5432/myclient?schema=public' npx prisma migrate deploy --schema packages/database/prisma/schema.prisma
 npm run test:integration
 ```
 
 Note: local `npm run test:integration` may require elevated sandbox permissions because it calls Docker services through `localhost`.
+
+The integration test now covers:
+
+- phone-first registration compatibility
+- members list/create
+- callbacks
+- home visits
+- quotes and mark-paid
+- Home work item endpoint
+- customer activity feed
+- AI pending action edit/approve alias
+- telephony mock callback flow
+- notifications snooze/read
+- mobile-shaped calls response
 
 ## Telephony Provider Decision
 
@@ -302,36 +523,91 @@ Telnyx/Twilio webhook
 -> Core business logic
 ```
 
-### P1: Expand Owner Voice Actions
+### P1: Expand Owner Voice Actions - Completed for Mobile POC
 
-Current voice commands work, but the action set should grow.
+The mobile POC action set is now allowlisted and executable in Core.
 
-Add support for:
+Supported now:
 
 - Update customer.
-- Create appointment.
-- Update appointment.
-- Create job/service call.
-- Update job/service call.
-- Complete task.
-- Cancel task.
+- Create home visit.
+- Update home visit.
+- Create callback.
+- Update callback.
+- Complete callback.
+- Soft-delete treatment item.
+- Create quote.
+- Update quote.
+- Mark quote as paid.
 - Add customer note.
-- Find/link existing customer by phone/name.
-- Return `requiresConfirmation` for ambiguous or risky actions.
+- Merge customers.
+- Return pending actions for ambiguous or risky actions through `requiresConfirmation` or missing fields.
 
-The AI should only emit allowlisted actions. Core must validate and enforce permissions before execution.
+Remaining future improvement:
 
-### P2: Complete Notification Product Flow
+- Smarter find/link existing customer by fuzzy name or phone before creating duplicates. Basic phone matching exists in customer/calls flows, but richer AI disambiguation should continue to use pending actions.
 
-Server pieces exist, but product flow needs tightening:
+The AI should only emit allowlisted actions. Core validates and enforces business permissions before execution.
+
+Mobile POC note:
+
+- Customer creation must allow name-only customers. `phoneNumber` is optional for CRM customers in the mobile POC.
+- There is no customer type/tag requirement in the mobile POC.
+- Customer merge flow for fixing duplicate/name-only customers is implemented:
+  - Primary POC use case: merge a source customer with no `phoneNumber` into an existing target customer, usually one that has a `phoneNumber`.
+  - Move callbacks, home visits, quotes, notes, linked calls/transcripts where applicable, and other customer activity from the source customer to the target customer.
+  - Keep an audit/debug trace such as `mergedIntoCustomerId`, `mergedAt`, and `mergedByUserId`, or an equivalent merge event.
+  - Hide merged source customers from the default customer list.
+  - Do not allow automatic merge of two customers with conflicting phone numbers in the POC.
+  - AI may suggest a possible duplicate as a pending action, but final merge must be user-confirmed.
+- Endpoint: `POST /businesses/:businessId/customers/:sourceCustomerId/merge` with `targetCustomerId`.
+- Service-call/job voice actions are not part of the mobile POC action set.
+
+### P2: Complete Notification Product Flow - Completed for Mobile POC
+
+Implemented:
 
 - List notifications for the app.
 - Mark notification as read.
-- Possibly mark all as read.
+- Mark all as read.
+- Add "remind me later" / snooze for notifications linked to dated treatment items supported by the current reminder model.
+
+Still future:
+
 - Retry failed notifications where appropriate.
 - Improve failure reasons.
 - Make urgent notification payload explicit.
 - Test with a real mobile app FCM token when the app exists.
+
+Suggested snooze endpoint:
+
+```text
+POST /businesses/:businessId/notifications/:notificationId/snooze
+```
+
+Request:
+
+```json
+{
+  "preset": "IN_15_MINUTES"
+}
+```
+
+Supported first presets:
+
+- `IN_15_MINUTES`
+- `IN_2_HOURS`
+- `TOMORROW_09_00`
+
+Expected behavior:
+
+- Require the notification to belong to the business and be linked to a dated treatment item.
+- Use `notificationId` to load the exact notification the user acted on.
+- Use the notification's linked `itemType`/`itemId` as the only item that can be snoozed by this request. If the first implementation reuses `taskId`, treat it as an internal detail for callback items.
+- Reject the request if the notification has no snoozable linked item, because general notifications cannot be snoozed in the first version.
+- Update the linked item's next reminder time. If the implementation reuses `Task.dueAt` for reminders, update `dueAt` and reset `reminderSentAt` to `null`.
+- Mark the current notification as `READ` or store a future `SNOOZED` status if the status enum is expanded.
+- The reminder worker should send a new notification for that same item when the snoozed time arrives.
 
 ### P3: Usage and Cost Tracking
 
@@ -378,6 +654,95 @@ Improve registration/onboarding data:
 - Urgent-call preferences.
 - Notification preferences.
 - Future telephony compliance details.
+
+### P5.5: Business Members by Phone - Completed for Mobile POC
+
+The mobile app needs to support two post-auth flows:
+
+- Owner creates a new business workspace.
+- Employee enters an existing business after the owner added their phone number.
+
+Current backend state:
+
+- `User.businessId` is optional and kept for compatibility.
+- `POST /auth/register-business` creates the owner and business.
+- `BusinessMember` exists.
+- Product decision for POC: there are no invite codes. The owner adds an employee phone number. When the employee verifies that number, Core links the user to the business automatically.
+- Product decision for POC: employees see the same screens as the owner and can perform the same actions. Detailed permissions and roles are future work.
+
+Target data model:
+
+```text
+BusinessMember
+- id
+- businessId
+- userId optional until the employee first signs in
+- phoneNumber required
+- memberType: OWNER | EMPLOYEE
+- status: PENDING | ACTIVE | DISABLED
+- addedByUserId optional
+- linkedAt optional
+- createdAt
+- updatedAt
+```
+
+Suggested uniqueness:
+
+- unique `(businessId, phoneNumber)`.
+- decide whether one phone can belong to multiple businesses later; for the POC, one active business per phone is simpler.
+
+Implemented migration path:
+
+1. Add `phoneNumber` to `User` as required/unique for new mobile users and make `email` optional.
+2. Add `BusinessMember` without immediately removing `User.businessId`.
+3. Backfill every existing owner user as a `BusinessMember` with `memberType=OWNER` and `status=ACTIVE`.
+4. Update `AUTH_PROVIDER=firebase` to read verified `phone_number` from Firebase phone auth tokens.
+5. On `GET /auth/me`, if no active membership exists for the user, look for `BusinessMember` rows with matching `phoneNumber`, `userId=null` and `status=PENDING`; link the user and set status to `ACTIVE`.
+6. For the POC, authorization can treat `OWNER` and `EMPLOYEE` the same for business actions.
+7. Keep `User.businessId` temporarily for compatibility.
+
+Needed Core endpoints:
+
+```text
+GET /auth/me
+```
+
+Should return:
+
+- authenticated user.
+- active business membership if one exists.
+- if no active membership exists, Core should auto-link pending `BusinessMember` rows matching the verified phone number.
+- onboarding state: `HAS_BUSINESS` or `NEEDS_CHOICE`.
+
+```text
+POST /businesses/:businessId/members
+```
+
+Owner adds an employee by phone number. This creates a pending member if the user has not signed in yet, or an active member if a user with that verified phone number already exists.
+
+```text
+GET /businesses/:businessId/members
+```
+
+Owner lists active and pending members.
+
+```text
+POST /businesses/:businessId/members/:memberId/disable
+```
+
+Owner disables a member.
+
+Initial access policy:
+
+- `OWNER`: full access.
+- `EMPLOYEE`: same access as owner for the POC.
+
+Future work:
+
+- detailed roles such as `ADMIN`, `STAFF` and `RECEPTIONIST`.
+- per-feature permissions.
+- membership audit events.
+- support for a user belonging to multiple businesses.
 
 ### P6: Real Telephony Provider
 
@@ -481,7 +846,7 @@ curl -s http://localhost:3000/businesses/<businessId>/voice-commands/audio \
 
 ## Current Next Best Step
 
-The best next backend development step is:
+The backend is ready for local mobile client development. The best next backend-only development step is:
 
 ```text
 Clean and generalize the telephony abstraction before implementing Telnyx.
@@ -492,3 +857,9 @@ Reason:
 - The product decision moved away from Plivo as the default.
 - Keeping Plivo-specific names now will make the Telnyx/Twilio integration messier.
 - Generalizing first keeps Core provider-agnostic and makes provider replacement safer.
+
+The best overall product step is:
+
+```text
+Start mobile client development against the local Core APIs, while leaving real telephony provider integration for the next backend phase.
+```

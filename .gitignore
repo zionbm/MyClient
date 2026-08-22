@@ -7,3 +7,4 @@ coverage/
 *.tsbuildinfo
 *firebase-adminsdk*.json
 service-account*.json
+docs/mobile-app-designs/

@@ -37,10 +37,20 @@ expectStatus(request("POST", `${core}/businesses/${businessId}/phone-numbers`, {
 
 const customerResult = request("POST", `${core}/businesses/${businessId}/customers`, {
   name: "לקוח אינטגרציה",
-  phone: "+972502222222"
+  phone: "+972502222222",
+  initialNote: "הערה ראשונית"
 }, { authorization: token });
 expectStatus(customerResult, 201, "create customer");
 const customerId = customerResult.body.customer.id;
+assert(customerResult.body.initialNote, "expected initial note");
+
+expectStatus(request("POST", `${core}/businesses/${businessId}/members`, {
+  phoneNumber: `+972555${suffix.slice(-6).padStart(6, "0")}`
+}, { authorization: token }), 201, "create pending member");
+
+const members = request("GET", `${core}/businesses/${businessId}/members`, undefined, { authorization: token });
+expectStatus(members, 200, "list members");
+assert(members.body.members.length > 0, "expected business members");
 
 expectStatus(request("POST", `${core}/businesses/${businessId}/appointments`, {
   customerId,
@@ -52,6 +62,45 @@ expectStatus(request("POST", `${core}/businesses/${businessId}/jobs`, {
   customerId,
   title: "עבודת אינטגרציה"
 }, { authorization: token }), 201, "create job");
+
+const callbackResult = request("POST", `${core}/businesses/${businessId}/callbacks`, {
+  customerId,
+  title: "לחזור ללקוח אינטגרציה",
+  dueAt: "2026-08-21T10:00:00.000Z"
+}, { authorization: token });
+expectStatus(callbackResult, 201, "create callback");
+const callbackId = callbackResult.body.callback.id;
+
+expectStatus(request("POST", `${core}/businesses/${businessId}/home-visits`, {
+  customerId,
+  title: "ביקור בית אינטגרציה",
+  startsAt: "2026-08-21T11:00:00.000Z",
+  location: "רחוב בדיקה 1"
+}, { authorization: token }), 201, "create home visit");
+
+const quoteResult = request("POST", `${core}/businesses/${businessId}/quotes`, {
+  customerId,
+  title: "הצעת מחיר אינטגרציה",
+  dueAt: "2026-08-21T12:00:00.000Z",
+  estimatedAmount: "250"
+}, { authorization: token });
+expectStatus(quoteResult, 201, "create quote");
+const quoteId = quoteResult.body.quote.id;
+
+expectStatus(request("POST", `${core}/businesses/${businessId}/quotes/${quoteId}/mark-paid`, undefined, { authorization: token }), 201, "mark quote paid");
+
+const home = request("GET", `${core}/businesses/${businessId}/home?date=2026-08-21`, undefined, { authorization: token });
+expectStatus(home, 200, "home work items");
+assert(home.body.items.some((item) => item.type === "callback"), "expected callback home item");
+assert(home.body.items.some((item) => item.type === "home_visit"), "expected home visit home item");
+assert(home.body.items.some((item) => item.type === "quote"), "expected quote home item");
+
+const customerDetail = request("GET", `${core}/businesses/${businessId}/customers/${customerId}`, undefined, { authorization: token });
+expectStatus(customerDetail, 200, "customer detail activity");
+assert(customerDetail.body.activity.some((item) => item.type === "callback"), "expected customer callback activity");
+assert(customerDetail.body.activity.some((item) => item.type === "home_visit"), "expected customer home visit activity");
+assert(customerDetail.body.activity.some((item) => item.type === "quote"), "expected customer quote activity");
+assert(customerDetail.body.activity.some((item) => item.type === "note"), "expected customer note activity");
 
 const aiPending = request("POST", `${core}/owner-actions/execute`, {
   businessId,
@@ -67,9 +116,13 @@ const aiPending = request("POST", `${core}/owner-actions/execute`, {
 expectStatus(aiPending, 201, "create pending action");
 const pendingActionId = aiPending.body.pending.id;
 
-expectStatus(request("POST", `${core}/businesses/${businessId}/pending-actions/${pendingActionId}/complete`, {
+expectStatus(request("PATCH", `${core}/businesses/${businessId}/ai-pending-actions/${pendingActionId}`, {
+  reviewReason: "בדיקת עריכה"
+}, { authorization: token }), 200, "edit ai pending action");
+
+expectStatus(request("POST", `${core}/businesses/${businessId}/ai-pending-actions/${pendingActionId}/approve`, {
   payload: { title: "משימה מפעולה ממתינה" }
-}, { authorization: token }), 201, "complete pending action");
+}, { authorization: token }), 201, "approve ai pending action");
 
 expectStatus(request("POST", `${telephony}/plivo/incoming`, {
   callId: `it_call_${suffix}`,
@@ -91,13 +144,19 @@ expectStatus(notifications, 200, "list notifications");
 assert(notifications.body.notifications.length > 0, "expected at least one notification");
 const notificationId = notifications.body.notifications[0].id;
 
-expectStatus(request("PATCH", `${core}/businesses/${businessId}/notifications/${notificationId}`, {
-  status: "READ"
-}, { authorization: token }), 200, "mark notification read");
+expectStatus(request("POST", `${core}/businesses/${businessId}/notifications/${notificationId}/snooze`, {
+  preset: "IN_15_MINUTES"
+}, { authorization: token }), 201, "snooze notification");
+
+const callbackNotification = request("POST", `${core}/businesses/${businessId}/notifications/${notificationId}/read`, undefined, { authorization: token });
+expectStatus(callbackNotification, 201, "mark notification read");
+
+expectStatus(request("POST", `${core}/businesses/${businessId}/callbacks/${callbackId}/complete`, undefined, { authorization: token }), 201, "complete callback");
 
 const calls = request("GET", `${core}/businesses/${businessId}/calls`, undefined, { authorization: token });
 expectStatus(calls, 200, "list calls");
-assert(calls.body.calls.some((call) => call.transcripts.length > 0), "expected a call transcript");
+assert(calls.body.calls.some((call) => call.transcriptPreview), "expected a call transcript preview");
+assert(calls.body.calls.some((call) => call.ivrSelection && call.displayStatus), "expected product-shaped call display state");
 
 const audit = request("GET", `${core}/businesses/${businessId}/audit-events`, undefined, { authorization: token });
 expectStatus(audit, 200, "list audit");

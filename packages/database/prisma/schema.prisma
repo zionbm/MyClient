@@ -38,6 +38,22 @@ enum NotificationStatus {
   READ
 }
 
+enum BusinessMemberType {
+  OWNER
+  EMPLOYEE
+}
+
+enum BusinessMemberStatus {
+  PENDING
+  ACTIVE
+  DISABLED
+}
+
+enum QuoteStatus {
+  OPEN
+  PAID
+}
+
 model Business {
   id        String   @id @default(uuid())
   name      String
@@ -45,12 +61,14 @@ model Business {
   updatedAt DateTime @updatedAt
 
   users         User[]
+  members       BusinessMember[]
   settings      BusinessSettings?
   phoneNumbers  BusinessPhoneNumber[]
   customers     Customer[]
   jobs          Job[]
   appointments  Appointment[]
   tasks         Task[]
+  quotes        Quote[]
   IncomingCall  IncomingCall[]
   voiceCommands OwnerVoiceCommand[]
   deviceTokens  DeviceToken[]
@@ -75,17 +93,42 @@ model BusinessSettings {
 
 model User {
   id          String   @id @default(uuid())
-  businessId  String
-  email       String   @unique
+  businessId  String?
+  email       String?  @unique
+  phoneNumber String?  @unique
   displayName String?
   firebaseUid String   @unique
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  business     Business      @relation(fields: [businessId], references: [id])
+  business     Business?     @relation(fields: [businessId], references: [id])
+  memberships  BusinessMember[]
   deviceTokens DeviceToken[]
 
   @@index([businessId])
+  @@index([phoneNumber])
+}
+
+model BusinessMember {
+  id            String               @id @default(uuid())
+  businessId    String
+  userId        String?
+  phoneNumber   String
+  memberType    BusinessMemberType   @default(EMPLOYEE)
+  status        BusinessMemberStatus @default(PENDING)
+  addedByUserId String?
+  linkedAt      DateTime?
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+
+  business Business @relation(fields: [businessId], references: [id])
+  user     User?    @relation(fields: [userId], references: [id])
+
+  @@unique([businessId, phoneNumber])
+  @@index([businessId])
+  @@index([businessId, status])
+  @@index([phoneNumber])
+  @@index([userId])
 }
 
 model Customer {
@@ -95,6 +138,10 @@ model Customer {
   phone      String?
   email      String?
   address    String?
+  deletedAt  DateTime?
+  mergedIntoCustomerId String?
+  mergedAt   DateTime?
+  mergedByUserId String?
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
@@ -102,9 +149,12 @@ model Customer {
   jobs         Job[]
   appointments Appointment[]
   tasks        Task[]
+  quotes       Quote[]
   notes        CustomerNote[]
 
   @@index([businessId])
+  @@index([businessId, deletedAt])
+  @@index([businessId, mergedIntoCustomerId])
 }
 
 model Job {
@@ -129,9 +179,12 @@ model Appointment {
   businessId String
   customerId String?
   title      String
+  location   String?
+  notes      String?
   startsAt   DateTime
   endsAt     DateTime?
   status     AppointmentStatus @default(SCHEDULED)
+  deletedAt  DateTime?
   createdAt  DateTime          @default(now())
   updatedAt  DateTime          @updatedAt
 
@@ -139,6 +192,8 @@ model Appointment {
   customer Customer? @relation(fields: [customerId], references: [id])
 
   @@index([businessId])
+  @@index([businessId, startsAt])
+  @@index([businessId, deletedAt])
 }
 
 model Task {
@@ -154,6 +209,7 @@ model Task {
   source         String       @default("app")
   sourceRef      String?
   idempotencyKey String?      @unique
+  deletedAt      DateTime?
   createdAt      DateTime     @default(now())
   updatedAt      DateTime     @updatedAt
 
@@ -162,6 +218,35 @@ model Task {
 
   @@index([businessId])
   @@index([businessId, sourceRef])
+  @@index([businessId, dueAt])
+  @@index([businessId, deletedAt])
+  @@index([status, dueAt, reminderSentAt])
+}
+
+model Quote {
+  id              String      @id @default(uuid())
+  businessId      String
+  customerId      String?
+  title           String
+  description     String?
+  estimatedAmount Decimal?
+  status          QuoteStatus @default(OPEN)
+  dueAt           DateTime
+  reminderSentAt  DateTime?
+  source          String      @default("app")
+  sourceRef       String?
+  idempotencyKey  String?     @unique
+  deletedAt       DateTime?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  business Business  @relation(fields: [businessId], references: [id])
+  customer Customer? @relation(fields: [customerId], references: [id])
+
+  @@index([businessId])
+  @@index([businessId, customerId])
+  @@index([businessId, dueAt])
+  @@index([businessId, deletedAt])
   @@index([status, dueAt, reminderSentAt])
 }
 
@@ -269,6 +354,9 @@ model PendingAction {
   businessId    String
   userId        String?
   actionType    String
+  source        String    @default("ai")
+  confidence    Decimal?
+  reviewReason  String?
   payload       Json
   missingFields String[]
   status        String    @default("PENDING")
@@ -285,6 +373,8 @@ model Notification {
   id            String             @id @default(uuid())
   businessId    String
   taskId        String?
+  itemType      String?
+  itemId        String?
   title         String
   body          String
   status        NotificationStatus @default(PENDING)
@@ -298,6 +388,7 @@ model Notification {
 
   @@index([businessId])
   @@index([businessId, status])
+  @@index([businessId, itemType, itemId])
 }
 
 model DeviceToken {

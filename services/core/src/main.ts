@@ -3,6 +3,7 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Delete,
   ForbiddenException,
   Get,
   Headers,
@@ -17,7 +18,7 @@ import {
 } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { FastifyAdapter, type NestFastifyApplication } from "@nestjs/platform-fastify";
-import type { Business, Prisma, User } from "@prisma/client";
+import { Prisma, type Business, type User } from "@prisma/client";
 import { applicationDefault, getApps, initializeApp } from "firebase-admin/app";
 import { getAuth, type DecodedIdToken } from "firebase-admin/auth";
 import { getMessaging } from "firebase-admin/messaging";
@@ -25,26 +26,37 @@ import { ApiExceptionFilter, getEnv, getPort, health, log, stableIdempotencyKey 
 import {
   AiActionBatchSchema,
   AiActionSchema,
+  CreateBusinessMemberSchema,
   CreateAppointmentSchema,
   CreateBusinessPhoneNumberSchema,
+  CreateCallbackSchema,
   CreateCallbackTaskSchema,
   CreateCallTranscriptSchema,
   CreateCustomerNoteSchema,
   CreateCustomerSchema,
+  CreateHomeVisitSchema,
   CreateIncomingCallSchema,
   CreateJobSchema,
+  CreateQuoteSchema,
   CreateTaskSchema,
   CompletePendingActionSchema,
+  HomeQuerySchema,
   ListByStatusQuerySchema,
+  MergeCustomerSchema,
   OwnerVoiceCommandHeadersSchema,
   RegisterBusinessSchema,
   RegisterDeviceTokenSchema,
+  SnoozeNotificationSchema,
   UpdateAppointmentSchema,
   UpdateBusinessPhoneNumberSchema,
   UpdateBusinessSettingsSchema,
+  UpdateCallbackSchema,
   UpdateCustomerSchema,
+  UpdateHomeVisitSchema,
   UpdateJobSchema,
   UpdateNotificationSchema,
+  UpdatePendingActionSchema,
+  UpdateQuoteSchema,
   UpdateTaskSchema
 } from "@myclient/contracts";
 import type { AiAction } from "@myclient/contracts";
@@ -52,6 +64,7 @@ import {
   AppointmentsRepository,
   AuthRepository,
   AuditRepository,
+  BusinessMembersRepository,
   BusinessesRepository,
   BusinessPhoneNumbersRepository,
   BusinessSettingsRepository,
@@ -64,6 +77,7 @@ import {
     NotificationsRepository,
     OwnerVoiceCommandsRepository,
   PendingActionsRepository,
+  QuotesRepository,
   TasksRepository
 } from "./core.repositories.js";
 import { PrismaService } from "./prisma.service.js";
@@ -71,12 +85,14 @@ import { PrismaService } from "./prisma.service.js";
 type RequestHeaders = Record<string, string | string[] | undefined>;
 
 type AuthenticatedUser = User & {
-  business: Business;
+  business: Business | null;
+  memberships?: Array<{ businessId: string; memberType: string; status: string; business?: Business }>;
 };
 
 type VerifiedAuth = {
   firebaseUid: string;
   email?: string;
+  phoneNumber?: string;
   displayName?: string;
 };
 
@@ -330,6 +346,78 @@ function publicDeviceToken(deviceToken: {
   };
 }
 
+function publicCustomer(customer: { id: string; name: string; phone?: string | null; email?: string | null; address?: string | null } | null | undefined) {
+  if (!customer) {
+    return null;
+  }
+  return {
+    id: customer.id,
+    name: customer.name,
+    phone: customer.phone ?? null,
+    email: customer.email ?? null,
+    address: customer.address ?? null
+  };
+}
+
+function callbackStatus(status: string) {
+  return status === "COMPLETED" ? "DONE" : "OPEN";
+}
+
+function homeVisitStatus(status: string) {
+  return status === "COMPLETED" ? "DONE" : "OPEN";
+}
+
+function startOfLocalDate(dateText: string | undefined, timeZone: string) {
+  const nowParts = getZonedParts(new Date(), timeZone);
+  const match = dateText?.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const parts = match
+    ? { year: Number(match[1]), month: Number(match[2]), day: Number(match[3]) }
+    : { year: nowParts.year, month: nowParts.month, day: nowParts.day };
+  return zonedTimeToUtc({ ...parts, hour: 0, minute: 0 }, timeZone);
+}
+
+function addUtcDays(date: Date, days: number) {
+  return new Date(date.getTime() + days * 24 * 60 * 60 * 1000);
+}
+
+function snoozeDueAt(preset: "IN_15_MINUTES" | "IN_2_HOURS" | "TOMORROW_09_00", timeZone: string, now = new Date()) {
+  if (preset === "IN_15_MINUTES") {
+    return new Date(now.getTime() + 15 * 60 * 1000);
+  }
+  if (preset === "IN_2_HOURS") {
+    return new Date(now.getTime() + 2 * 60 * 60 * 1000);
+  }
+  const parts = addLocalDays(getZonedParts(now, timeZone), 1);
+  return zonedTimeToUtc({ year: parts.year, month: parts.month, day: parts.day, hour: 9, minute: 0 }, timeZone);
+}
+
+function parseOptionalAmount(value: string | number | Prisma.Decimal | null | undefined) {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value === null) {
+    return null;
+  }
+  return new Prisma.Decimal(value);
+}
+
+function callIvrSelection(call: { selectedDigit?: string | null }) {
+  if (call.selectedDigit === "1") return "CALLBACK_REQUESTED";
+  if (call.selectedDigit === "2") return "MESSAGE_RECORDED";
+  if (call.selectedDigit === "3") return "URGENT_MESSAGE";
+  return "NO_SELECTION";
+}
+
+function callDisplayStatus(call: { selectedDigit?: string | null; transcripts?: Array<{ taskId?: string | null }> }) {
+  if (call.transcripts?.some((transcript) => transcript.taskId)) {
+    return "TASK_CREATED";
+  }
+  if (call.selectedDigit) {
+    return "NO_ACTION";
+  }
+  return "NO_ACTION";
+}
+
 async function sendFirebaseMulticast(tokens: string[], input: NotificationSendInput) {
   firebaseApp();
 
@@ -348,6 +436,7 @@ class CoreController {
   constructor(
     @Inject(AuthRepository) private readonly auth: AuthRepository,
     @Inject(AuditRepository) private readonly audit: AuditRepository,
+    @Inject(BusinessMembersRepository) private readonly members: BusinessMembersRepository,
     @Inject(BusinessSettingsRepository) private readonly settings: BusinessSettingsRepository,
     @Inject(BusinessPhoneNumbersRepository) private readonly phoneNumbers: BusinessPhoneNumbersRepository,
     @Inject(IncomingCallsRepository) private readonly incomingCalls: IncomingCallsRepository,
@@ -356,6 +445,7 @@ class CoreController {
     @Inject(TasksRepository) private readonly tasks: TasksRepository,
     @Inject(CustomerNotesRepository) private readonly customerNotes: CustomerNotesRepository,
     @Inject(AppointmentsRepository) private readonly appointments: AppointmentsRepository,
+    @Inject(QuotesRepository) private readonly quotes: QuotesRepository,
     @Inject(JobsRepository) private readonly jobs: JobsRepository,
     @Inject(NotificationsRepository) private readonly notifications: NotificationsRepository,
     @Inject(DeviceTokensRepository) private readonly deviceTokens: DeviceTokensRepository,
@@ -379,20 +469,25 @@ class CoreController {
       mockFallback: command.firebaseUid
     });
     const email = command.email ?? verifiedAuth.email;
-    const displayName = command.displayName ?? verifiedAuth.displayName ?? email;
-    if (!email) {
-      throw new BadRequestException("Email is required when it is not present in the Firebase token");
-    }
+    const phoneNumber = command.phoneNumber ?? verifiedAuth.phoneNumber;
+    const displayName = command.displayName ?? verifiedAuth.displayName ?? email ?? phoneNumber;
     if (!displayName) {
       throw new BadRequestException("Display name is required when it is not present in the Firebase token");
+    }
+    if (!email && !phoneNumber) {
+      throw new BadRequestException("Phone number or email is required");
     }
 
     const result = await this.auth.registerBusiness({
       firebaseUid: verifiedAuth.firebaseUid,
       email,
+      phoneNumber,
       displayName,
       businessName: command.businessName
     });
+    if (!result.business) {
+      throw new BadRequestException("Existing user is not linked to a business");
+    }
     await this.settings.getByBusiness(result.business.id);
     return {
       created: result.created,
@@ -401,6 +496,7 @@ class CoreController {
         id: result.user.id,
         businessId: result.user.businessId,
         email: result.user.email,
+        phoneNumber: result.user.phoneNumber,
         displayName: result.user.displayName,
         firebaseUid: result.user.firebaseUid,
         createdAt: result.user.createdAt,
@@ -412,17 +508,26 @@ class CoreController {
   @Get("auth/me")
   async me(@Headers() headers: RequestHeaders) {
     const user = await this.requireAuthenticatedUser(headers);
+    const membership = user.memberships?.[0] ?? null;
+    const business = membership?.business ?? user.business;
     return {
       user: {
         id: user.id,
         businessId: user.businessId,
         email: user.email,
+        phoneNumber: user.phoneNumber,
         displayName: user.displayName,
         firebaseUid: user.firebaseUid,
         createdAt: user.createdAt,
         updatedAt: user.updatedAt
       },
-      business: user.business
+      business,
+      membership: membership ? {
+        businessId: membership.businessId,
+        memberType: membership.memberType,
+        status: membership.status
+      } : null,
+      onboardingState: business ? "HAS_BUSINESS" : "NEEDS_CHOICE"
     };
   }
 
@@ -460,6 +565,55 @@ class CoreController {
       after: settings as Prisma.InputJsonValue
     });
     return { settings };
+  }
+
+  @Get("businesses/:businessId/members")
+  async listMembers(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string) {
+    await this.requireBusinessAccess(headers, businessId);
+    return { members: await this.members.listByBusiness(businessId) };
+  }
+
+  @Post("businesses/:businessId/members")
+  async createMember(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Body() body: unknown) {
+    const user = await this.requireBusinessAccess(headers, businessId);
+    const command = CreateBusinessMemberSchema.parse(body);
+    const member = await this.members.upsertByPhone({
+      businessId,
+      phoneNumber: command.phoneNumber,
+      memberType: command.memberType,
+      addedByUserId: user.id
+    });
+    await this.audit.record({
+      businessId,
+      actorType: "user",
+      actorId: user.id,
+      source: "core",
+      entityType: "business_member",
+      entityId: member.id,
+      action: "UPSERT_BUSINESS_MEMBER",
+      after: member as Prisma.InputJsonValue
+    });
+    return { member };
+  }
+
+  @Post("businesses/:businessId/members/:memberId/disable")
+  async disableMember(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Param("memberId") memberId: string) {
+    const user = await this.requireBusinessAccess(headers, businessId);
+    const member = await this.members.disable({ businessId, memberId });
+    if (!member) {
+      throw new NotFoundException("Business member not found");
+    }
+    await this.audit.record({
+      businessId,
+      actorType: "user",
+      actorId: user.id,
+      source: "core",
+      entityType: "business_member",
+      entityId: member.id,
+      action: "DISABLE_BUSINESS_MEMBER",
+      after: member as Prisma.InputJsonValue
+    });
+    return { member };
   }
 
   @Get("businesses/:businessId/phone-numbers")
@@ -663,6 +817,8 @@ class CoreController {
       const notification = await this.notifications.create({
         businessId: task.businessId,
         taskId: task.id,
+        itemType: "callback",
+        itemId: task.id,
         title: "תזכורת למשימה",
         body: buildTaskReminderBody(task),
         payload: {
@@ -877,6 +1033,66 @@ class CoreController {
     }
   }
 
+  @Get("businesses/:businessId/home")
+  async getHome(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Query() query: unknown) {
+    await this.requireBusinessAccess(headers, businessId);
+    const command = HomeQuerySchema.parse(query);
+    const settings = await this.settings.getByBusiness(businessId);
+    const start = startOfLocalDate(command.date, settings.timezone);
+    const end = addUtcDays(start, 1);
+    const [callbacks, homeVisits, quotes, notifications] = await Promise.all([
+      command.filter === "home_visits" || command.filter === "quotes" || command.filter === "calls"
+        ? Promise.resolve([])
+        : this.tasks.listCallbacksForDate({ businessId, start, end, search: command.search, urgentOnly: command.filter === "urgent" }),
+      command.filter === "callbacks" || command.filter === "quotes" || command.filter === "calls" || command.filter === "urgent"
+        ? Promise.resolve([])
+        : this.appointments.listForDate({ businessId, start, end, search: command.search }),
+      command.filter === "callbacks" || command.filter === "home_visits" || command.filter === "calls" || command.filter === "urgent"
+        ? Promise.resolve([])
+        : this.quotes.listForDate({ businessId, start, end, search: command.search }),
+      command.filter === "all" || command.filter === "urgent"
+        ? this.notifications.listByBusinessAndStatus(businessId, "SENT")
+        : Promise.resolve([])
+    ]);
+
+    const notificationItems = notifications
+      .filter((notification) => !notification.readAt)
+      .slice(0, 20)
+      .map((notification) => ({
+        id: notification.id,
+        type: "notification",
+        title: notification.title,
+        description: notification.body,
+        dueAt: notification.createdAt,
+        priority: "NORMAL",
+        status: notification.status,
+        source: "notification",
+        customer: null,
+        linkedEntity: {
+          type: notification.itemType ?? (notification.taskId ? "callback" : "notification"),
+          id: notification.itemId ?? notification.taskId ?? notification.id
+        },
+        actions: ["open", "mark_read"]
+      }));
+
+    const items = [
+      ...callbacks.map((task) => this.publicCallbackWorkItem(task)),
+      ...homeVisits.map((appointment) => this.publicHomeVisitWorkItem(appointment)),
+      ...quotes.map((quote) => this.publicQuoteWorkItem(quote)),
+      ...notificationItems
+    ].sort((a, b) => {
+      const priority = Number(b.priority === "URGENT") - Number(a.priority === "URGENT");
+      if (priority !== 0) return priority;
+      return new Date(a.dueAt).getTime() - new Date(b.dueAt).getTime();
+    });
+
+    return {
+      date: command.date ?? start.toISOString().slice(0, 10),
+      filter: command.filter,
+      items
+    };
+  }
+
   @Get("businesses/:businessId/tasks")
   async listTasks(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string) {
     await this.requireBusinessAccess(headers, businessId);
@@ -907,6 +1123,114 @@ class CoreController {
       after: task as Prisma.InputJsonValue
     });
     return { task };
+  }
+
+  @Get("businesses/:businessId/callbacks")
+  async listCallbacks(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string) {
+    await this.requireBusinessAccess(headers, businessId);
+    const callbacks = await this.tasks.listCallbacksByBusiness(businessId);
+    return { callbacks: callbacks.map((task) => this.publicCallback(task)) };
+  }
+
+  @Post("businesses/:businessId/callbacks")
+  async createCallback(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Body() body: unknown) {
+    const user = await this.requireBusinessAccess(headers, businessId);
+    const command = CreateCallbackSchema.parse(body);
+    const task = await this.tasks.create({
+      businessId,
+      customerId: command.customerId,
+      title: command.title,
+      description: command.description,
+      priority: command.priority,
+      dueAt: parseOptionalDate(command.dueAt) ?? await this.resolveAiTaskDueAt(businessId, {}),
+      source: "app"
+    });
+    await this.audit.record({
+      businessId,
+      actorType: "user",
+      actorId: user.id,
+      source: "core",
+      entityType: "callback",
+      entityId: task.id,
+      action: "CREATE_CALLBACK",
+      after: task as Prisma.InputJsonValue
+    });
+    return { callback: this.publicCallback(task) };
+  }
+
+  @Patch("businesses/:businessId/callbacks/:callbackId")
+  async updateCallback(
+    @Headers() headers: RequestHeaders,
+    @Param("businessId") businessId: string,
+    @Param("callbackId") callbackId: string,
+    @Body() body: unknown
+  ) {
+    const user = await this.requireBusinessAccess(headers, businessId);
+    const command = UpdateCallbackSchema.parse(body);
+    const task = await this.tasks.update({
+      businessId,
+      taskId: callbackId,
+      customerId: command.customerId === null ? undefined : command.customerId,
+      title: command.title,
+      description: command.description === null ? undefined : command.description,
+      priority: command.priority,
+      dueAt: parseOptionalDate(command.dueAt),
+      status: command.status === "DONE" ? "COMPLETED" : command.status === "OPEN" ? "OPEN" : undefined
+    });
+    if (!task) {
+      throw new NotFoundException("Callback not found");
+    }
+    await this.audit.record({
+      businessId,
+      actorType: "user",
+      actorId: user.id,
+      source: "core",
+      entityType: "callback",
+      entityId: task.id,
+      action: "UPDATE_CALLBACK",
+      after: task as Prisma.InputJsonValue
+    });
+    return { callback: this.publicCallback(task) };
+  }
+
+  @Post("businesses/:businessId/callbacks/:callbackId/complete")
+  async completeCallback(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Param("callbackId") callbackId: string) {
+    const user = await this.requireBusinessAccess(headers, businessId);
+    const task = await this.tasks.complete(businessId, callbackId);
+    if (!task) {
+      throw new NotFoundException("Callback not found");
+    }
+    await this.audit.record({
+      businessId,
+      actorType: "user",
+      actorId: user.id,
+      source: "core",
+      entityType: "callback",
+      entityId: task.id,
+      action: "COMPLETE_CALLBACK",
+      after: task as Prisma.InputJsonValue
+    });
+    return { callback: this.publicCallback(task) };
+  }
+
+  @Delete("businesses/:businessId/callbacks/:callbackId")
+  async deleteCallback(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Param("callbackId") callbackId: string) {
+    const user = await this.requireBusinessAccess(headers, businessId);
+    const task = await this.tasks.softDelete(businessId, callbackId);
+    if (!task) {
+      throw new NotFoundException("Callback not found");
+    }
+    await this.audit.record({
+      businessId,
+      actorType: "user",
+      actorId: user.id,
+      source: "core",
+      entityType: "callback",
+      entityId: task.id,
+      action: "DELETE_CALLBACK",
+      after: task as Prisma.InputJsonValue
+    });
+    return { callback: this.publicCallback(task) };
   }
 
   @Patch("businesses/:businessId/tasks/:taskId")
@@ -971,6 +1295,7 @@ class CoreController {
   async createCustomer(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Body() body: unknown) {
     const user = await this.requireBusinessAccess(headers, businessId);
     const command = CreateCustomerSchema.parse(body);
+    const duplicate = await this.customers.findDuplicateByPhone(businessId, command.phone);
     const customer = await this.customers.create({
       businessId,
       name: command.name,
@@ -978,6 +1303,9 @@ class CoreController {
       email: command.email,
       address: command.address
     });
+    const initialNote = command.initialNote
+      ? await this.customerNotes.create({ businessId, customerId: customer.id, text: command.initialNote })
+      : null;
     await this.audit.record({
       businessId,
       actorType: "user",
@@ -988,7 +1316,7 @@ class CoreController {
       action: "CREATE_CUSTOMER",
       after: customer as Prisma.InputJsonValue
     });
-    return { customer };
+    return { customer, duplicateCustomer: duplicate, initialNote };
   }
 
   @Get("businesses/:businessId/customers")
@@ -1005,7 +1333,32 @@ class CoreController {
       throw new NotFoundException("Customer not found");
     }
 
-    return { customer };
+    const [callbacks, homeVisits, quotes, notes] = await Promise.all([
+      this.tasks.listByCustomer(businessId, customerId),
+      this.appointments.listByCustomer(businessId, customerId),
+      this.quotes.listByCustomer(businessId, customerId),
+      this.customerNotes.listByCustomer(businessId, customerId)
+    ]);
+    const activity = [
+      ...callbacks.map((task) => this.publicCallbackWorkItem(task)),
+      ...homeVisits.map((appointment) => this.publicHomeVisitWorkItem(appointment)),
+      ...quotes.map((quote) => this.publicQuoteWorkItem(quote)),
+      ...(notes ?? []).map((note) => ({
+        id: note.id,
+        type: "note",
+        title: "הערה",
+        description: note.text,
+        dueAt: note.createdAt,
+        priority: "NORMAL",
+        status: "DONE",
+        source: "note",
+        customer: publicCustomer(customer),
+        linkedEntity: { type: "note", id: note.id },
+        actions: ["open"]
+      }))
+    ].sort((a, b) => new Date(b.dueAt).getTime() - new Date(a.dueAt).getTime());
+
+    return { customer, activity };
   }
 
   @Patch("businesses/:businessId/customers/:customerId")
@@ -1041,6 +1394,37 @@ class CoreController {
       after: customer as Prisma.InputJsonValue
     });
     return { customer };
+  }
+
+  @Post("businesses/:businessId/customers/:customerId/merge")
+  async mergeCustomer(
+    @Headers() headers: RequestHeaders,
+    @Param("businessId") businessId: string,
+    @Param("customerId") customerId: string,
+    @Body() body: unknown
+  ) {
+    const user = await this.requireBusinessAccess(headers, businessId);
+    const command = MergeCustomerSchema.parse(body);
+    const merge = await this.customers.merge({
+      businessId,
+      sourceCustomerId: customerId,
+      targetCustomerId: command.targetCustomerId,
+      mergedByUserId: user.id
+    });
+    if (!merge) {
+      throw new NotFoundException("Customer not found");
+    }
+    await this.audit.record({
+      businessId,
+      actorType: "user",
+      actorId: user.id,
+      source: "core",
+      entityType: "customer",
+      entityId: customerId,
+      action: "MERGE_CUSTOMER",
+      after: merge as Prisma.InputJsonValue
+    });
+    return { merge };
   }
 
   @Post("businesses/:businessId/customers/:customerId/notes")
@@ -1089,7 +1473,32 @@ class CoreController {
   @Get("businesses/:businessId/calls")
   async listIncomingCalls(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string) {
     await this.requireBusinessAccess(headers, businessId);
-    return { calls: await this.incomingCalls.listByBusiness(businessId) };
+    const calls = await this.incomingCalls.listByBusiness(businessId);
+    return {
+      calls: await Promise.all(calls.map(async (call) => {
+        const transcript = call.transcripts.at(-1) ?? null;
+        const relatedTask = transcript?.taskId ? await this.tasks.findByBusinessAndId(businessId, transcript.taskId) : null;
+        const customer = call.fromNumber ? await this.customers.findDuplicateByPhone(businessId, call.fromNumber) : null;
+        return {
+          id: call.id,
+          fromNumber: call.fromNumber,
+          toNumber: call.toNumber,
+          calledAt: call.createdAt,
+          durationSeconds: null,
+          ivrSelection: callIvrSelection(call),
+          displayStatus: relatedTask?.status === "COMPLETED" ? "TASK_COMPLETED" : callDisplayStatus(call),
+          urgent: call.urgent,
+          transcriptPreview: transcript?.transcript ?? null,
+          relatedTask: relatedTask ? {
+            id: relatedTask.id,
+            status: callbackStatus(relatedTask.status),
+            dueAt: relatedTask.dueAt,
+            priority: relatedTask.priority
+          } : null,
+          customer: publicCustomer(customer)
+        };
+      }))
+    };
   }
 
   @Get("businesses/:businessId/appointments")
@@ -1106,6 +1515,8 @@ class CoreController {
       businessId,
       customerId: command.customerId,
       title: command.title,
+      location: command.location,
+      notes: command.notes,
       startsAt: parseRequiredDate(command.startsAt),
       endsAt: parseOptionalDate(command.endsAt)
     });
@@ -1136,6 +1547,8 @@ class CoreController {
       appointmentId,
       customerId: command.customerId,
       title: command.title,
+      location: command.location,
+      notes: command.notes,
       startsAt: command.startsAt ? parseRequiredDate(command.startsAt) : undefined,
       endsAt: parseOptionalDate(command.endsAt),
       status: command.status
@@ -1154,6 +1567,227 @@ class CoreController {
       after: appointment as Prisma.InputJsonValue
     });
     return { appointment };
+  }
+
+  @Get("businesses/:businessId/home-visits")
+  async listHomeVisits(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string) {
+    await this.requireBusinessAccess(headers, businessId);
+    const homeVisits = await this.appointments.listByBusiness(businessId);
+    return { homeVisits: homeVisits.map((appointment) => this.publicHomeVisit(appointment)) };
+  }
+
+  @Post("businesses/:businessId/home-visits")
+  async createHomeVisit(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Body() body: unknown) {
+    const user = await this.requireBusinessAccess(headers, businessId);
+    const command = CreateHomeVisitSchema.parse(body);
+    const appointment = await this.appointments.create({
+      businessId,
+      customerId: command.customerId,
+      title: command.title,
+      location: command.location,
+      notes: command.notes,
+      startsAt: parseRequiredDate(command.startsAt),
+      endsAt: parseOptionalDate(command.endsAt) ?? new Date(parseRequiredDate(command.startsAt).getTime() + 30 * 60 * 1000)
+    });
+    await this.audit.record({
+      businessId,
+      actorType: "user",
+      actorId: user.id,
+      source: "core",
+      entityType: "home_visit",
+      entityId: appointment.id,
+      action: "CREATE_HOME_VISIT",
+      after: appointment as Prisma.InputJsonValue
+    });
+    return { homeVisit: this.publicHomeVisit(appointment) };
+  }
+
+  @Patch("businesses/:businessId/home-visits/:homeVisitId")
+  async updateHomeVisit(
+    @Headers() headers: RequestHeaders,
+    @Param("businessId") businessId: string,
+    @Param("homeVisitId") homeVisitId: string,
+    @Body() body: unknown
+  ) {
+    const user = await this.requireBusinessAccess(headers, businessId);
+    const command = UpdateHomeVisitSchema.parse(body);
+    const appointment = await this.appointments.update({
+      businessId,
+      appointmentId: homeVisitId,
+      customerId: command.customerId,
+      title: command.title,
+      location: command.location,
+      notes: command.notes,
+      startsAt: command.startsAt ? parseRequiredDate(command.startsAt) : undefined,
+      endsAt: parseOptionalDate(command.endsAt),
+      status: command.status === "DONE" ? "COMPLETED" : command.status === "OPEN" ? "SCHEDULED" : undefined
+    });
+    if (!appointment) {
+      throw new NotFoundException("Home visit not found");
+    }
+    await this.audit.record({
+      businessId,
+      actorType: "user",
+      actorId: user.id,
+      source: "core",
+      entityType: "home_visit",
+      entityId: appointment.id,
+      action: "UPDATE_HOME_VISIT",
+      after: appointment as Prisma.InputJsonValue
+    });
+    return { homeVisit: this.publicHomeVisit(appointment) };
+  }
+
+  @Post("businesses/:businessId/home-visits/:homeVisitId/complete")
+  async completeHomeVisit(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Param("homeVisitId") homeVisitId: string) {
+    const user = await this.requireBusinessAccess(headers, businessId);
+    const appointment = await this.appointments.update({
+      businessId,
+      appointmentId: homeVisitId,
+      status: "COMPLETED"
+    });
+    if (!appointment) {
+      throw new NotFoundException("Home visit not found");
+    }
+    await this.audit.record({
+      businessId,
+      actorType: "user",
+      actorId: user.id,
+      source: "core",
+      entityType: "home_visit",
+      entityId: appointment.id,
+      action: "COMPLETE_HOME_VISIT",
+      after: appointment as Prisma.InputJsonValue
+    });
+    return { homeVisit: this.publicHomeVisit(appointment) };
+  }
+
+  @Delete("businesses/:businessId/home-visits/:homeVisitId")
+  async deleteHomeVisit(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Param("homeVisitId") homeVisitId: string) {
+    const user = await this.requireBusinessAccess(headers, businessId);
+    const appointment = await this.appointments.softDelete(businessId, homeVisitId);
+    if (!appointment) {
+      throw new NotFoundException("Home visit not found");
+    }
+    await this.audit.record({
+      businessId,
+      actorType: "user",
+      actorId: user.id,
+      source: "core",
+      entityType: "home_visit",
+      entityId: appointment.id,
+      action: "DELETE_HOME_VISIT",
+      after: appointment as Prisma.InputJsonValue
+    });
+    return { homeVisit: this.publicHomeVisit(appointment) };
+  }
+
+  @Get("businesses/:businessId/quotes")
+  async listQuotes(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string) {
+    await this.requireBusinessAccess(headers, businessId);
+    const quotes = await this.quotes.listByBusiness(businessId);
+    return { quotes: quotes.map((quote) => this.publicQuote(quote)) };
+  }
+
+  @Post("businesses/:businessId/quotes")
+  async createQuote(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Body() body: unknown) {
+    const user = await this.requireBusinessAccess(headers, businessId);
+    const command = CreateQuoteSchema.parse(body);
+    const quote = await this.quotes.create({
+      businessId,
+      customerId: command.customerId,
+      title: command.title,
+      description: command.description,
+      estimatedAmount: command.estimatedAmount === undefined ? undefined : new Prisma.Decimal(command.estimatedAmount),
+      dueAt: parseRequiredDate(command.dueAt),
+      source: "app"
+    });
+    await this.audit.record({
+      businessId,
+      actorType: "user",
+      actorId: user.id,
+      source: "core",
+      entityType: "quote",
+      entityId: quote.id,
+      action: "CREATE_QUOTE",
+      after: quote as Prisma.InputJsonValue
+    });
+    return { quote: this.publicQuote(quote) };
+  }
+
+  @Patch("businesses/:businessId/quotes/:quoteId")
+  async updateQuote(
+    @Headers() headers: RequestHeaders,
+    @Param("businessId") businessId: string,
+    @Param("quoteId") quoteId: string,
+    @Body() body: unknown
+  ) {
+    const user = await this.requireBusinessAccess(headers, businessId);
+    const command = UpdateQuoteSchema.parse(body);
+    const quote = await this.quotes.update({
+      businessId,
+      quoteId,
+      customerId: command.customerId,
+      title: command.title,
+      description: command.description,
+      estimatedAmount: parseOptionalAmount(command.estimatedAmount),
+      dueAt: command.dueAt ? parseRequiredDate(command.dueAt) : undefined,
+      status: command.status
+    });
+    if (!quote) {
+      throw new NotFoundException("Quote not found");
+    }
+    await this.audit.record({
+      businessId,
+      actorType: "user",
+      actorId: user.id,
+      source: "core",
+      entityType: "quote",
+      entityId: quote.id,
+      action: "UPDATE_QUOTE",
+      after: quote as Prisma.InputJsonValue
+    });
+    return { quote: this.publicQuote(quote) };
+  }
+
+  @Post("businesses/:businessId/quotes/:quoteId/mark-paid")
+  async markQuotePaid(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Param("quoteId") quoteId: string) {
+    const user = await this.requireBusinessAccess(headers, businessId);
+    const quote = await this.quotes.markPaid(businessId, quoteId);
+    if (!quote) {
+      throw new NotFoundException("Quote not found");
+    }
+    await this.audit.record({
+      businessId,
+      actorType: "user",
+      actorId: user.id,
+      source: "core",
+      entityType: "quote",
+      entityId: quote.id,
+      action: "MARK_QUOTE_PAID",
+      after: quote as Prisma.InputJsonValue
+    });
+    return { quote: this.publicQuote(quote) };
+  }
+
+  @Delete("businesses/:businessId/quotes/:quoteId")
+  async deleteQuote(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Param("quoteId") quoteId: string) {
+    const user = await this.requireBusinessAccess(headers, businessId);
+    const quote = await this.quotes.softDelete(businessId, quoteId);
+    if (!quote) {
+      throw new NotFoundException("Quote not found");
+    }
+    await this.audit.record({
+      businessId,
+      actorType: "user",
+      actorId: user.id,
+      source: "core",
+      entityType: "quote",
+      entityId: quote.id,
+      action: "DELETE_QUOTE",
+      after: quote as Prisma.InputJsonValue
+    });
+    return { quote: this.publicQuote(quote) };
   }
 
   @Post("businesses/:businessId/appointments/:appointmentId/cancel")
@@ -1335,11 +1969,138 @@ class CoreController {
     return { notification };
   }
 
+  @Post("businesses/:businessId/notifications/:notificationId/read")
+  async markNotificationRead(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Param("notificationId") notificationId: string) {
+    const user = await this.requireBusinessAccess(headers, businessId);
+    const notification = await this.notifications.updateStatus({
+      businessId,
+      notificationId,
+      status: "READ"
+    });
+    if (!notification) {
+      throw new NotFoundException("Notification not found");
+    }
+    await this.audit.record({
+      businessId,
+      actorType: "user",
+      actorId: user.id,
+      source: "core",
+      entityType: "notification",
+      entityId: notification.id,
+      action: "MARK_NOTIFICATION_READ",
+      after: notification as Prisma.InputJsonValue
+    });
+    return { notification };
+  }
+
+  @Post("businesses/:businessId/notifications/read-all")
+  async markAllNotificationsRead(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string) {
+    const user = await this.requireBusinessAccess(headers, businessId);
+    const result = await this.notifications.markAllRead(businessId);
+    await this.audit.record({
+      businessId,
+      actorType: "user",
+      actorId: user.id,
+      source: "core",
+      entityType: "notification",
+      action: "MARK_ALL_NOTIFICATIONS_READ",
+      after: result as Prisma.InputJsonValue
+    });
+    return { updatedCount: result.count };
+  }
+
+  @Post("businesses/:businessId/notifications/:notificationId/snooze")
+  async snoozeNotification(
+    @Headers() headers: RequestHeaders,
+    @Param("businessId") businessId: string,
+    @Param("notificationId") notificationId: string,
+    @Body() body: unknown
+  ) {
+    const user = await this.requireBusinessAccess(headers, businessId);
+    const command = SnoozeNotificationSchema.parse(body);
+    const notification = await this.notifications.findByBusinessAndId(businessId, notificationId);
+    if (!notification) {
+      throw new NotFoundException("Notification not found");
+    }
+    const settings = await this.settings.getByBusiness(businessId);
+    const dueAt = snoozeDueAt(command.preset, settings.timezone);
+    const itemType = notification.itemType ?? (notification.taskId ? "callback" : null);
+    const itemId = notification.itemId ?? notification.taskId;
+    if (!itemType || !itemId) {
+      throw new BadRequestException("Notification is not linked to a snoozable item");
+    }
+
+    let item: unknown;
+    if (itemType === "callback") {
+      item = await this.tasks.snooze(businessId, itemId, dueAt);
+    } else if (itemType === "quote") {
+      item = await this.quotes.snooze(businessId, itemId, dueAt);
+    } else {
+      throw new BadRequestException("Notification item is not snoozable");
+    }
+    if (!item) {
+      throw new NotFoundException("Snoozable item not found");
+    }
+    const readNotification = await this.notifications.updateStatus({
+      businessId,
+      notificationId,
+      status: "READ"
+    });
+    await this.audit.record({
+      businessId,
+      actorType: "user",
+      actorId: user.id,
+      source: "core",
+      entityType: "notification",
+      entityId: notification.id,
+      action: "SNOOZE_NOTIFICATION",
+      after: { notification: readNotification, item, dueAt: dueAt.toISOString() } as Prisma.InputJsonValue
+    });
+    return { notification: readNotification, item, dueAt };
+  }
+
   @Get("businesses/:businessId/pending-actions")
   async listPendingActions(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Query() query: unknown) {
     await this.requireBusinessAccess(headers, businessId);
     const command = ListByStatusQuerySchema.parse(query);
     return { pendingActions: await this.pendingActions.listByBusinessAndStatus(businessId, command.status) };
+  }
+
+  @Get("businesses/:businessId/ai-pending-actions")
+  async listAiPendingActions(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Query() query: unknown) {
+    return this.listPendingActions(headers, businessId, query);
+  }
+
+  @Patch("businesses/:businessId/ai-pending-actions/:pendingActionId")
+  async updateAiPendingAction(
+    @Headers() headers: RequestHeaders,
+    @Param("businessId") businessId: string,
+    @Param("pendingActionId") pendingActionId: string,
+    @Body() body: unknown
+  ) {
+    const user = await this.requireBusinessAccess(headers, businessId);
+    const command = UpdatePendingActionSchema.parse(body);
+    const pendingAction = await this.pendingActions.update({
+      businessId,
+      pendingActionId,
+      payload: command.payload as Prisma.InputJsonValue | undefined,
+      missingFields: command.missingFields,
+      reviewReason: command.reviewReason
+    });
+    if (!pendingAction) {
+      throw new NotFoundException("Pending action not found");
+    }
+    await this.audit.record({
+      businessId,
+      actorType: "user",
+      actorId: user.id,
+      source: "core",
+      entityType: "pending_action",
+      entityId: pendingAction.id,
+      action: "UPDATE_PENDING_ACTION",
+      after: pendingAction as Prisma.InputJsonValue
+    });
+    return { pendingAction };
   }
 
   @Post("businesses/:businessId/pending-actions/:pendingActionId/reject")
@@ -1369,6 +2130,15 @@ class CoreController {
       after: pending as Prisma.InputJsonValue
     });
     return { pendingAction: pending };
+  }
+
+  @Post("businesses/:businessId/ai-pending-actions/:pendingActionId/reject")
+  async rejectAiPendingAction(
+    @Headers() headers: RequestHeaders,
+    @Param("businessId") businessId: string,
+    @Param("pendingActionId") pendingActionId: string
+  ) {
+    return this.rejectPendingAction(headers, businessId, pendingActionId);
   }
 
   @Post("businesses/:businessId/pending-actions/:pendingActionId/complete")
@@ -1421,10 +2191,159 @@ class CoreController {
     return { pendingAction: pending, execution };
   }
 
+  @Post("businesses/:businessId/ai-pending-actions/:pendingActionId/approve")
+  async approveAiPendingAction(
+    @Headers() headers: RequestHeaders,
+    @Param("businessId") businessId: string,
+    @Param("pendingActionId") pendingActionId: string,
+    @Body() body: unknown
+  ) {
+    return this.completePendingAction(headers, businessId, pendingActionId, body);
+  }
+
   @Get("businesses/:businessId/audit-events")
   async listAuditEvents(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string) {
     await this.requireBusinessAccess(headers, businessId);
     return { auditEvents: await this.audit.listByBusiness(businessId) };
+  }
+
+  private publicCallback(task: {
+    id: string;
+    customerId?: string | null;
+    title: string;
+    description?: string | null;
+    priority: string;
+    dueAt?: Date | null;
+    status: string;
+    source: string;
+    sourceRef?: string | null;
+    createdAt: Date;
+    updatedAt: Date;
+    customer?: { id: string; name: string; phone?: string | null; email?: string | null; address?: string | null } | null;
+  }) {
+    return {
+      id: task.id,
+      customerId: task.customerId ?? null,
+      title: task.title,
+      description: task.description ?? null,
+      priority: task.priority,
+      dueAt: task.dueAt ?? null,
+      status: callbackStatus(task.status),
+      source: task.source,
+      sourceRef: task.sourceRef ?? null,
+      customer: publicCustomer(task.customer),
+      createdAt: task.createdAt,
+      updatedAt: task.updatedAt
+    };
+  }
+
+  private publicCallbackWorkItem(task: Parameters<CoreController["publicCallback"]>[0]) {
+    const callback = this.publicCallback(task);
+    return {
+      id: callback.id,
+      type: "callback",
+      title: callback.title,
+      description: callback.description,
+      customer: callback.customer,
+      dueAt: callback.dueAt ?? callback.createdAt,
+      priority: callback.priority,
+      status: callback.status,
+      source: callback.source,
+      linkedEntity: { type: "callback", id: callback.id },
+      actions: callback.status === "DONE" ? ["open"] : ["call", "complete", "open"]
+    };
+  }
+
+  private publicHomeVisit(appointment: {
+    id: string;
+    customerId?: string | null;
+    title: string;
+    location?: string | null;
+    notes?: string | null;
+    startsAt: Date;
+    endsAt?: Date | null;
+    status: string;
+    createdAt: Date;
+    updatedAt: Date;
+    customer?: { id: string; name: string; phone?: string | null; email?: string | null; address?: string | null } | null;
+  }) {
+    return {
+      id: appointment.id,
+      customerId: appointment.customerId ?? null,
+      title: appointment.title,
+      location: appointment.location ?? null,
+      notes: appointment.notes ?? null,
+      startsAt: appointment.startsAt,
+      endsAt: appointment.endsAt ?? null,
+      status: homeVisitStatus(appointment.status),
+      customer: publicCustomer(appointment.customer),
+      createdAt: appointment.createdAt,
+      updatedAt: appointment.updatedAt
+    };
+  }
+
+  private publicHomeVisitWorkItem(appointment: Parameters<CoreController["publicHomeVisit"]>[0]) {
+    const homeVisit = this.publicHomeVisit(appointment);
+    return {
+      id: homeVisit.id,
+      type: "home_visit",
+      title: homeVisit.title,
+      description: homeVisit.notes ?? homeVisit.location,
+      customer: homeVisit.customer,
+      dueAt: homeVisit.startsAt,
+      priority: "NORMAL",
+      status: homeVisit.status,
+      source: "app",
+      linkedEntity: { type: "home_visit", id: homeVisit.id },
+      actions: homeVisit.status === "DONE" ? ["open"] : ["navigate", "complete", "open"]
+    };
+  }
+
+  private publicQuote(quote: {
+    id: string;
+    customerId?: string | null;
+    title: string;
+    description?: string | null;
+    estimatedAmount?: Prisma.Decimal | null;
+    dueAt: Date;
+    status: string;
+    source: string;
+    sourceRef?: string | null;
+    createdAt: Date;
+    updatedAt: Date;
+    customer?: { id: string; name: string; phone?: string | null; email?: string | null; address?: string | null } | null;
+  }) {
+    return {
+      id: quote.id,
+      customerId: quote.customerId ?? null,
+      title: quote.title,
+      description: quote.description ?? null,
+      estimatedAmount: quote.estimatedAmount?.toString() ?? null,
+      dueAt: quote.dueAt,
+      status: quote.status,
+      source: quote.source,
+      sourceRef: quote.sourceRef ?? null,
+      customer: publicCustomer(quote.customer),
+      createdAt: quote.createdAt,
+      updatedAt: quote.updatedAt
+    };
+  }
+
+  private publicQuoteWorkItem(quote: Parameters<CoreController["publicQuote"]>[0]) {
+    const publicQuote = this.publicQuote(quote);
+    return {
+      id: publicQuote.id,
+      type: "quote",
+      title: publicQuote.title,
+      description: publicQuote.description,
+      customer: publicQuote.customer,
+      dueAt: publicQuote.dueAt,
+      priority: "NORMAL",
+      status: publicQuote.status,
+      source: publicQuote.source,
+      linkedEntity: { type: "quote", id: publicQuote.id },
+      actions: publicQuote.status === "PAID" ? ["open"] : ["open", "edit", "mark_paid"]
+    };
   }
 
   private async executeStructuredAction(input: {
@@ -1434,7 +2353,7 @@ class CoreController {
     payload: Record<string, unknown>;
     idempotencyKey: string;
   }) {
-    if (input.actionType === "CREATE_TASK") {
+    if (input.actionType === "CREATE_TASK" || input.actionType === "CREATE_CALLBACK") {
       const existing = await this.tasks.findByIdempotencyKey(input.businessId, input.idempotencyKey);
       if (existing) {
         return { type: input.actionType, duplicate: true, task: existing };
@@ -1467,6 +2386,53 @@ class CoreController {
       return { type: input.actionType, duplicate: false, task };
     }
 
+    if (input.actionType === "COMPLETE_TASK" || input.actionType === "COMPLETE_CALLBACK") {
+      const taskId = typeof input.payload.taskId === "string" ? input.payload.taskId
+        : typeof input.payload.callbackId === "string" ? input.payload.callbackId
+          : undefined;
+      if (!taskId) {
+        throw new BadRequestException("Action payload is missing callbackId");
+      }
+      const task = await this.tasks.complete(input.businessId, taskId);
+      if (!task) {
+        throw new NotFoundException("Callback not found");
+      }
+      await this.audit.record({
+        businessId: input.businessId,
+        actorType: "user",
+        actorId: input.userId,
+        source: "structured_action",
+        entityType: "callback",
+        entityId: task.id,
+        action: "COMPLETE_CALLBACK_FROM_ACTION",
+        after: task as Prisma.InputJsonValue
+      });
+      return { type: input.actionType, task };
+    }
+
+    if (input.actionType === "UPDATE_TASK" || input.actionType === "UPDATE_CALLBACK") {
+      const taskId = typeof input.payload.taskId === "string" ? input.payload.taskId
+        : typeof input.payload.callbackId === "string" ? input.payload.callbackId
+          : undefined;
+      if (!taskId) {
+        throw new BadRequestException("Action payload is missing callbackId");
+      }
+      const task = await this.tasks.update({
+        businessId: input.businessId,
+        taskId,
+        customerId: typeof input.payload.customerId === "string" ? input.payload.customerId : undefined,
+        title: typeof input.payload.title === "string" ? input.payload.title : undefined,
+        description: typeof input.payload.description === "string" ? input.payload.description : undefined,
+        priority: input.payload.priority === "URGENT" ? "URGENT" : input.payload.priority === "NORMAL" ? "NORMAL" : undefined,
+        dueAt: typeof input.payload.dueAt === "string" ? await this.resolveAiTaskDueAt(input.businessId, input.payload) : undefined,
+        status: input.payload.status === "DONE" || input.payload.status === "COMPLETED" ? "COMPLETED" : undefined
+      });
+      if (!task) {
+        throw new NotFoundException("Callback not found");
+      }
+      return { type: input.actionType, task };
+    }
+
     if (input.actionType === "CREATE_CUSTOMER") {
       const name = typeof input.payload.name === "string" ? input.payload.name : undefined;
       if (!name) {
@@ -1489,6 +2455,25 @@ class CoreController {
         action: "CREATE_CUSTOMER_FROM_PENDING_ACTION",
         after: customer as Prisma.InputJsonValue
       });
+      return { type: input.actionType, customer };
+    }
+
+    if (input.actionType === "UPDATE_CUSTOMER") {
+      const customerId = typeof input.payload.customerId === "string" ? input.payload.customerId : undefined;
+      if (!customerId) {
+        throw new BadRequestException("Action payload is missing customerId");
+      }
+      const customer = await this.customers.update({
+        businessId: input.businessId,
+        customerId,
+        name: typeof input.payload.name === "string" ? input.payload.name : undefined,
+        phone: typeof input.payload.phone === "string" ? input.payload.phone : undefined,
+        email: typeof input.payload.email === "string" ? input.payload.email : undefined,
+        address: typeof input.payload.address === "string" ? input.payload.address : undefined
+      });
+      if (!customer) {
+        throw new NotFoundException("Customer not found");
+      }
       return { type: input.actionType, customer };
     }
 
@@ -1518,9 +2503,11 @@ class CoreController {
       return { type: input.actionType, job };
     }
 
-    if (input.actionType === "CREATE_APPOINTMENT") {
+    if (input.actionType === "CREATE_APPOINTMENT" || input.actionType === "CREATE_HOME_VISIT") {
       const title = typeof input.payload.title === "string" ? input.payload.title : undefined;
-      const startsAt = typeof input.payload.startsAt === "string" ? input.payload.startsAt : undefined;
+      const startsAt = typeof input.payload.startsAt === "string" ? input.payload.startsAt
+        : typeof input.payload.dueAt === "string" ? input.payload.dueAt
+          : undefined;
       if (!title || !startsAt) {
         throw new BadRequestException("Pending action payload is missing appointment title or startsAt");
       }
@@ -1528,6 +2515,8 @@ class CoreController {
         businessId: input.businessId,
         customerId: typeof input.payload.customerId === "string" ? input.payload.customerId : undefined,
         title,
+        location: typeof input.payload.location === "string" ? input.payload.location : undefined,
+        notes: typeof input.payload.notes === "string" ? input.payload.notes : undefined,
         startsAt: parseRequiredDate(startsAt),
         endsAt: typeof input.payload.endsAt === "string" ? parseRequiredDate(input.payload.endsAt) : undefined
       });
@@ -1542,6 +2531,136 @@ class CoreController {
         after: appointment as Prisma.InputJsonValue
       });
       return { type: input.actionType, appointment };
+    }
+
+    if (input.actionType === "UPDATE_APPOINTMENT" || input.actionType === "UPDATE_HOME_VISIT") {
+      const appointmentId = typeof input.payload.appointmentId === "string" ? input.payload.appointmentId
+        : typeof input.payload.homeVisitId === "string" ? input.payload.homeVisitId
+          : undefined;
+      if (!appointmentId) {
+        throw new BadRequestException("Action payload is missing homeVisitId");
+      }
+      const appointment = await this.appointments.update({
+        businessId: input.businessId,
+        appointmentId,
+        customerId: typeof input.payload.customerId === "string" ? input.payload.customerId : undefined,
+        title: typeof input.payload.title === "string" ? input.payload.title : undefined,
+        location: typeof input.payload.location === "string" ? input.payload.location : undefined,
+        notes: typeof input.payload.notes === "string" ? input.payload.notes : undefined,
+        startsAt: typeof input.payload.startsAt === "string" ? parseRequiredDate(input.payload.startsAt) : undefined,
+        endsAt: typeof input.payload.endsAt === "string" ? parseRequiredDate(input.payload.endsAt) : undefined,
+        status: input.payload.status === "DONE" || input.payload.status === "COMPLETED" ? "COMPLETED" : undefined
+      });
+      if (!appointment) {
+        throw new NotFoundException("Home visit not found");
+      }
+      return { type: input.actionType, appointment };
+    }
+
+    if (input.actionType === "CREATE_QUOTE") {
+      const existing = await this.quotes.findByIdempotencyKey(input.businessId, input.idempotencyKey);
+      if (existing) {
+        return { type: input.actionType, duplicate: true, quote: existing };
+      }
+      const title = typeof input.payload.title === "string" ? input.payload.title : undefined;
+      if (!title) {
+        throw new BadRequestException("Action payload is missing quote title");
+      }
+      const quote = await this.quotes.create({
+        businessId: input.businessId,
+        customerId: typeof input.payload.customerId === "string" ? input.payload.customerId : undefined,
+        title,
+        description: typeof input.payload.description === "string" ? input.payload.description : undefined,
+        estimatedAmount: typeof input.payload.estimatedAmount === "string" || typeof input.payload.estimatedAmount === "number"
+          ? new Prisma.Decimal(input.payload.estimatedAmount)
+          : undefined,
+        dueAt: await this.resolveAiTaskDueAt(input.businessId, input.payload),
+        source: "structured_action",
+        sourceRef: input.idempotencyKey,
+        idempotencyKey: input.idempotencyKey
+      });
+      await this.audit.record({
+        businessId: input.businessId,
+        actorType: "user",
+        actorId: input.userId,
+        source: "structured_action",
+        entityType: "quote",
+        entityId: quote.id,
+        action: "CREATE_QUOTE_FROM_ACTION",
+        after: quote as Prisma.InputJsonValue
+      });
+      return { type: input.actionType, duplicate: false, quote };
+    }
+
+    if (input.actionType === "MARK_QUOTE_PAID") {
+      const quoteId = typeof input.payload.quoteId === "string" ? input.payload.quoteId : undefined;
+      if (!quoteId) {
+        throw new BadRequestException("Action payload is missing quoteId");
+      }
+      const quote = await this.quotes.markPaid(input.businessId, quoteId);
+      if (!quote) {
+        throw new NotFoundException("Quote not found");
+      }
+      return { type: input.actionType, quote };
+    }
+
+    if (input.actionType === "UPDATE_QUOTE") {
+      const quoteId = typeof input.payload.quoteId === "string" ? input.payload.quoteId : undefined;
+      if (!quoteId) {
+        throw new BadRequestException("Action payload is missing quoteId");
+      }
+      const quote = await this.quotes.update({
+        businessId: input.businessId,
+        quoteId,
+        customerId: typeof input.payload.customerId === "string" ? input.payload.customerId : undefined,
+        title: typeof input.payload.title === "string" ? input.payload.title : undefined,
+        description: typeof input.payload.description === "string" ? input.payload.description : undefined,
+        estimatedAmount: typeof input.payload.estimatedAmount === "string" || typeof input.payload.estimatedAmount === "number"
+          ? new Prisma.Decimal(input.payload.estimatedAmount)
+          : undefined,
+        dueAt: typeof input.payload.dueAt === "string" ? await this.resolveAiTaskDueAt(input.businessId, input.payload) : undefined,
+        status: input.payload.status === "PAID" ? "PAID" : input.payload.status === "OPEN" ? "OPEN" : undefined
+      });
+      if (!quote) {
+        throw new NotFoundException("Quote not found");
+      }
+      return { type: input.actionType, quote };
+    }
+
+    if (input.actionType === "MERGE_CUSTOMERS") {
+      const sourceCustomerId = typeof input.payload.sourceCustomerId === "string" ? input.payload.sourceCustomerId : undefined;
+      const targetCustomerId = typeof input.payload.targetCustomerId === "string" ? input.payload.targetCustomerId : undefined;
+      if (!sourceCustomerId || !targetCustomerId) {
+        throw new BadRequestException("Action payload is missing sourceCustomerId or targetCustomerId");
+      }
+      const merge = await this.customers.merge({
+        businessId: input.businessId,
+        sourceCustomerId,
+        targetCustomerId,
+        mergedByUserId: input.userId
+      });
+      if (!merge) {
+        throw new NotFoundException("Customer not found");
+      }
+      return { type: input.actionType, merge };
+    }
+
+    if (input.actionType === "DELETE_TREATMENT_ITEM") {
+      const itemType = typeof input.payload.itemType === "string" ? input.payload.itemType : undefined;
+      const itemId = typeof input.payload.itemId === "string" ? input.payload.itemId : undefined;
+      if (!itemType || !itemId) {
+        throw new BadRequestException("Action payload is missing itemType or itemId");
+      }
+      if (itemType === "callback") {
+        return { type: input.actionType, item: await this.tasks.softDelete(input.businessId, itemId) };
+      }
+      if (itemType === "home_visit") {
+        return { type: input.actionType, item: await this.appointments.softDelete(input.businessId, itemId) };
+      }
+      if (itemType === "quote") {
+        return { type: input.actionType, item: await this.quotes.softDelete(input.businessId, itemId) };
+      }
+      throw new BadRequestException("Unsupported treatment item type");
     }
 
     if (input.actionType === "ADD_CUSTOMER_NOTE") {
@@ -1754,6 +2873,7 @@ class CoreController {
       title: `${urgentPrefix}לחזור ללקוח`,
       description: buildCallbackTaskDescription(command.callerPhone, command.transcript),
       priority: command.priority,
+      dueAt: await this.resolveAiTaskDueAt(command.businessId, {}),
       source: "telephony",
       sourceRef: command.sourceCallId,
       idempotencyKey: command.idempotencyKey
@@ -1762,6 +2882,8 @@ class CoreController {
     const notification = await this.notifications.create({
       businessId: command.businessId,
       taskId: task.id,
+      itemType: "callback",
+      itemId: task.id,
       title: command.priority === "URGENT" ? "הודעת לקוח דחופה" : "בקשת חזרה ללקוח",
       body: buildCallbackNotificationBody(command.callerPhone, command.transcript),
       payload: {
@@ -1859,8 +2981,8 @@ class CoreController {
   }
 
   private async requireAuthenticatedUser(headers: RequestHeaders): Promise<AuthenticatedUser> {
-    const { firebaseUid } = await this.verifyAuth(headers);
-    const user = await this.auth.getMe(firebaseUid);
+    const { firebaseUid, phoneNumber } = await this.verifyAuth(headers);
+    const user = await this.auth.getMe(firebaseUid, phoneNumber);
     if (!user) {
       throw new UnauthorizedException("Authenticated user was not found");
     }
@@ -1869,7 +2991,8 @@ class CoreController {
 
   private async requireBusinessAccess(headers: RequestHeaders, businessId: string): Promise<AuthenticatedUser> {
     const user = await this.requireAuthenticatedUser(headers);
-    if (user.businessId !== businessId) {
+    const hasMembership = user.memberships?.some((membership) => membership.businessId === businessId && membership.status === "ACTIVE");
+    if (user.businessId !== businessId && !hasMembership) {
       throw new ForbiddenException("User is not allowed to access this business");
     }
     return user;
@@ -1892,6 +3015,7 @@ class CoreController {
         return {
           firebaseUid: decoded.uid,
           email: decoded.email,
+          phoneNumber: typeof decoded.phone_number === "string" ? decoded.phone_number : undefined,
           displayName: displayNameFromToken(decoded)
         };
       } catch {
@@ -1900,7 +3024,8 @@ class CoreController {
     }
 
     return {
-      firebaseUid: options?.mockFallback ?? parseMockFirebaseUid(headers)
+      firebaseUid: options?.mockFallback ?? parseMockFirebaseUid(headers),
+      phoneNumber: headerValue(headers, "x-mock-phone-number")
     };
   }
 }
@@ -1911,6 +3036,7 @@ class CoreController {
     PrismaService,
     AuditRepository,
     AuthRepository,
+    BusinessMembersRepository,
     BusinessesRepository,
     BusinessSettingsRepository,
     BusinessPhoneNumbersRepository,
@@ -1920,6 +3046,7 @@ class CoreController {
     TasksRepository,
     CustomerNotesRepository,
     AppointmentsRepository,
+    QuotesRepository,
     JobsRepository,
     NotificationsRepository,
     DeviceTokensRepository,
