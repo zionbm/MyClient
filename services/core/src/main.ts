@@ -2780,8 +2780,9 @@ class CoreController {
   }
 
   private isInvalidOwnerVoiceTranscript(transcript: string): boolean {
-    const normalized = transcript.replace(/\s+/g, " ").trim();
-    return normalized.length < 2 ||
+    const normalized = transcript.replace(/\p{Cf}/gu, "").replace(/\s+/g, " ").trim();
+    const visibleCharacters = normalized.replace(/\s+/g, "");
+    return visibleCharacters.length < 2 ||
       normalized === "הקלטה של בעל עסק בעברית שמבקש ליצור משימה, לקוח, פגישה, עבודה או הערה במערכת CRM.";
   }
 
