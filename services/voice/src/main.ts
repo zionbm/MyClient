@@ -56,7 +56,6 @@ class VoiceController {
     form.append("file", new Blob([audioBuffer], { type: contentType }), filename);
     form.append("model", model);
     form.append("language", languageCode.startsWith("he") ? "he" : languageCode);
-    form.append("prompt", "הקלטה של בעל עסק בעברית שמבקש ליצור משימה, לקוח, פגישה, עבודה או הערה במערכת CRM.");
 
     const response = await fetch("https://api.openai.com/v1/audio/transcriptions", {
       method: "POST",

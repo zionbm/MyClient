@@ -961,6 +961,9 @@ class CoreController {
         filename: commandHeaders.filename,
         languageCode: commandHeaders.languageCode
       });
+      if (this.isInvalidOwnerVoiceTranscript(stt.transcript)) {
+        throw new BadRequestException("לא זוהה דיבור ברור בהקלטה. נסה להקליט שוב קרוב יותר למיקרופון.");
+      }
       voiceCommand = await this.ownerVoiceCommands.update({
         id: voiceCommand.id,
         transcript: stt.transcript,
@@ -2771,6 +2774,12 @@ class CoreController {
       action: actions[0],
       actions
     };
+  }
+
+  private isInvalidOwnerVoiceTranscript(transcript: string): boolean {
+    const normalized = transcript.replace(/\s+/g, " ").trim();
+    return normalized.length < 2 ||
+      normalized === "הקלטה של בעל עסק בעברית שמבקש ליצור משימה, לקוח, פגישה, עבודה או הערה במערכת CRM.";
   }
 
   private async executeVoiceCommandActions(input: {

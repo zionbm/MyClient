@@ -3,17 +3,21 @@ import { BadGatewayException, Body, Controller, Get, Module, Post } from "@nestj
 import { NestFactory } from "@nestjs/core";
 import { FastifyAdapter, type NestFastifyApplication } from "@nestjs/platform-fastify";
 import { ApiExceptionFilter, getEnv, getPort, health, log, stableIdempotencyKey } from "@myclient/common";
-import type { AiAction } from "@myclient/contracts";
+import { AiActionBatchSchema, type AiAction } from "@myclient/contracts";
 
 type AiIntent = {
   actions: AiAction[];
 };
 
 function normalizeActions(intent: AiIntent, idempotencyKey: string): AiAction[] {
-  return intent.actions.map((action, index) => ({
+  const actions = intent.actions.map((action, index) => ({
     ...action,
+    payload: action.payload ?? {},
+    missingFields: action.missingFields ?? [],
+    requiresConfirmation: action.requiresConfirmation ?? false,
     idempotencyKey: intent.actions.length === 1 ? idempotencyKey : `${idempotencyKey}:${index + 1}`
   }));
+  return AiActionBatchSchema.parse({ actions }).actions;
 }
 
 function parseMockCustomerPayload(text: string): Record<string, unknown> {
