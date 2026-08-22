@@ -46,45 +46,69 @@ class VoiceController {
   async transcribeOpenAi(@Headers() headers: RequestHeaders, @Body() body: unknown) {
     const audio = requireAudio(body);
     const apiKey = getEnv("OPENAI_API_KEY");
-    const model = getEnv("OPENAI_STT_MODEL", "gpt-4o-mini-transcribe");
+    const configuredModel = getEnv("OPENAI_STT_MODEL", "gpt-4o-mini-transcribe");
     const contentType = headerValue(headers, "content-type") ?? "audio/mp4";
     const filename = headerValue(headers, "x-audio-filename") ?? "owner-command.m4a";
     const languageCode = headerValue(headers, "x-language-code") ?? "he-IL";
     const audioBuffer = audio.buffer.slice(audio.byteOffset, audio.byteOffset + audio.byteLength) as ArrayBuffer;
+    const models = configuredModel === "whisper-1" ? [configuredModel] : [configuredModel, "whisper-1"];
 
-    const form = new FormData();
-    form.append("file", new Blob([audioBuffer], { type: contentType }), filename);
-    form.append("model", model);
-    form.append("language", languageCode.startsWith("he") ? "he" : languageCode);
+    let lastFailure: { status: number; result: unknown; model: string } | null = null;
+    for (const model of models) {
+      const form = new FormData();
+      form.append("file", new Blob([audioBuffer], { type: contentType }), filename);
+      form.append("model", model);
+      form.append("language", languageCode.startsWith("he") ? "he" : languageCode);
 
-    const response = await fetch("https://api.openai.com/v1/audio/transcriptions", {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${apiKey}`
-      },
-      body: form
-    });
-
-    const result = (await response.json().catch(() => ({}))) as { text?: string; error?: { message?: string }; usage?: unknown };
-    if (!response.ok) {
-      throw new BadGatewayException({
-        message: `OpenAI transcription failed with ${response.status}`,
-        details: result
+      const response = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${apiKey}`
+        },
+        body: form
       });
-    }
-    if (!result.text?.trim()) {
-      throw new BadGatewayException("OpenAI transcription returned empty text");
+
+      const result = (await response.json().catch(() => ({}))) as { text?: string; error?: { message?: string }; usage?: unknown };
+      if (!response.ok) {
+        lastFailure = { status: response.status, result, model };
+        log("error", "openai stt failed", {
+          model,
+          status: response.status,
+          languageCode,
+          contentType,
+          filename,
+          bytes: audio.byteLength,
+          message: result.error?.message
+        });
+        continue;
+      }
+      if (!result.text?.trim()) {
+        lastFailure = { status: 502, result: { message: "empty transcript" }, model };
+        log("error", "openai stt returned empty text", {
+          model,
+          languageCode,
+          contentType,
+          filename,
+          bytes: audio.byteLength
+        });
+        continue;
+      }
+
+      log("info", "openai stt completed", { model, languageCode, bytes: audio.byteLength });
+      return {
+        provider: "openai",
+        model,
+        languageCode,
+        transcript: result.text.trim(),
+        confidence: 1,
+        usage: result.usage
+      };
     }
 
-    log("info", "openai stt completed", { model, languageCode, bytes: audio.byteLength });
-    return {
-      provider: "openai",
-      model,
-      languageCode,
-      transcript: result.text.trim(),
-      confidence: 1,
-      usage: result.usage
-    };
+    throw new BadGatewayException({
+      message: `OpenAI transcription failed with ${lastFailure?.status ?? 502}`,
+      details: lastFailure
+    });
   }
 
   @Post("tts/mock")

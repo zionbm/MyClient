@@ -7,6 +7,7 @@ import {
   ForbiddenException,
   Get,
   Headers,
+  HttpException,
   Inject,
   Module,
   NotFoundException,
@@ -1014,11 +1015,13 @@ class CoreController {
         execution
       };
     } catch (error) {
+      const response = error instanceof HttpException ? error.getResponse() : undefined;
       voiceCommand = await this.ownerVoiceCommands.update({
         id: voiceCommand.id,
         executionStatus: "FAILED",
         executionResult: {
-          message: error instanceof Error ? error.message : String(error)
+          message: error instanceof Error ? error.message : String(error),
+          ...(typeof response === "object" && response !== null ? { details: response } : {})
         }
       });
       await this.audit.record({
