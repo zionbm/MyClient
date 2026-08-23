@@ -246,6 +246,93 @@ function parseAiDueAt(value: string, timeZone: string) {
   }, timeZone);
 }
 
+function parseHebrewVoiceDueAt(text: string, timeZone: string, now = new Date()) {
+  const dayMatch = text.match(/(?:ביום\s+)?(ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת)|\b(מחר)\b/);
+  const timeMatch = text.match(/בשעה\s+([0-9]{1,2}|אחת|אחד|שתיים|שניים|שתים|שתי|שני|שלוש|שלושה|ארבע|ארבעה|חמש|חמישה|שש|שישה|שבע|שבעה|שמונה|תשע|תשעה|עשר|עשרה|אחת עשרה|שתים עשרה|שתיים עשרה)/);
+  if (!dayMatch || !timeMatch) {
+    return undefined;
+  }
+
+  const weekday = dayMatch[2] === "מחר" ? undefined : dayMatch[1];
+  const nowParts = getZonedParts(now, timeZone);
+  const currentWeekday = new Date(Date.UTC(nowParts.year, nowParts.month - 1, nowParts.day)).getUTCDay();
+  const targetWeekday = weekday ? {
+    "ראשון": 0,
+    "שני": 1,
+    "שלישי": 2,
+    "רביעי": 3,
+    "חמישי": 4,
+    "שישי": 5,
+    "שבת": 6
+  }[weekday] : undefined;
+  const daysAhead = dayMatch[2] === "מחר"
+    ? 1
+    : targetWeekday === undefined
+      ? undefined
+      : (targetWeekday - currentWeekday + 7) % 7 || 7;
+  if (daysAhead === undefined) {
+    return undefined;
+  }
+
+  const hour = parseHebrewHour(timeMatch[1], text);
+  if (hour === undefined) {
+    return undefined;
+  }
+
+  const targetDay = addLocalDays(nowParts, daysAhead);
+  return zonedTimeToUtc({
+    year: targetDay.year,
+    month: targetDay.month,
+    day: targetDay.day,
+    hour,
+    minute: 0
+  }, timeZone);
+}
+
+function parseHebrewHour(value: string, context: string) {
+  const numeric = Number(value);
+  let hour = Number.isFinite(numeric) && numeric > 0 ? numeric : {
+    "אחת": 1,
+    "אחד": 1,
+    "שתיים": 2,
+    "שניים": 2,
+    "שתים": 2,
+    "שתי": 2,
+    "שני": 2,
+    "שלוש": 3,
+    "שלושה": 3,
+    "ארבע": 4,
+    "ארבעה": 4,
+    "חמש": 5,
+    "חמישה": 5,
+    "שש": 6,
+    "שישה": 6,
+    "שבע": 7,
+    "שבעה": 7,
+    "שמונה": 8,
+    "תשע": 9,
+    "תשעה": 9,
+    "עשר": 10,
+    "עשרה": 10,
+    "אחת עשרה": 11,
+    "שתים עשרה": 12,
+    "שתיים עשרה": 12
+  }[value];
+  if (hour === undefined || hour > 23) {
+    return undefined;
+  }
+  if (context.includes("בבוקר")) {
+    return hour;
+  }
+  if ((context.includes("בצהריים") || context.includes("אחר הצהריים") || context.includes("בערב")) && hour < 12) {
+    return hour + 12;
+  }
+  if (hour >= 1 && hour <= 7) {
+    return hour + 12;
+  }
+  return hour;
+}
+
 function headerValue(headers: RequestHeaders, name: string): string | undefined {
   const value = headers[name.toLowerCase()] ?? headers[name];
   if (Array.isArray(value)) {
@@ -545,6 +632,9 @@ class CoreController {
     const before = await this.settings.getByBusiness(businessId);
     const settings = await this.settings.update({
       businessId,
+      actorUserId: user.id,
+      businessName: command.businessName,
+      ownerDisplayName: command.ownerDisplayName,
       locale: command.locale,
       timezone: command.timezone,
       greetingText: command.greetingText,
@@ -581,6 +671,7 @@ class CoreController {
     const member = await this.members.upsertByPhone({
       businessId,
       phoneNumber: command.phoneNumber,
+      displayName: command.displayName,
       memberType: command.memberType,
       addedByUserId: user.id
     });
@@ -989,6 +1080,7 @@ class CoreController {
       const execution = await this.executeVoiceCommandActions({
         businessId,
         userId: user.id,
+        transcript: stt.transcript,
         actions: intent.actions
       });
       voiceCommand = await this.ownerVoiceCommands.update({
@@ -2789,20 +2881,25 @@ class CoreController {
   private async executeVoiceCommandActions(input: {
     businessId: string;
     userId: string;
+    transcript: string;
     actions: AiAction[];
   }) {
     const results = [];
     const createdCustomers: Array<{ id: string; name?: string | null; phone?: string | null }> = [];
+    const settings = await this.settings.getByBusiness(input.businessId);
 
     for (const action of input.actions) {
-      const payload = this.resolveVoiceActionPayload(action.payload, createdCustomers);
-      if (action.missingFields.length > 0 || action.requiresConfirmation) {
+      let payload = this.resolveVoiceActionPayload(action.payload, createdCustomers);
+      payload = this.enrichVoiceActionPayload(action, payload, input.transcript, settings.timezone);
+      const missingFields = this.requiredVoiceMissingFields(action, payload);
+      const requiresConfirmation = action.requiresConfirmation && (action.missingFields.length === 0 || missingFields.length > 0);
+      if (missingFields.length > 0 || requiresConfirmation) {
         const pending = await this.pendingActions.create({
           businessId: input.businessId,
           userId: input.userId,
           actionType: action.type,
           payload: payload as Prisma.InputJsonValue,
-          missingFields: action.missingFields
+          missingFields
         });
         await this.audit.record({
           businessId: input.businessId,
@@ -2854,6 +2951,34 @@ class CoreController {
     ) ?? createdCustomers.at(-1);
 
     return matchingCustomer ? { ...payload, customerId: matchingCustomer.id } : payload;
+  }
+
+  private enrichVoiceActionPayload(action: AiAction, payload: Record<string, unknown>, transcript: string, timeZone: string) {
+    if ((action.type === "CREATE_TASK" || action.type === "CREATE_CALLBACK") && typeof payload.dueAt !== "string") {
+      const dueAt = parseHebrewVoiceDueAt(transcript, timeZone);
+      if (dueAt) {
+        return { ...payload, dueAt: dueAt.toISOString() };
+      }
+    }
+    return payload;
+  }
+
+  private requiredVoiceMissingFields(action: AiAction, payload: Record<string, unknown>) {
+    return action.missingFields.filter((field) => !this.isOptionalVoiceField(action.type, field) && payload[field] === undefined);
+  }
+
+  private isOptionalVoiceField(actionType: string, field: string) {
+    if (field === "dueAt") {
+      return actionType === "CREATE_TASK" || actionType === "CREATE_CALLBACK";
+    }
+
+    if (field === "phone") {
+      return actionType === "CREATE_CUSTOMER" ||
+        actionType === "CREATE_TASK" ||
+        actionType === "CREATE_CALLBACK";
+    }
+
+    return false;
   }
 
   private async resolveAiTaskDueAt(businessId: string, payload: Record<string, unknown>) {

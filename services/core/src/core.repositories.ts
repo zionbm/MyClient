@@ -28,6 +28,7 @@ type UpdateTaskInput = {
 type CreateBusinessMemberInput = {
   businessId: string;
   phoneNumber: string;
+  displayName?: string;
   memberType?: "OWNER" | "EMPLOYEE";
   addedByUserId?: string;
 };
@@ -49,9 +50,9 @@ type UpdateCustomerInput = {
   businessId: string;
   customerId: string;
   name?: string;
-  phone?: string;
-  email?: string;
-  address?: string;
+  phone?: string | null;
+  email?: string | null;
+  address?: string | null;
 };
 
 type CreateCustomerNoteInput = {
@@ -139,6 +140,9 @@ type RegisterBusinessInput = {
 
 type UpdateBusinessSettingsInput = {
   businessId: string;
+  actorUserId?: string;
+  businessName?: string;
+  ownerDisplayName?: string;
   locale?: string;
   timezone?: string;
   greetingText?: string | null;
@@ -282,6 +286,14 @@ export class BusinessesRepository {
     }
 
     return business;
+  }
+
+  async updateName(businessId: string, name: string) {
+    await this.requireBusiness(businessId);
+    return this.prisma.business.update({
+      where: { id: businessId },
+      data: { name }
+    });
   }
 }
 
@@ -486,6 +498,7 @@ export class BusinessMembersRepository {
     await this.businesses.requireBusiness(businessId);
     return this.prisma.businessMember.findMany({
       where: { businessId },
+      include: { user: true },
       orderBy: [{ status: "asc" }, { createdAt: "desc" }]
     });
   }
@@ -505,6 +518,7 @@ export class BusinessMembersRepository {
       },
       update: {
         userId: existingUser?.id,
+        displayName: input.displayName,
         memberType: input.memberType ?? "EMPLOYEE",
         status: existingUser ? "ACTIVE" : "PENDING",
         linkedAt: existingUser ? new Date() : undefined,
@@ -514,6 +528,7 @@ export class BusinessMembersRepository {
         businessId: input.businessId,
         userId: existingUser?.id,
         phoneNumber: input.phoneNumber,
+        displayName: input.displayName,
         memberType: input.memberType ?? "EMPLOYEE",
         status: existingUser ? "ACTIVE" : "PENDING",
         linkedAt: existingUser ? new Date() : undefined,
@@ -577,7 +592,7 @@ export class BusinessSettingsRepository {
 
   async getByBusiness(businessId: string) {
     const business = await this.businesses.requireBusiness(businessId);
-    return this.prisma.businessSettings.upsert({
+    const settings = await this.prisma.businessSettings.upsert({
       where: { businessId },
       update: {},
       create: {
@@ -598,13 +613,32 @@ export class BusinessSettingsRepository {
         }
       }
     });
+    const owner = await this.prisma.user.findFirst({
+      where: { businessId },
+      orderBy: { createdAt: "asc" },
+      select: { displayName: true }
+    });
+    return {
+      ...settings,
+      businessName: business.name,
+      ownerDisplayName: owner?.displayName ?? null
+    };
   }
 
   async update(input: UpdateBusinessSettingsInput) {
     await this.getByBusiness(input.businessId);
+    if (input.businessName) {
+      await this.businesses.updateName(input.businessId, input.businessName);
+    }
+    if (input.ownerDisplayName && input.actorUserId) {
+      await this.prisma.user.update({
+        where: { id: input.actorUserId },
+        data: { displayName: input.ownerDisplayName }
+      });
+    }
     const workingHours =
       input.workingHours === null ? Prisma.JsonNull : input.workingHours === undefined ? undefined : input.workingHours;
-    return this.prisma.businessSettings.update({
+    const settings = await this.prisma.businessSettings.update({
       where: { businessId: input.businessId },
       data: {
         locale: input.locale,
@@ -617,6 +651,17 @@ export class BusinessSettingsRepository {
         allowUrgentCalls: input.allowUrgentCalls
       }
     });
+    const business = await this.businesses.requireBusiness(input.businessId);
+    const owner = await this.prisma.user.findFirst({
+      where: { businessId: input.businessId },
+      orderBy: { createdAt: "asc" },
+      select: { displayName: true }
+    });
+    return {
+      ...settings,
+      businessName: business.name,
+      ownerDisplayName: owner?.displayName ?? null
+    };
   }
 }
 

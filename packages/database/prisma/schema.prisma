@@ -114,6 +114,7 @@ model BusinessMember {
   businessId    String
   userId        String?
   phoneNumber   String
+  displayName   String?
   memberType    BusinessMemberType   @default(EMPLOYEE)
   status        BusinessMemberStatus @default(PENDING)
   addedByUserId String?

@@ -78,9 +78,11 @@ curl -s http://localhost:3000/businesses/<businessId>/notifications/<notificatio
   -d '{"status":"READ"}'
 ```
 
+Planned mobile behavior: notifications linked to dated treatment items, such as callbacks, home visits or quotes, should also support "remind me later" presets such as 15 minutes, 2 hours and tomorrow. That requires a future snooze endpoint that updates the linked item/reminder and lets the worker send a new notification later.
+
 ## Owner Voice Command With Server STT
 
-After setting `OPENAI_API_KEY`, record a short Hebrew command in the app as `m4a/aac` and upload it to Core. One recording can include multiple instructions, for example creating a customer and adding a reminder task in the same sentence. If the reminder has no exact time, Core assigns a default due time based on the business timezone.
+After setting `OPENAI_API_KEY`, record a short Hebrew command in the app as `m4a/aac` and upload it to Core. One recording can include multiple instructions, for example creating a customer and adding a callback reminder in the same sentence. If the reminder has no exact time, Core assigns a default due time based on the business timezone.
 
 ```bash
 curl -s http://localhost:3000/businesses/<businessId>/voice-commands/audio \

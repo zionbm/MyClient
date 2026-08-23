@@ -120,7 +120,15 @@ In Firebase mode, the mobile app should sign in with Firebase Authentication and
 Authorization: Bearer <firebase-id-token>
 ```
 
-When `AUTH_PROVIDER=firebase`, `POST /auth/register-business` reads `firebaseUid`, `email` and display name from the verified token. The request body only has to include the business fields:
+Mobile POC auth decision:
+
+- phone number + SMS code is the only first-version sign-in method.
+- login and signup are the same user flow from the mobile user's perspective.
+- there are no passwords.
+- Google, Apple, Facebook and email sign-in are deferred.
+- user email is optional and should not be required for phone-only mobile users.
+
+When `AUTH_PROVIDER=firebase`, `POST /auth/register-business` should read `firebaseUid`, verified `phone_number` and optional display name from the verified token. The request body only has to include the business fields:
 
 ```bash
 curl -s http://localhost:3000/auth/register-business \
@@ -131,6 +139,21 @@ curl -s http://localhost:3000/auth/register-business \
 
 Core internal endpoints are service-to-service only and require `x-internal-secret`.
 
+### Planned Employee Access Flow
+
+The current backend supports the first owner registration flow. The mobile app also needs a flow where the owner adds an employee phone number to the business.
+
+Planned server work:
+
+- add business members by phone number.
+- have `GET /auth/me` return whether the authenticated user already has a business, or needs to create a new one.
+- when an authenticated user's verified phone number matches a pending business member row, link the user and send them directly into the business.
+- add endpoints to add, list and disable employees.
+- for the POC, employees see the same screens and can perform the same actions as the owner; detailed roles and permissions are future work.
+- update `User` so `phoneNumber` is required/unique for mobile users and `email` is optional.
+
+Until this is implemented, `User.businessId` directly links a user to one business.
+
 ## Pre-Paid-Provider Product Surface
 
 The backend now supports the product flows that should exist before connecting paid providers:
@@ -140,9 +163,9 @@ The backend now supports the product flows that should exist before connecting p
 - incoming calls resolved by the dialed `to` phone number.
 - persisted call recordings metadata and STT transcripts.
 - callback task and notification creation from recorded calls.
-- internal appointments calendar.
+- internal appointments calendar, exposed to the mobile product as home visits.
 - jobs/service calls.
-- audit events for business, settings, phone, CRM, appointments, jobs, calls and callback actions.
+- audit events for business, settings, phone, CRM, appointments/home visits, jobs, calls and callback actions.
 
 ## Mock Flow Examples
 
@@ -252,7 +275,7 @@ curl -s http://localhost:3000/businesses/<business-id-from-register>/customers/<
   -d '{"text":"לקוח ביקש זמינות בבוקר בלבד"}'
 ```
 
-Create an appointment:
+Create a home visit using the current appointments endpoint:
 
 ```bash
 curl -s http://localhost:3000/businesses/<business-id-from-register>/appointments \
@@ -279,6 +302,8 @@ curl -s http://localhost:3000/businesses/<business-id-from-register>/calls \
 curl -s http://localhost:3000/businesses/<business-id-from-register>/audit-events \
   -H 'authorization: Bearer mock:firebase_demo_1'
 ```
+
+The mobile Calls screen should use this endpoint as the base for an incoming-call log. Before the mobile screen is implemented, enrich the response with product-facing fields such as IVR selection, `NO_SELECTION` for callers who did not choose an option, transcript preview, related callback task, linked customer and call duration when available.
 
 Complete a task:
 

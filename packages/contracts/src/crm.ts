@@ -15,6 +15,8 @@ export const WorkingHoursSchema = z.record(
 );
 
 export const UpdateBusinessSettingsSchema = z.object({
+  businessName: OptionalNonEmptyStringSchema,
+  ownerDisplayName: OptionalNonEmptyStringSchema,
   locale: OptionalNonEmptyStringSchema,
   timezone: OptionalNonEmptyStringSchema,
   greetingText: z.string().trim().min(1).nullable().optional(),
@@ -60,10 +62,13 @@ export const CreateCustomerSchema = z.object({
 
 export type CreateCustomer = z.infer<typeof CreateCustomerSchema>;
 
-export const UpdateCustomerSchema = CreateCustomerSchema.partial().refine(
-  (value) => Object.keys(value).length > 0,
-  "At least one customer field is required"
-);
+export const UpdateCustomerSchema = z.object({
+  name: OptionalNonEmptyStringSchema,
+  phone: z.string().trim().min(1).nullable().optional(),
+  email: z.string().trim().min(1).nullable().optional(),
+  address: z.string().trim().min(1).nullable().optional(),
+  initialNote: OptionalNonEmptyStringSchema
+}).refine((value) => Object.keys(value).length > 0, "At least one customer field is required");
 
 export type UpdateCustomer = z.infer<typeof UpdateCustomerSchema>;
 
@@ -249,6 +254,7 @@ export type UpdatePendingAction = z.infer<typeof UpdatePendingActionSchema>;
 
 export const CreateBusinessMemberSchema = z.object({
   phoneNumber: z.string().trim().min(1),
+  displayName: OptionalNonEmptyStringSchema,
   memberType: z.enum(["OWNER", "EMPLOYEE"]).default("EMPLOYEE")
 });
 
