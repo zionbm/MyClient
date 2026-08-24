@@ -34,6 +34,47 @@ type CreateBusinessMemberInput = {
   addedByUserId?: string;
 };
 
+type CustomerMergeField = "name" | "phone" | "email" | "address";
+type CustomerMergeChoice = "source" | "target";
+
+function mergeCustomerFields(
+  source: Record<CustomerMergeField, string | null>,
+  target: Record<CustomerMergeField, string | null>,
+  choices?: Partial<Record<CustomerMergeField, CustomerMergeChoice>>
+) {
+  const data: Pick<Prisma.CustomerUpdateInput, "name" | "phone" | "email" | "address"> = {};
+  for (const field of ["name", "phone", "email", "address"] as const) {
+    const sourceValue = source[field]?.trim() || null;
+    const targetValue = target[field]?.trim() || null;
+    const choice = choices?.[field];
+    const selected = choice === "source"
+      ? sourceValue
+      : choice === "target"
+        ? targetValue
+        : targetValue ?? sourceValue;
+
+    if (selected !== targetValue) {
+      switch (field) {
+        case "name":
+          if (selected !== null) {
+            data.name = selected;
+          }
+          break;
+        case "phone":
+          data.phone = selected;
+          break;
+        case "email":
+          data.email = selected;
+          break;
+        case "address":
+          data.address = selected;
+          break;
+      }
+    }
+  }
+  return data;
+}
+
 type DisableBusinessMemberInput = {
   businessId: string;
   memberId: string;
@@ -1163,7 +1204,13 @@ export class CustomersRepository {
     });
   }
 
-  async merge(input: { businessId: string; sourceCustomerId: string; targetCustomerId: string; mergedByUserId: string }) {
+  async merge(input: {
+    businessId: string;
+    sourceCustomerId: string;
+    targetCustomerId: string;
+    mergedByUserId: string;
+    fieldChoices?: Partial<Record<"name" | "phone" | "email" | "address", "source" | "target">>;
+  }) {
     if (input.sourceCustomerId === input.targetCustomerId) {
       throw new BadRequestException("Source and target customer must be different");
     }
@@ -1174,9 +1221,7 @@ export class CustomersRepository {
     if (!source || !target) {
       return null;
     }
-    if (source.phone && target.phone && source.phone !== target.phone) {
-      throw new BadRequestException("Cannot merge customers with conflicting phone numbers in the POC");
-    }
+    const customerUpdates = mergeCustomerFields(source, target, input.fieldChoices);
 
     return this.prisma.$transaction(async (tx) => {
       const [tasks, appointments, quotes, notes] = await Promise.all([
@@ -1197,6 +1242,12 @@ export class CustomersRepository {
           data: { customerId: target.id }
         })
       ]);
+      const updatedTarget = Object.keys(customerUpdates).length > 0
+        ? await tx.customer.update({
+            where: { id: target.id },
+            data: customerUpdates
+          })
+        : target;
       const mergedSource = await tx.customer.update({
         where: { id: source.id },
         data: {
@@ -1208,7 +1259,7 @@ export class CustomersRepository {
       });
       return {
         sourceCustomer: mergedSource,
-        targetCustomer: target,
+        targetCustomer: updatedTarget,
         moved: {
           callbacks: tasks.count,
           homeVisits: appointments.count,

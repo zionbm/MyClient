@@ -1531,7 +1531,8 @@ class CoreController {
       businessId,
       sourceCustomerId: customerId,
       targetCustomerId: command.targetCustomerId,
-      mergedByUserId: user.id
+      mergedByUserId: user.id,
+      fieldChoices: command.fieldChoices
     });
     if (!merge) {
       throw new NotFoundException("Customer not found");

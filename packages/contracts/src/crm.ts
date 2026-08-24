@@ -73,7 +73,13 @@ export const UpdateCustomerSchema = z.object({
 export type UpdateCustomer = z.infer<typeof UpdateCustomerSchema>;
 
 export const MergeCustomerSchema = z.object({
-  targetCustomerId: z.string().trim().min(1)
+  targetCustomerId: z.string().trim().min(1),
+  fieldChoices: z.object({
+    name: z.enum(["source", "target"]).optional(),
+    phone: z.enum(["source", "target"]).optional(),
+    email: z.enum(["source", "target"]).optional(),
+    address: z.enum(["source", "target"]).optional()
+  }).optional()
 });
 
 export type MergeCustomer = z.infer<typeof MergeCustomerSchema>;
