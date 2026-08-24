@@ -36,7 +36,7 @@ The script creates:
 - Deployment service account `myclient-github-deployer`.
 - Workload Identity Federation restricted to `zionbm/MyClient`.
 
-`INTERNAL_API_SECRET`, `DB_PASSWORD`, and `DATABASE_URL` are populated by the script if needed. `OPENAI_API_KEY` must be populated manually before deploying `ai` or `voice` with real OpenAI providers.
+`INTERNAL_API_SECRET`, `DB_PASSWORD`, and `DATABASE_URL` are populated by the script if needed. The first deployment uses mock LLM and mock STT providers, so `OPENAI_API_KEY` can stay empty. Populate `OPENAI_API_KEY` before switching `ai` or `voice` to real OpenAI providers.
 
 ## GitHub configuration
 
@@ -73,6 +73,8 @@ ai -> voice -> core -> telephony -> worker
 ```
 
 `core` receives the deployed `ai` and `voice` URLs as runtime configuration. `telephony` and `worker` receive the deployed `core` URL.
+
+The initial workflow deploys `ai` with `MOCK_LLM_PROVIDER=true` and `core`/`voice` with `MOCK_STT_PROVIDER=true`. This keeps the first Cloud Run deployment independent of OpenAI credentials. To enable real AI/STT later, add an `OPENAI_API_KEY` version in Secret Manager and update the workflow env vars and secret bindings.
 
 ## Migrations
 
