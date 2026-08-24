@@ -202,7 +202,7 @@ jobs:
               --min-instances=1 \
               --max-instances=1 \
               --no-cpu-throttling \
-              --set-env-vars=NODE_ENV=production,DEFAULT_LOCALE=he-IL,CORE_BASE_URL="$core_url",WORKER_REMINDER_POLL_ENABLED=true,WORKER_REMINDER_POLL_INTERVAL_MS=30000,WORKER_REMINDER_BATCH_SIZE=20,CLOUD_RUN_SERVICE_AUTH=google \
+              --set-env-vars=NODE_ENV=production,DEFAULT_LOCALE=he-IL,CORE_BASE_URL="$core_url",WORKER_REMINDER_POLL_ENABLED=true,WORKER_REMINDER_POLL_INTERVAL_MS=300000,WORKER_REMINDER_BATCH_SIZE=20,CLOUD_RUN_SERVICE_AUTH=google \
               --set-secrets=INTERNAL_API_SECRET=INTERNAL_API_SECRET:latest \
               --quiet
             gcloud run services add-iam-policy-binding myclient-worker \

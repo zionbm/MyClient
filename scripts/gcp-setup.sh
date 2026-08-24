@@ -83,6 +83,7 @@ if ! gcloud sql instances describe "${CLOUD_SQL_INSTANCE}" --project="${PROJECT_
   gcloud sql instances create "${CLOUD_SQL_INSTANCE}" \
     --project="${PROJECT_ID}" \
     --database-version=POSTGRES_16 \
+    --edition=enterprise \
     --region="${REGION}" \
     --tier=db-f1-micro \
     --storage-type=SSD \
