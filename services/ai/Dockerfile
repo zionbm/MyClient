@@ -6,4 +6,4 @@ COPY services ./services
 COPY tsconfig*.json ./
 RUN npm install
 RUN npm run prisma:generate
-CMD ["npm", "run", "dev", "-w", "@myclient/ai"]
+CMD ["npm", "run", "start", "-w", "@myclient/ai"]

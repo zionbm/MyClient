@@ -7,14 +7,15 @@ export function getEnv(name: string, fallback?: string): string {
 }
 
 export function getPort(name: string, fallback: number): number {
-  const value = process.env[name];
+  const value = process.env.PORT ?? process.env[name];
   if (!value) {
     return fallback;
   }
 
   const parsed = Number.parseInt(value, 10);
   if (!Number.isInteger(parsed) || parsed <= 0) {
-    throw new Error(`Invalid port in ${name}: ${value}`);
+    const source = process.env.PORT ? "PORT" : name;
+    throw new Error(`Invalid port in ${source}: ${value}`);
   }
   return parsed;
 }
