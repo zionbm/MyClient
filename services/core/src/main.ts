@@ -52,6 +52,7 @@ import {
   UpdateBusinessPhoneNumberSchema,
   UpdateBusinessSettingsSchema,
   UpdateCallbackSchema,
+  UpdateCustomerNoteSchema,
   UpdateCustomerSchema,
   UpdateHomeVisitSchema,
   UpdateJobSchema,
@@ -152,6 +153,10 @@ function parseRequiredDate(value: string): Date {
     throw new BadRequestException(`Invalid date: ${value}`);
   }
   return parsed;
+}
+
+function timeOrZero(value: string | number | Date | null | undefined) {
+  return value ? new Date(value).getTime() : 0;
 }
 
 function getZonedParts(date: Date, timeZone: string) {
@@ -464,6 +469,10 @@ function startOfLocalDate(dateText: string | undefined, timeZone: string) {
   return zonedTimeToUtc({ ...parts, hour: 0, minute: 0 }, timeZone);
 }
 
+function isSameUtcInstant(a: Date, b: Date) {
+  return a.getTime() === b.getTime();
+}
+
 function addUtcDays(date: Date, days: number) {
   return new Date(date.getTime() + days * 24 * 60 * 60 * 1000);
 }
@@ -538,7 +547,8 @@ class CoreController {
     @Inject(NotificationsRepository) private readonly notifications: NotificationsRepository,
     @Inject(DeviceTokensRepository) private readonly deviceTokens: DeviceTokensRepository,
     @Inject(OwnerVoiceCommandsRepository) private readonly ownerVoiceCommands: OwnerVoiceCommandsRepository,
-    @Inject(PendingActionsRepository) private readonly pendingActions: PendingActionsRepository
+    @Inject(PendingActionsRepository) private readonly pendingActions: PendingActionsRepository,
+    @Inject(PrismaService) private readonly prisma: PrismaService
   ) {}
 
   @Get("health")
@@ -559,10 +569,12 @@ class CoreController {
     const email = command.email ?? verifiedAuth.email;
     const phoneNumber = command.phoneNumber ?? verifiedAuth.phoneNumber;
     const displayName = command.displayName ?? verifiedAuth.displayName ?? email ?? phoneNumber;
-    if (!displayName) {
+    const isMockAuth = authProviderName() === "mock";
+    const mockDisplayName = displayName ?? command.firebaseUid ?? verifiedAuth.firebaseUid;
+    if (!mockDisplayName) {
       throw new BadRequestException("Display name is required when it is not present in the Firebase token");
     }
-    if (!email && !phoneNumber) {
+    if (!email && !phoneNumber && !isMockAuth) {
       throw new BadRequestException("Phone number or email is required");
     }
 
@@ -570,7 +582,7 @@ class CoreController {
       firebaseUid: verifiedAuth.firebaseUid,
       email,
       phoneNumber,
-      displayName,
+      displayName: mockDisplayName,
       businessName: command.businessName
     });
     if (!result.business) {
@@ -1138,16 +1150,17 @@ class CoreController {
     const settings = await this.settings.getByBusiness(businessId);
     const start = startOfLocalDate(command.date, settings.timezone);
     const end = addUtcDays(start, 1);
+    const includeOpenBeforeStart = isSameUtcInstant(start, startOfLocalDate(undefined, settings.timezone));
     const [callbacks, homeVisits, quotes, notifications] = await Promise.all([
       command.filter === "home_visits" || command.filter === "quotes" || command.filter === "calls"
         ? Promise.resolve([])
-        : this.tasks.listCallbacksForDate({ businessId, start, end, search: command.search, urgentOnly: command.filter === "urgent" }),
+        : this.tasks.listCallbacksForDate({ businessId, start, end, search: command.search, urgentOnly: command.filter === "urgent", includeOpenBeforeStart }),
       command.filter === "callbacks" || command.filter === "quotes" || command.filter === "calls" || command.filter === "urgent"
         ? Promise.resolve([])
-        : this.appointments.listForDate({ businessId, start, end, search: command.search }),
+        : this.appointments.listForDate({ businessId, start, end, search: command.search, includeOpenBeforeStart }),
       command.filter === "callbacks" || command.filter === "home_visits" || command.filter === "calls" || command.filter === "urgent"
         ? Promise.resolve([])
-        : this.quotes.listForDate({ businessId, start, end, search: command.search }),
+        : this.quotes.listForDate({ businessId, start, end, search: command.search, includeOpenBeforeStart }),
       command.filter === "all" || command.filter === "urgent"
         ? this.notifications.listByBusinessAndStatus(businessId, "SENT")
         : Promise.resolve([])
@@ -1446,15 +1459,15 @@ class CoreController {
         type: "note",
         title: "הערה",
         description: note.text,
-        dueAt: note.createdAt,
+        dueAt: null,
         priority: "NORMAL",
-        status: "DONE",
+        status: note.status,
         source: "note",
         customer: publicCustomer(customer),
         linkedEntity: { type: "note", id: note.id },
-        actions: ["open"]
+        actions: note.status === "DONE" ? ["open", "reopen"] : ["open", "complete"]
       }))
-    ].sort((a, b) => new Date(b.dueAt).getTime() - new Date(a.dueAt).getTime());
+    ].sort((a, b) => timeOrZero(b.dueAt) - timeOrZero(a.dueAt));
 
     return { customer, activity };
   }
@@ -1552,6 +1565,40 @@ class CoreController {
       entityType: "customer_note",
       entityId: note.id,
       action: "CREATE_CUSTOMER_NOTE",
+      after: note as Prisma.InputJsonValue
+    });
+    return { note };
+  }
+
+  @Patch("businesses/:businessId/customers/:customerId/notes/:noteId")
+  async updateCustomerNote(
+    @Headers() headers: RequestHeaders,
+    @Param("businessId") businessId: string,
+    @Param("customerId") customerId: string,
+    @Param("noteId") noteId: string,
+    @Body() body: unknown
+  ) {
+    const user = await this.requireBusinessAccess(headers, businessId);
+    const command = UpdateCustomerNoteSchema.parse(body);
+    const note = await this.customerNotes.update({
+      businessId,
+      customerId,
+      noteId,
+      status: command.status
+    });
+
+    if (!note) {
+      throw new NotFoundException("Customer note not found");
+    }
+
+    await this.audit.record({
+      businessId,
+      actorType: "user",
+      actorId: user.id,
+      source: "core",
+      entityType: "customer_note",
+      entityId: note.id,
+      action: "UPDATE_CUSTOMER_NOTE",
       after: note as Prisma.InputJsonValue
     });
     return { note };
@@ -2891,6 +2938,12 @@ class CoreController {
     for (const action of input.actions) {
       let payload = this.resolveVoiceActionPayload(action.payload, createdCustomers);
       payload = this.enrichVoiceActionPayload(action, payload, input.transcript, settings.timezone);
+      payload = await this.resolveVoiceActionReferences({
+        businessId: input.businessId,
+        actionType: action.type,
+        payload,
+        transcript: input.transcript
+      });
       const missingFields = this.requiredVoiceMissingFields(action, payload);
       const requiresConfirmation = action.requiresConfirmation && (action.missingFields.length === 0 || missingFields.length > 0);
       if (missingFields.length > 0 || requiresConfirmation) {
@@ -2951,6 +3004,138 @@ class CoreController {
     ) ?? createdCustomers.at(-1);
 
     return matchingCustomer ? { ...payload, customerId: matchingCustomer.id } : payload;
+  }
+
+  private async resolveVoiceActionReferences(input: {
+    businessId: string;
+    actionType: string;
+    payload: Record<string, unknown>;
+    transcript: string;
+  }): Promise<Record<string, unknown>> {
+    let payload = input.payload;
+
+    if (this.voiceActionNeedsCustomer(input.actionType, payload)) {
+      const customer = await this.resolveVoiceCustomer(input.businessId, payload);
+      if (customer) {
+        payload = { ...payload, customerId: customer.id };
+      }
+    }
+
+    if (this.voiceActionNeedsTask(input.actionType, payload)) {
+      const task = await this.resolveVoiceTask(input.businessId, payload, input.transcript);
+      if (task) {
+        payload = { ...payload, taskId: task.id, callbackId: task.id };
+      }
+    }
+
+    return payload;
+  }
+
+  private voiceActionNeedsCustomer(actionType: string, payload: Record<string, unknown>) {
+    if (typeof payload.customerId === "string") {
+      return false;
+    }
+    return actionType === "UPDATE_CUSTOMER" ||
+      actionType === "ADD_CUSTOMER_NOTE" ||
+      actionType === "CREATE_TASK" ||
+      actionType === "CREATE_CALLBACK" ||
+      actionType === "CREATE_HOME_VISIT" ||
+      actionType === "CREATE_APPOINTMENT" ||
+      actionType === "CREATE_QUOTE" ||
+      actionType === "COMPLETE_TASK" ||
+      actionType === "COMPLETE_CALLBACK";
+  }
+
+  private voiceActionNeedsTask(actionType: string, payload: Record<string, unknown>) {
+    if (typeof payload.taskId === "string" || typeof payload.callbackId === "string") {
+      return false;
+    }
+    return actionType === "COMPLETE_TASK" || actionType === "COMPLETE_CALLBACK";
+  }
+
+  private async resolveVoiceCustomer(businessId: string, payload: Record<string, unknown>) {
+    const phone = this.normalizedVoiceText(payload.phone);
+    const email = this.normalizedVoiceText(payload.email);
+    const name = this.normalizedVoiceText(payload.name);
+
+    if (phone) {
+      const byPhone = await this.findUniqueVoiceCustomer(businessId, { phone });
+      if (byPhone) return byPhone;
+    }
+
+    if (email) {
+      const byEmail = await this.findUniqueVoiceCustomer(businessId, { email });
+      if (byEmail) return byEmail;
+    }
+
+    if (name) {
+      const byName = await this.findUniqueVoiceCustomer(businessId, { name });
+      if (byName) return byName;
+    }
+
+    return null;
+  }
+
+  private async findUniqueVoiceCustomer(
+    businessId: string,
+    criteria: { phone?: string; email?: string; name?: string }
+  ) {
+    const customers = await this.prisma.customer.findMany({
+      where: {
+        businessId,
+        deletedAt: null,
+        mergedIntoCustomerId: null,
+        ...(criteria.phone ? { phone: criteria.phone } : {}),
+        ...(criteria.email ? { email: { equals: criteria.email, mode: "insensitive" as const } } : {}),
+        ...(criteria.name ? { name: criteria.name } : {})
+      },
+      take: 2
+    });
+    return customers.length === 1 ? customers[0] : null;
+  }
+
+  private async resolveVoiceTask(businessId: string, payload: Record<string, unknown>, transcript: string) {
+    const customerId = typeof payload.customerId === "string" ? payload.customerId : undefined;
+    const title = this.normalizedVoiceText(payload.title);
+    const text = this.normalizedVoiceText(payload.text);
+    const lookupText = this.normalizedVoiceText([title, text, transcript].filter(Boolean).join(" "));
+
+    const tasks = await this.prisma.task.findMany({
+      where: {
+        businessId,
+        deletedAt: null,
+        status: "OPEN",
+        customerId
+      },
+      include: { customer: true },
+      orderBy: [{ dueAt: "asc" }, { createdAt: "desc" }],
+      take: 20
+    });
+
+    if (tasks.length === 1) {
+      return tasks[0];
+    }
+
+    const matchingTasks = tasks.filter((task) => {
+      const normalizedTitle = this.normalizedVoiceText(task.title);
+      const haystack = this.normalizedVoiceText([
+        task.title,
+        task.description,
+        task.customer?.name,
+        task.customer?.phone
+      ].filter(Boolean).join(" "));
+      return Boolean(lookupText && haystack && (
+        lookupText.includes(haystack) ||
+        haystack.includes(lookupText) ||
+        normalizedTitle && lookupText.includes(normalizedTitle)
+      ));
+    });
+
+    return matchingTasks.length === 1 ? matchingTasks[0] : null;
+  }
+
+  private normalizedVoiceText(value: unknown) {
+    return typeof value === "string" ? value.replace(/\p{Cf}/gu, "").replace(/\s+/g, " ").trim() : undefined;
   }
 
   private enrichVoiceActionPayload(action: AiAction, payload: Record<string, unknown>, transcript: string, timeZone: string) {

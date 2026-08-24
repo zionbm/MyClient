@@ -61,6 +61,13 @@ type CreateCustomerNoteInput = {
   text: string;
 };
 
+type UpdateCustomerNoteInput = {
+  businessId: string;
+  customerId: string;
+  noteId: string;
+  status?: string;
+};
+
 type CreateNotificationInput = {
   businessId: string;
   taskId?: string;
@@ -922,23 +929,35 @@ export class TasksRepository {
     });
   }
 
-  async listCallbacksForDate(input: { businessId: string; start: Date; end: Date; search?: string; urgentOnly?: boolean }) {
+  async listCallbacksForDate(input: { businessId: string; start: Date; end: Date; search?: string; urgentOnly?: boolean; includeOpenBeforeStart?: boolean }) {
     await this.businesses.requireBusiness(input.businessId);
     return this.prisma.task.findMany({
       where: {
         businessId: input.businessId,
         deletedAt: null,
-        dueAt: {
-          gte: input.start,
-          lt: input.end
-        },
+        OR: [
+          {
+            dueAt: {
+              gte: input.start,
+              lt: input.end
+            }
+          },
+          ...(input.includeOpenBeforeStart ? [{
+            status: "OPEN" as const,
+            dueAt: {
+              lt: input.start
+            }
+          }] : [])
+        ],
         priority: input.urgentOnly ? "URGENT" : undefined,
-        OR: input.search ? [
+        AND: input.search ? [{
+          OR: [
           { title: { contains: input.search, mode: "insensitive" } },
           { description: { contains: input.search, mode: "insensitive" } },
           { customer: { name: { contains: input.search, mode: "insensitive" } } },
           { customer: { phone: { contains: input.search, mode: "insensitive" } } }
-        ] : undefined
+          ]
+        }] : undefined
       },
       include: { customer: true },
       orderBy: [{ priority: "desc" }, { dueAt: "asc" }, { createdAt: "desc" }]
@@ -1248,6 +1267,27 @@ export class CustomerNotesRepository {
       orderBy: { createdAt: "desc" }
     });
   }
+
+  async update(input: UpdateCustomerNoteInput) {
+    const existing = await this.prisma.customerNote.findFirst({
+      where: {
+        businessId: input.businessId,
+        customerId: input.customerId,
+        id: input.noteId
+      }
+    });
+
+    if (!existing) {
+      return null;
+    }
+
+    return this.prisma.customerNote.update({
+      where: { id: existing.id },
+      data: {
+        status: input.status
+      }
+    });
+  }
 }
 
 @Injectable()
@@ -1503,23 +1543,35 @@ export class AppointmentsRepository {
     });
   }
 
-  async listForDate(input: { businessId: string; start: Date; end: Date; search?: string }) {
+  async listForDate(input: { businessId: string; start: Date; end: Date; search?: string; includeOpenBeforeStart?: boolean }) {
     await this.businesses.requireBusiness(input.businessId);
     return this.prisma.appointment.findMany({
       where: {
         businessId: input.businessId,
         deletedAt: null,
-        startsAt: {
-          gte: input.start,
-          lt: input.end
-        },
-        OR: input.search ? [
+        OR: [
+          {
+            startsAt: {
+              gte: input.start,
+              lt: input.end
+            }
+          },
+          ...(input.includeOpenBeforeStart ? [{
+            status: "SCHEDULED" as const,
+            startsAt: {
+              lt: input.start
+            }
+          }] : [])
+        ],
+        AND: input.search ? [{
+          OR: [
           { title: { contains: input.search, mode: "insensitive" } },
           { location: { contains: input.search, mode: "insensitive" } },
           { notes: { contains: input.search, mode: "insensitive" } },
           { customer: { name: { contains: input.search, mode: "insensitive" } } },
           { customer: { phone: { contains: input.search, mode: "insensitive" } } }
-        ] : undefined
+          ]
+        }] : undefined
       },
       include: { customer: true },
       orderBy: { startsAt: "asc" }
@@ -1644,22 +1696,34 @@ export class QuotesRepository {
     });
   }
 
-  async listForDate(input: { businessId: string; start: Date; end: Date; search?: string }) {
+  async listForDate(input: { businessId: string; start: Date; end: Date; search?: string; includeOpenBeforeStart?: boolean }) {
     await this.businesses.requireBusiness(input.businessId);
     return this.prisma.quote.findMany({
       where: {
         businessId: input.businessId,
         deletedAt: null,
-        dueAt: {
-          gte: input.start,
-          lt: input.end
-        },
-        OR: input.search ? [
+        OR: [
+          {
+            dueAt: {
+              gte: input.start,
+              lt: input.end
+            }
+          },
+          ...(input.includeOpenBeforeStart ? [{
+            status: "OPEN" as const,
+            dueAt: {
+              lt: input.start
+            }
+          }] : [])
+        ],
+        AND: input.search ? [{
+          OR: [
           { title: { contains: input.search, mode: "insensitive" } },
           { description: { contains: input.search, mode: "insensitive" } },
           { customer: { name: { contains: input.search, mode: "insensitive" } } },
           { customer: { phone: { contains: input.search, mode: "insensitive" } } }
-        ] : undefined
+          ]
+        }] : undefined
       },
       include: { customer: true },
       orderBy: [{ dueAt: "asc" }, { createdAt: "desc" }]

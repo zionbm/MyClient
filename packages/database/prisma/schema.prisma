@@ -256,12 +256,14 @@ model CustomerNote {
   businessId String
   customerId String
   text       String
+  status     String   @default("OPEN")
   createdAt  DateTime @default(now())
 
   customer Customer @relation(fields: [customerId], references: [id])
 
   @@index([businessId])
   @@index([businessId, customerId])
+  @@index([businessId, status])
 }
 
 model BusinessPhoneNumber {

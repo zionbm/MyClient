@@ -126,6 +126,12 @@ export const CreateCustomerNoteSchema = z.object({
 
 export type CreateCustomerNote = z.infer<typeof CreateCustomerNoteSchema>;
 
+export const UpdateCustomerNoteSchema = z.object({
+  status: z.enum(["OPEN", "DONE"]).optional()
+}).refine((value) => Object.keys(value).length > 0, "At least one customer note field is required");
+
+export type UpdateCustomerNote = z.infer<typeof UpdateCustomerNoteSchema>;
+
 export const CreateAppointmentSchema = z.object({
   customerId: OptionalNonEmptyStringSchema,
   title: z.string().trim().min(1),
