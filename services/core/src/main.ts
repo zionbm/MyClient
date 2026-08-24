@@ -251,6 +251,14 @@ function parseAiDueAt(value: string, timeZone: string) {
   }, timeZone);
 }
 
+function tryParseAiDueAt(value: string, timeZone: string) {
+  try {
+    return parseAiDueAt(value, timeZone);
+  } catch {
+    return undefined;
+  }
+}
+
 function parseHebrewVoiceDueAt(text: string, timeZone: string, now = new Date()) {
   const dayMatch = text.match(/(?:ביום\s+)?(ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת)|\b(מחר)\b/);
   const timeMatch = text.match(/בשעה\s+([0-9]{1,2}|אחת|אחד|שתיים|שניים|שתים|שתי|שני|שלוש|שלושה|ארבע|ארבעה|חמש|חמישה|שש|שישה|שבע|שבעה|שמונה|תשע|תשעה|עשר|עשרה|אחת עשרה|שתים עשרה|שתיים עשרה)/);
@@ -2434,6 +2442,8 @@ class CoreController {
       type: "home_visit",
       title: homeVisit.title,
       description: homeVisit.notes ?? homeVisit.location,
+      location: homeVisit.location,
+      notes: homeVisit.notes,
       customer: homeVisit.customer,
       dueAt: homeVisit.startsAt,
       priority: "NORMAL",
@@ -2934,10 +2944,12 @@ class CoreController {
     const results = [];
     const createdCustomers: Array<{ id: string; name?: string | null; phone?: string | null }> = [];
     const settings = await this.settings.getByBusiness(input.businessId);
+    const actions = this.applyVoiceCustomerAddressHints(input.actions, input.transcript);
 
-    for (const action of input.actions) {
+    for (const action of actions) {
       let payload = this.resolveVoiceActionPayload(action.payload, createdCustomers);
       payload = this.enrichVoiceActionPayload(action, payload, input.transcript, settings.timezone);
+      payload = this.normalizeVoiceActionPayload(action.type, payload);
       payload = await this.resolveVoiceActionReferences({
         businessId: input.businessId,
         actionType: action.type,
@@ -2989,6 +3001,43 @@ class CoreController {
     };
   }
 
+  private applyVoiceCustomerAddressHints(actions: AiAction[], transcript: string): AiAction[] {
+    const oneOffLocationHint = /(?:אתר|אתר עבודה|דירה להשכרה|אצל אמא|אצל אימא|אצל אבא|אצל ההורים|במשרד|בעסק|במחסן)/.test(transcript);
+    if (oneOffLocationHint) {
+      return actions;
+    }
+
+    return actions.map((action, index) => {
+      if (action.type !== "CREATE_CUSTOMER" || typeof action.payload.address === "string") {
+        return action;
+      }
+
+      const name = this.normalizedVoiceText(action.payload.name);
+      const phone = this.normalizedVoiceText(action.payload.phone);
+      if (!name && !phone) {
+        return action;
+      }
+
+      const laterLocation = actions.slice(index + 1)
+        .map((candidate) => ({
+          type: candidate.type,
+          payload: this.normalizeVoiceActionPayload(candidate.type, candidate.payload)
+        }))
+        .find((candidate) => {
+          if (candidate.type !== "CREATE_HOME_VISIT" && candidate.type !== "CREATE_APPOINTMENT") {
+            return false;
+          }
+          const candidateName = this.normalizedVoiceText(candidate.payload.name);
+          const candidatePhone = this.normalizedVoiceText(candidate.payload.phone);
+          return (name && candidateName === name) || (phone && candidatePhone === phone);
+        })?.payload.location;
+
+      return typeof laterLocation === "string"
+        ? { ...action, payload: { ...action.payload, address: laterLocation } }
+        : action;
+    });
+  }
+
   private resolveVoiceActionPayload(
     payload: Record<string, unknown>,
     createdCustomers: Array<{ id: string; name?: string | null; phone?: string | null }>
@@ -3004,6 +3053,43 @@ class CoreController {
     ) ?? createdCustomers.at(-1);
 
     return matchingCustomer ? { ...payload, customerId: matchingCustomer.id } : payload;
+  }
+
+  private normalizeVoiceActionPayload(actionType: string, payload: Record<string, unknown>) {
+    const normalized = { ...payload };
+
+    if (actionType === "CREATE_HOME_VISIT" ||
+      actionType === "UPDATE_HOME_VISIT" ||
+      actionType === "CREATE_APPOINTMENT" ||
+      actionType === "UPDATE_APPOINTMENT") {
+      if (typeof normalized.location !== "string" && typeof normalized.address === "string") {
+        normalized.location = normalized.address;
+      }
+      if (typeof normalized.notes !== "string" && typeof normalized.description === "string") {
+        normalized.notes = normalized.description;
+      }
+      if (typeof normalized.title !== "string") {
+        normalized.title = typeof normalized.notes === "string"
+          ? `ביקור בית - ${normalized.notes}`
+          : actionType === "CREATE_HOME_VISIT" || actionType === "UPDATE_HOME_VISIT"
+            ? "ביקור בית"
+            : "פגישה";
+      }
+    }
+
+    if ((actionType === "CREATE_TASK" || actionType === "CREATE_CALLBACK") &&
+      typeof normalized.title !== "string" &&
+      typeof normalized.text === "string") {
+      normalized.title = normalized.text;
+    }
+
+    if (actionType === "ADD_CUSTOMER_NOTE" &&
+      typeof normalized.text !== "string" &&
+      typeof normalized.description === "string") {
+      normalized.text = normalized.description;
+    }
+
+    return normalized;
   }
 
   private async resolveVoiceActionReferences(input: {
@@ -3139,17 +3225,75 @@ class CoreController {
   }
 
   private enrichVoiceActionPayload(action: AiAction, payload: Record<string, unknown>, transcript: string, timeZone: string) {
-    if ((action.type === "CREATE_TASK" || action.type === "CREATE_CALLBACK") && typeof payload.dueAt !== "string") {
-      const dueAt = parseHebrewVoiceDueAt(transcript, timeZone);
+    const normalized = { ...payload };
+
+    if (this.voiceActionUsesDueAt(action.type)) {
+      const dueAt = this.normalizeVoiceDateValue(normalized.dueAt, transcript, timeZone);
       if (dueAt) {
-        return { ...payload, dueAt: dueAt.toISOString() };
+        normalized.dueAt = dueAt.toISOString();
+      } else if (typeof normalized.dueAt === "string") {
+        delete normalized.dueAt;
       }
     }
-    return payload;
+
+    if (this.voiceActionUsesStartsAt(action.type)) {
+      const startsAt = this.normalizeVoiceDateValue(normalized.startsAt, transcript, timeZone);
+      if (startsAt) {
+        normalized.startsAt = startsAt.toISOString();
+      } else if (typeof normalized.startsAt === "string") {
+        delete normalized.startsAt;
+      }
+
+      const endsAt = typeof normalized.endsAt === "string"
+        ? tryParseAiDueAt(normalized.endsAt, timeZone)
+        : undefined;
+      if (endsAt) {
+        normalized.endsAt = endsAt.toISOString();
+      } else if (typeof normalized.endsAt === "string") {
+        delete normalized.endsAt;
+      }
+    }
+
+    return normalized;
+  }
+
+  private normalizeVoiceDateValue(value: unknown, transcript: string, timeZone: string) {
+    if (typeof value === "string") {
+      const parsed = tryParseAiDueAt(value, timeZone);
+      if (parsed) {
+        return parsed;
+      }
+      const parsedFromValue = parseHebrewVoiceDueAt(value, timeZone);
+      if (parsedFromValue) {
+        return parsedFromValue;
+      }
+    }
+
+    return parseHebrewVoiceDueAt(transcript, timeZone);
+  }
+
+  private voiceActionUsesDueAt(actionType: string) {
+    return actionType === "CREATE_TASK" ||
+      actionType === "CREATE_CALLBACK" ||
+      actionType === "UPDATE_TASK" ||
+      actionType === "UPDATE_CALLBACK" ||
+      actionType === "CREATE_QUOTE" ||
+      actionType === "UPDATE_QUOTE";
+  }
+
+  private voiceActionUsesStartsAt(actionType: string) {
+    return actionType === "CREATE_APPOINTMENT" ||
+      actionType === "UPDATE_APPOINTMENT" ||
+      actionType === "CREATE_HOME_VISIT" ||
+      actionType === "UPDATE_HOME_VISIT";
   }
 
   private requiredVoiceMissingFields(action: AiAction, payload: Record<string, unknown>) {
-    return action.missingFields.filter((field) => !this.isOptionalVoiceField(action.type, field) && payload[field] === undefined);
+    const fields = new Set(action.missingFields);
+    if (this.voiceActionUsesStartsAt(action.type) && payload.startsAt === undefined) {
+      fields.add("startsAt");
+    }
+    return [...fields].filter((field) => !this.isOptionalVoiceField(action.type, field) && payload[field] === undefined);
   }
 
   private isOptionalVoiceField(actionType: string, field: string) {

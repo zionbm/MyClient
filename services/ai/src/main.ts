@@ -70,6 +70,10 @@ class AiController {
               "אתה ממיר פקודות קוליות של בעל עסק בעברית ל-JSON פעולה עבור שרת CRM. " +
               "החזר מערך actions לפי סדר הביצוע. אם המשתמש מבקש כמה דברים באותו משפט, החזר כמה פעולות. " +
               "אם המשתמש מבקש תזכורת, משימה או לחזור למישהו, השתמש ב-CREATE_TASK. " +
+              "אם המשתמש מבקש ביקור בית, התקנה או הגעה לכתובת, השתמש ב-CREATE_HOME_VISIT והכנס כתובת לשדה location. " +
+              "אם המשתמש מבקש הצעת מחיר, השתמש ב-CREATE_QUOTE והכנס סכום ל-estimatedAmount אם נאמר סכום. " +
+              "השתמש בשמות שדות שתואמים לפעולות השרת: location ו-notes לביקור/פגישה, description למשימה/הצעה, address לכתובת לקוח. " +
+              "כל שדה זמן כמו dueAt, startsAt או endsAt חייב להיות ISO datetime בלבד, למשל 2026-08-25T14:30:00+03:00. אל תחזיר תאריך טבעי כמו 'יום רביעי בשעה 14:00' בתוך payload. " +
               "לתזכורת ללא מועד בכלל, או ללא מועד מדויק כמו 'מאוחר יותר' או 'בהמשך', צור CREATE_TASK בלי dueAt ובלי requiresConfirmation. " +
               "אם פעולה מאוחרת מתייחסת ללקוח שנוצר בפעולה קודמת, כלול name ו-phone בפעולה המאוחרת כשאפשר. " +
               "מספר טלפון של לקוח הוא אופציונלי: אם המשתמש לא אמר מספר טלפון, אל תוסיף phone ל-missingFields ואל תדרוש אישור בגלל זה. " +
@@ -113,7 +117,17 @@ class AiController {
                           "CREATE_TASK",
                           "UPDATE_TASK",
                           "COMPLETE_TASK",
-                          "ADD_CUSTOMER_NOTE"
+                          "ADD_CUSTOMER_NOTE",
+                          "CREATE_CALLBACK",
+                          "UPDATE_CALLBACK",
+                          "COMPLETE_CALLBACK",
+                          "DELETE_TREATMENT_ITEM",
+                          "CREATE_HOME_VISIT",
+                          "UPDATE_HOME_VISIT",
+                          "CREATE_QUOTE",
+                          "UPDATE_QUOTE",
+                          "MARK_QUOTE_PAID",
+                          "MERGE_CUSTOMERS"
                         ]
                       },
                       idempotencyKey: { type: "string" },
@@ -128,12 +142,27 @@ class AiController {
                           description: { type: "string" },
                           dueAt: { type: "string" },
                           priority: { type: "string", enum: ["NORMAL", "URGENT"] },
+                          status: { type: "string" },
                           name: { type: "string" },
                           phone: { type: "string" },
+                          email: { type: "string" },
+                          address: { type: "string" },
                           customerId: { type: "string" },
                           startsAt: { type: "string" },
                           endsAt: { type: "string" },
-                          text: { type: "string" }
+                          location: { type: "string" },
+                          notes: { type: "string" },
+                          text: { type: "string" },
+                          taskId: { type: "string" },
+                          callbackId: { type: "string" },
+                          appointmentId: { type: "string" },
+                          homeVisitId: { type: "string" },
+                          quoteId: { type: "string" },
+                          estimatedAmount: { type: ["number", "string"] },
+                          sourceCustomerId: { type: "string" },
+                          targetCustomerId: { type: "string" },
+                          itemType: { type: "string", enum: ["callback", "home_visit", "quote"] },
+                          itemId: { type: "string" }
                         }
                       }
                     }
