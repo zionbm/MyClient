@@ -2,7 +2,7 @@ import "reflect-metadata";
 import { Body, Controller, Get, Module, Post } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { FastifyAdapter, type NestFastifyApplication } from "@nestjs/platform-fastify";
-import { ApiExceptionFilter, getEnv, getPort, health, log } from "@myclient/common";
+import { ApiExceptionFilter, cloudRunServiceAuthHeaders, getEnv, getPort, health, log } from "@myclient/common";
 
 type MockJob = {
   id: string;
@@ -50,6 +50,7 @@ async function pollDueReminders() {
     const response = await fetch(`${coreBaseUrl}/internal/reminders/due`, {
       method: "POST",
       headers: {
+        ...(await cloudRunServiceAuthHeaders(coreBaseUrl)),
         "content-type": "application/json",
         "x-internal-secret": getEnv("INTERNAL_API_SECRET", "dev-internal-secret")
       },

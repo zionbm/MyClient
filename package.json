@@ -18,7 +18,8 @@
     "seed:demo": "node scripts/seed-demo.mjs",
     "test:integration": "node scripts/integration-tests.mjs",
     "prisma:generate": "prisma generate --schema packages/database/prisma/schema.prisma",
-    "prisma:migrate:dev": "prisma migrate dev --schema packages/database/prisma/schema.prisma"
+    "prisma:migrate:dev": "prisma migrate dev --schema packages/database/prisma/schema.prisma",
+    "prisma:migrate:deploy": "prisma migrate deploy --schema packages/database/prisma/schema.prisma"
   },
   "dependencies": {
     "@nestjs/common": "^11.1.6",

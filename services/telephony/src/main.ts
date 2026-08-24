@@ -2,7 +2,7 @@ import "reflect-metadata";
 import { BadGatewayException, Body, Controller, Get, Module, Post } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { FastifyAdapter, type NestFastifyApplication } from "@nestjs/platform-fastify";
-import { ApiExceptionFilter, getEnv, getPort, health, log, stableIdempotencyKey } from "@myclient/common";
+import { ApiExceptionFilter, cloudRunServiceAuthHeaders, getEnv, getPort, health, log, stableIdempotencyKey } from "@myclient/common";
 import type { CreateCallbackTask } from "@myclient/contracts";
 
 type IvrDigit = "1" | "2" | "3";
@@ -135,6 +135,7 @@ class TelephonyController {
     const response = await fetch(`${coreBaseUrl}/internal/telephony/incoming`, {
       method: "POST",
       headers: {
+        ...(await cloudRunServiceAuthHeaders(coreBaseUrl)),
         "content-type": "application/json",
         "x-internal-secret": getEnv("INTERNAL_API_SECRET", "dev-internal-secret")
       },
@@ -163,6 +164,7 @@ class TelephonyController {
     const response = await fetch(`${coreBaseUrl}/internal/telephony/recording`, {
       method: "POST",
       headers: {
+        ...(await cloudRunServiceAuthHeaders(coreBaseUrl)),
         "content-type": "application/json",
         "x-internal-secret": getEnv("INTERNAL_API_SECRET", "dev-internal-secret")
       },
@@ -184,6 +186,7 @@ class TelephonyController {
     const response = await fetch(`${coreBaseUrl}/internal/tasks/callback`, {
       method: "POST",
       headers: {
+        ...(await cloudRunServiceAuthHeaders(coreBaseUrl)),
         "content-type": "application/json",
         "x-internal-secret": getEnv("INTERNAL_API_SECRET", "dev-internal-secret")
       },

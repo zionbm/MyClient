@@ -23,7 +23,7 @@ import { Prisma, type Business, type User } from "@prisma/client";
 import { applicationDefault, getApps, initializeApp } from "firebase-admin/app";
 import { getAuth, type DecodedIdToken } from "firebase-admin/auth";
 import { getMessaging } from "firebase-admin/messaging";
-import { ApiExceptionFilter, getEnv, getPort, health, log, stableIdempotencyKey } from "@myclient/common";
+import { ApiExceptionFilter, cloudRunServiceAuthHeaders, getEnv, getPort, health, log, stableIdempotencyKey } from "@myclient/common";
 import {
   AiActionBatchSchema,
   AiActionSchema,
@@ -2869,6 +2869,7 @@ class CoreController {
     const response = await fetch(`${voiceBaseUrl}/stt/openai`, {
       method: "POST",
       headers: {
+        ...(await cloudRunServiceAuthHeaders(voiceBaseUrl)),
         "content-type": input.contentType,
         "x-audio-filename": input.filename,
         "x-language-code": input.languageCode
@@ -2909,7 +2910,10 @@ class CoreController {
     const aiBaseUrl = getEnv("AI_BASE_URL", "http://localhost:3001");
     const response = await fetch(`${aiBaseUrl}/intent/parse`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        ...(await cloudRunServiceAuthHeaders(aiBaseUrl)),
+        "content-type": "application/json"
+      },
       body: JSON.stringify({
         text: input.transcript,
         businessId: input.businessId,

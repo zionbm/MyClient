@@ -1,0 +1,265 @@
+name: Deploy to Google Cloud Run
+
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        description: Service to build and deploy
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - core
+          - ai
+          - voice
+          - telephony
+          - worker
+      deploy:
+        description: Deploy after building and pushing images
+        required: true
+        default: true
+        type: boolean
+      run_migrations:
+        description: Run Prisma migrations before deploying services
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  REGION: ${{ vars.GCP_REGION }}
+  ARTIFACT_REPOSITORY: ${{ vars.GCP_ARTIFACT_REGISTRY_REPOSITORY }}
+  RUNTIME_SERVICE_ACCOUNT: ${{ vars.GCP_RUNTIME_SERVICE_ACCOUNT }}
+  CLOUD_SQL_INSTANCE_CONNECTION_NAME: ${{ vars.CLOUD_SQL_INSTANCE_CONNECTION_NAME }}
+
+jobs:
+  deploy:
+    name: Build and deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run check
+
+      - name: Build packages
+        run: npm run build
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+
+      - name: Build and push images
+        shell: bash
+        run: |
+          set -euo pipefail
+          selected="${{ inputs.service }}"
+          if [[ "$selected" == "all" ]]; then
+            services=(core ai voice telephony worker)
+          else
+            services=("$selected")
+          fi
+
+          for service in "${services[@]}"; do
+            image="${REGION}-docker.pkg.dev/${PROJECT_ID}/${ARTIFACT_REPOSITORY}/${service}:${GITHUB_SHA}"
+            latest="${REGION}-docker.pkg.dev/${PROJECT_ID}/${ARTIFACT_REPOSITORY}/${service}:latest"
+            docker build -f "services/${service}/Dockerfile" -t "$image" -t "$latest" .
+            docker push "$image"
+            docker push "$latest"
+            echo "IMAGE_${service^^}=$image" >> "$GITHUB_ENV"
+          done
+
+      - name: Stop after image push
+        if: ${{ !inputs.deploy }}
+        run: echo "Images were built and pushed. Deployment skipped by input."
+
+      - name: Deploy selected services
+        if: ${{ inputs.deploy }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          selected="${{ inputs.service }}"
+          if [[ "$selected" == "all" ]]; then
+            services=(ai voice core telephony worker)
+          else
+            services=("$selected")
+          fi
+
+          image_for() {
+            local service="$1"
+            echo "${REGION}-docker.pkg.dev/${PROJECT_ID}/${ARTIFACT_REPOSITORY}/${service}:${GITHUB_SHA}"
+          }
+
+          service_url() {
+            local service="$1"
+            gcloud run services describe "myclient-${service}" \
+              --project="$PROJECT_ID" \
+              --region="$REGION" \
+              --format='value(status.url)'
+          }
+
+          deploy_ai() {
+            gcloud run deploy myclient-ai \
+              --project="$PROJECT_ID" \
+              --region="$REGION" \
+              --image="$(image_for ai)" \
+              --service-account="$RUNTIME_SERVICE_ACCOUNT" \
+              --no-allow-unauthenticated \
+              --set-env-vars=NODE_ENV=production,DEFAULT_LOCALE=he-IL,MOCK_LLM_PROVIDER=false,OPENAI_LLM_MODEL=gpt-5-mini \
+              --set-secrets=OPENAI_API_KEY=OPENAI_API_KEY:latest \
+              --quiet
+            gcloud run services add-iam-policy-binding myclient-ai \
+              --project="$PROJECT_ID" \
+              --region="$REGION" \
+              --member="serviceAccount:${RUNTIME_SERVICE_ACCOUNT}" \
+              --role=roles/run.invoker \
+              --quiet
+          }
+
+          deploy_voice() {
+            gcloud run deploy myclient-voice \
+              --project="$PROJECT_ID" \
+              --region="$REGION" \
+              --image="$(image_for voice)" \
+              --service-account="$RUNTIME_SERVICE_ACCOUNT" \
+              --no-allow-unauthenticated \
+              --set-env-vars=NODE_ENV=production,DEFAULT_LOCALE=he-IL,MOCK_STT_PROVIDER=false,MOCK_TTS_PROVIDER=true,OPENAI_STT_MODEL=gpt-4o-mini-transcribe \
+              --set-secrets=OPENAI_API_KEY=OPENAI_API_KEY:latest \
+              --quiet
+            gcloud run services add-iam-policy-binding myclient-voice \
+              --project="$PROJECT_ID" \
+              --region="$REGION" \
+              --member="serviceAccount:${RUNTIME_SERVICE_ACCOUNT}" \
+              --role=roles/run.invoker \
+              --quiet
+          }
+
+          deploy_core() {
+            local ai_url voice_url
+            ai_url="$(service_url ai)"
+            voice_url="$(service_url voice)"
+            gcloud run deploy myclient-core \
+              --project="$PROJECT_ID" \
+              --region="$REGION" \
+              --image="$(image_for core)" \
+              --service-account="$RUNTIME_SERVICE_ACCOUNT" \
+              --allow-unauthenticated \
+              --add-cloudsql-instances="$CLOUD_SQL_INSTANCE_CONNECTION_NAME" \
+              --set-env-vars=NODE_ENV=production,DEFAULT_LOCALE=he-IL,AUTH_PROVIDER=firebase,AI_BASE_URL="$ai_url",VOICE_BASE_URL="$voice_url",MOCK_FCM_PROVIDER=false,CLOUD_RUN_SERVICE_AUTH=google \
+              --set-secrets=DATABASE_URL=DATABASE_URL:latest,INTERNAL_API_SECRET=INTERNAL_API_SECRET:latest \
+              --quiet
+          }
+
+          deploy_telephony() {
+            local core_url voice_url
+            core_url="$(service_url core)"
+            voice_url="$(service_url voice)"
+            gcloud run deploy myclient-telephony \
+              --project="$PROJECT_ID" \
+              --region="$REGION" \
+              --image="$(image_for telephony)" \
+              --service-account="$RUNTIME_SERVICE_ACCOUNT" \
+              --allow-unauthenticated \
+              --set-env-vars=NODE_ENV=production,DEFAULT_LOCALE=he-IL,CORE_BASE_URL="$core_url",VOICE_BASE_URL="$voice_url",MOCK_PLIVO_PROVIDER=true,CLOUD_RUN_SERVICE_AUTH=google \
+              --set-secrets=INTERNAL_API_SECRET=INTERNAL_API_SECRET:latest \
+              --quiet
+          }
+
+          deploy_worker() {
+            local core_url
+            core_url="$(service_url core)"
+            gcloud run deploy myclient-worker \
+              --project="$PROJECT_ID" \
+              --region="$REGION" \
+              --image="$(image_for worker)" \
+              --service-account="$RUNTIME_SERVICE_ACCOUNT" \
+              --no-allow-unauthenticated \
+              --min-instances=1 \
+              --max-instances=1 \
+              --no-cpu-throttling \
+              --set-env-vars=NODE_ENV=production,DEFAULT_LOCALE=he-IL,CORE_BASE_URL="$core_url",WORKER_REMINDER_POLL_ENABLED=true,WORKER_REMINDER_POLL_INTERVAL_MS=30000,WORKER_REMINDER_BATCH_SIZE=20,CLOUD_RUN_SERVICE_AUTH=google \
+              --set-secrets=INTERNAL_API_SECRET=INTERNAL_API_SECRET:latest \
+              --quiet
+            gcloud run services add-iam-policy-binding myclient-worker \
+              --project="$PROJECT_ID" \
+              --region="$REGION" \
+              --member="serviceAccount:${RUNTIME_SERVICE_ACCOUNT}" \
+              --role=roles/run.invoker \
+              --quiet
+          }
+
+          run_migrations() {
+            gcloud run jobs deploy myclient-prisma-migrate \
+              --project="$PROJECT_ID" \
+              --region="$REGION" \
+              --image="$(image_for core)" \
+              --service-account="$RUNTIME_SERVICE_ACCOUNT" \
+              --add-cloudsql-instances="$CLOUD_SQL_INSTANCE_CONNECTION_NAME" \
+              --set-secrets=DATABASE_URL=DATABASE_URL:latest \
+              --command=npx \
+              --args=prisma,migrate,deploy,--schema,packages/database/prisma/schema.prisma \
+              --quiet
+            gcloud run jobs execute myclient-prisma-migrate \
+              --project="$PROJECT_ID" \
+              --region="$REGION" \
+              --wait \
+              --quiet
+          }
+
+          if [[ "${{ inputs.run_migrations }}" == "true" && ( "$selected" == "all" || "$selected" == "core" ) ]]; then
+            run_migrations
+          fi
+
+          for service in "${services[@]}"; do
+            "deploy_${service}"
+          done
+
+          for service in core ai voice telephony worker; do
+            if gcloud run services describe "myclient-${service}" --project="$PROJECT_ID" --region="$REGION" >/dev/null 2>&1; then
+              url="$(service_url "$service")"
+              revision="$(gcloud run services describe "myclient-${service}" --project="$PROJECT_ID" --region="$REGION" --format='value(status.latestReadyRevisionName)')"
+              echo "service=myclient-${service}"
+              echo "git_sha=${GITHUB_SHA}"
+              echo "image=$(image_for "$service")"
+              echo "revision=${revision}"
+              echo "url=${url}"
+            fi
+          done
+
+      - name: Smoke check public services
+        if: ${{ inputs.deploy }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for service in core telephony; do
+            if gcloud run services describe "myclient-${service}" --project="$PROJECT_ID" --region="$REGION" >/dev/null 2>&1; then
+              url="$(gcloud run services describe "myclient-${service}" --project="$PROJECT_ID" --region="$REGION" --format='value(status.url)')"
+              curl --fail --silent --show-error "$url/health"
+              echo
+            fi
+          done
