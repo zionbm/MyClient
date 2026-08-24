@@ -2865,16 +2865,21 @@ class CoreController {
     languageCode: string;
   }): Promise<{ provider: string; model?: string; languageCode: string; transcript: string; confidence: number }> {
     const voiceBaseUrl = getEnv("VOICE_BASE_URL", "http://localhost:3002");
+    const useMockStt = getEnv("MOCK_STT_PROVIDER", "false") === "true";
     const audioBody = input.audio.buffer.slice(input.audio.byteOffset, input.audio.byteOffset + input.audio.byteLength) as ArrayBuffer;
-    const response = await fetch(`${voiceBaseUrl}/stt/openai`, {
+    const response = await fetch(`${voiceBaseUrl}${useMockStt ? "/stt/mock" : "/stt/openai"}`, {
       method: "POST",
       headers: {
         ...(await cloudRunServiceAuthHeaders(voiceBaseUrl)),
-        "content-type": input.contentType,
-        "x-audio-filename": input.filename,
-        "x-language-code": input.languageCode
+        ...(useMockStt
+          ? { "content-type": "application/json" }
+          : {
+              "content-type": input.contentType,
+              "x-audio-filename": input.filename,
+              "x-language-code": input.languageCode
+            })
       },
-      body: audioBody
+      body: useMockStt ? JSON.stringify({ languageCode: input.languageCode }) : audioBody
     });
     const result = (await response.json().catch(() => ({}))) as {
       provider?: string;
