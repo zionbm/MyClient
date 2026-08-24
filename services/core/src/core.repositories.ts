@@ -592,6 +592,12 @@ export class BusinessSettingsRepository {
 
   async getByBusiness(businessId: string) {
     const business = await this.businesses.requireBusiness(businessId);
+    const owner = await this.prisma.user.findFirst({
+      where: { businessId },
+      orderBy: { createdAt: "asc" },
+      select: { displayName: true }
+    });
+    const ownerDisplayName = owner?.displayName ?? "שם בעל העסק";
     const settings = await this.prisma.businessSettings.upsert({
       where: { businessId },
       update: {},
@@ -599,7 +605,7 @@ export class BusinessSettingsRepository {
         businessId,
         locale: "he-IL",
         timezone: "Asia/Jerusalem",
-        greetingText: `שלום, הגעתם ל${business.name}. לחזרה טלפונית הקישו 1, להשארת הודעה הקישו 2, ולמקרה דחוף הקישו 3.`,
+        greetingText: `שלום הגעתם ל${business.name}, ${ownerDisplayName} לא יכול לענות כרגע אבל יחזור אליכם בהקדם האפשרי. הקישו 1 לבקשת חזרה. הקישו 2 לבקשת חזרה עם השארת הודעה. הקישו 3 לפנייה דחופה.`,
         callbackPrompt: "הבקשה התקבלה. נחזור אליך בהקדם.",
         urgentPrompt: "אנא השאר הודעה דחופה אחרי הצליל.",
         workingHours: {
@@ -612,11 +618,6 @@ export class BusinessSettingsRepository {
           saturday: { open: "00:00", close: "00:00", closed: true }
         }
       }
-    });
-    const owner = await this.prisma.user.findFirst({
-      where: { businessId },
-      orderBy: { createdAt: "asc" },
-      select: { displayName: true }
     });
     return {
       ...settings,
