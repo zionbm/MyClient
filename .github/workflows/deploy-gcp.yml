@@ -130,7 +130,8 @@ jobs:
               --image="$(image_for ai)" \
               --service-account="$RUNTIME_SERVICE_ACCOUNT" \
               --no-allow-unauthenticated \
-              --set-env-vars=NODE_ENV=production,DEFAULT_LOCALE=he-IL,MOCK_LLM_PROVIDER=true,OPENAI_LLM_MODEL=gpt-5-mini \
+              --set-env-vars=NODE_ENV=production,DEFAULT_LOCALE=he-IL,MOCK_LLM_PROVIDER=false,OPENAI_LLM_MODEL=gpt-5-mini \
+              --set-secrets=OPENAI_API_KEY=OPENAI_API_KEY:latest \
               --quiet
             gcloud run services add-iam-policy-binding myclient-ai \
               --project="$PROJECT_ID" \
@@ -147,7 +148,8 @@ jobs:
               --image="$(image_for voice)" \
               --service-account="$RUNTIME_SERVICE_ACCOUNT" \
               --no-allow-unauthenticated \
-              --set-env-vars=NODE_ENV=production,DEFAULT_LOCALE=he-IL,MOCK_STT_PROVIDER=true,MOCK_TTS_PROVIDER=true,OPENAI_STT_MODEL=gpt-4o-mini-transcribe \
+              --set-env-vars=NODE_ENV=production,DEFAULT_LOCALE=he-IL,MOCK_STT_PROVIDER=false,MOCK_TTS_PROVIDER=true,OPENAI_STT_MODEL=gpt-4o-mini-transcribe \
+              --set-secrets=OPENAI_API_KEY=OPENAI_API_KEY:latest \
               --quiet
             gcloud run services add-iam-policy-binding myclient-voice \
               --project="$PROJECT_ID" \
@@ -168,7 +170,7 @@ jobs:
               --service-account="$RUNTIME_SERVICE_ACCOUNT" \
               --allow-unauthenticated \
               --add-cloudsql-instances="$CLOUD_SQL_INSTANCE_CONNECTION_NAME" \
-              --set-env-vars=NODE_ENV=production,DEFAULT_LOCALE=he-IL,AUTH_PROVIDER=firebase,AI_BASE_URL="$ai_url",VOICE_BASE_URL="$voice_url",MOCK_FCM_PROVIDER=false,MOCK_STT_PROVIDER=true,CLOUD_RUN_SERVICE_AUTH=google \
+              --set-env-vars=NODE_ENV=production,DEFAULT_LOCALE=he-IL,AUTH_PROVIDER=firebase,AI_BASE_URL="$ai_url",VOICE_BASE_URL="$voice_url",MOCK_FCM_PROVIDER=false,MOCK_STT_PROVIDER=false,CLOUD_RUN_SERVICE_AUTH=google \
               --set-secrets=DATABASE_URL=DATABASE_URL:latest,INTERNAL_API_SECRET=INTERNAL_API_SECRET:latest \
               --quiet
           }
