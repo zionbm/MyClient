@@ -83,7 +83,8 @@ export const CreateTaskSchema = z.object({
   title: z.string().trim().min(1),
   description: OptionalNonEmptyStringSchema,
   priority: CallbackTaskPrioritySchema.default("NORMAL"),
-  dueAt: OptionalNonEmptyStringSchema
+  dueAt: OptionalNonEmptyStringSchema,
+  status: z.enum(["OPEN", "COMPLETED", "CANCELLED"]).optional()
 });
 
 export type CreateTask = z.infer<typeof CreateTaskSchema>;
@@ -104,7 +105,8 @@ export const CreateCallbackSchema = z.object({
   title: z.string().trim().min(1),
   description: OptionalNonEmptyStringSchema,
   priority: CallbackTaskPrioritySchema.default("NORMAL"),
-  dueAt: OptionalDateStringSchema
+  dueAt: OptionalDateStringSchema,
+  status: z.enum(["OPEN", "DONE"]).optional()
 });
 
 export type CreateCallback = z.infer<typeof CreateCallbackSchema>;
@@ -161,7 +163,8 @@ export const CreateHomeVisitSchema = z.object({
   startsAt: RequiredDateStringSchema,
   endsAt: z.string().trim().min(1).nullable().optional(),
   location: OptionalNonEmptyStringSchema,
-  notes: OptionalNonEmptyStringSchema
+  notes: OptionalNonEmptyStringSchema,
+  status: z.enum(["OPEN", "DONE"]).optional()
 });
 
 export type CreateHomeVisit = z.infer<typeof CreateHomeVisitSchema>;
@@ -183,7 +186,8 @@ export const CreateQuoteSchema = z.object({
   title: z.string().trim().min(1),
   dueAt: RequiredDateStringSchema,
   description: OptionalNonEmptyStringSchema,
-  estimatedAmount: OptionalAmountSchema
+  estimatedAmount: OptionalAmountSchema,
+  status: z.enum(["OPEN", "PAID"]).optional()
 });
 
 export type CreateQuote = z.infer<typeof CreateQuoteSchema>;

@@ -447,7 +447,7 @@ function publicDeviceToken(deviceToken: {
   };
 }
 
-function publicCustomer(customer: { id: string; name: string; phone?: string | null; email?: string | null; address?: string | null } | null | undefined) {
+function publicCustomer(customer: { id: string; name: string; phone?: string | null; email?: string | null; address?: string | null; createdAt?: Date } | null | undefined) {
   if (!customer) {
     return null;
   }
@@ -456,7 +456,8 @@ function publicCustomer(customer: { id: string; name: string; phone?: string | n
     name: customer.name,
     phone: customer.phone ?? null,
     email: customer.email ?? null,
-    address: customer.address ?? null
+    address: customer.address ?? null,
+    createdAt: customer.createdAt ?? null
   };
 }
 
@@ -1229,6 +1230,7 @@ class CoreController {
       description: command.description,
       priority: command.priority,
       dueAt: parseOptionalDate(command.dueAt) ?? undefined,
+      status: command.status,
       source: "app"
     });
     await this.audit.record({
@@ -1262,6 +1264,7 @@ class CoreController {
       description: command.description,
       priority: command.priority,
       dueAt: parseOptionalDate(command.dueAt) ?? await this.resolveAiTaskDueAt(businessId, {}),
+      status: command.status === "DONE" ? "COMPLETED" : command.status === "OPEN" ? "OPEN" : undefined,
       source: "app"
     });
     await this.audit.record({
@@ -1740,7 +1743,8 @@ class CoreController {
       location: command.location,
       notes: command.notes,
       startsAt: parseRequiredDate(command.startsAt),
-      endsAt: parseOptionalDate(command.endsAt) ?? new Date(parseRequiredDate(command.startsAt).getTime() + 30 * 60 * 1000)
+      endsAt: parseOptionalDate(command.endsAt) ?? new Date(parseRequiredDate(command.startsAt).getTime() + 30 * 60 * 1000),
+      status: command.status === "DONE" ? "COMPLETED" : command.status === "OPEN" ? "SCHEDULED" : undefined
     });
     await this.audit.record({
       businessId,
@@ -1853,6 +1857,7 @@ class CoreController {
       description: command.description,
       estimatedAmount: command.estimatedAmount === undefined ? undefined : new Prisma.Decimal(command.estimatedAmount),
       dueAt: parseRequiredDate(command.dueAt),
+      status: command.status,
       source: "app"
     });
     await this.audit.record({

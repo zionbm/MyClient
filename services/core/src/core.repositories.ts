@@ -9,6 +9,7 @@ type CreateTaskInput = {
   description?: string;
   priority?: "NORMAL" | "URGENT";
   dueAt?: Date;
+  status?: "OPEN" | "COMPLETED" | "CANCELLED";
   source: string;
   sourceRef?: string;
   idempotencyKey?: string;
@@ -209,6 +210,7 @@ type CreateAppointmentInput = {
   notes?: string;
   startsAt: Date;
   endsAt?: Date | null;
+  status?: "SCHEDULED" | "CANCELLED" | "COMPLETED";
 };
 
 type UpdateAppointmentInput = {
@@ -230,6 +232,7 @@ type CreateQuoteInput = {
   description?: string;
   estimatedAmount?: Prisma.Decimal | number | string;
   dueAt: Date;
+  status?: "OPEN" | "PAID";
   source?: string;
   sourceRef?: string;
   idempotencyKey?: string;
@@ -901,6 +904,7 @@ export class TasksRepository {
         description: input.description,
         priority: input.priority ?? "NORMAL",
         dueAt: input.dueAt,
+        status: input.status,
         source: input.source,
         sourceRef: input.sourceRef,
         idempotencyKey: input.idempotencyKey
@@ -1529,7 +1533,8 @@ export class AppointmentsRepository {
         location: input.location,
         notes: input.notes,
         startsAt: input.startsAt,
-        endsAt: input.endsAt
+        endsAt: input.endsAt,
+        status: input.status
       }
     });
   }
@@ -1680,6 +1685,7 @@ export class QuotesRepository {
         description: input.description,
         estimatedAmount: input.estimatedAmount,
         dueAt: input.dueAt,
+        status: input.status,
         source: input.source ?? "app",
         sourceRef: input.sourceRef,
         idempotencyKey: input.idempotencyKey
