@@ -222,7 +222,7 @@ jobs:
               --region="$REGION" \
               --image="$(image_for core)" \
               --service-account="$RUNTIME_SERVICE_ACCOUNT" \
-              --add-cloudsql-instances="$CLOUD_SQL_INSTANCE_CONNECTION_NAME" \
+              --set-cloudsql-instances="$CLOUD_SQL_INSTANCE_CONNECTION_NAME" \
               --set-secrets=DATABASE_URL=DATABASE_URL:latest \
               --command=npx \
               --args=prisma,migrate,deploy,--schema,packages/database/prisma/schema.prisma \
