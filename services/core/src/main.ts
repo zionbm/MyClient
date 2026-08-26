@@ -61,7 +61,7 @@ import {
   UpdateQuoteSchema,
   UpdateTaskSchema
 } from "@myclient/contracts";
-import type { AiAction } from "@myclient/contracts";
+import type { AiAction, VoiceCommandResult } from "@myclient/contracts";
 import {
   AppointmentsRepository,
   AuthRepository,
@@ -104,6 +104,11 @@ type NotificationSendInput = {
   title: string;
   body: string;
   payload?: Prisma.JsonValue | null;
+};
+
+type VoiceCommandExecutionResult = {
+  status: string;
+  results: Array<Record<string, unknown>>;
 };
 
 function formatCaller(callerPhone: string | undefined): string {
@@ -1056,7 +1061,8 @@ class CoreController {
       return {
         duplicate: true,
         voiceCommand: existing,
-        execution: existing.executionResult
+        execution: existing.executionResult,
+        voiceResult: this.voiceResultFromStoredCommand(existing)
       };
     }
 
@@ -1104,10 +1110,16 @@ class CoreController {
         transcript: stt.transcript,
         actions: intent.actions
       });
+      const settings = await this.settings.getByBusiness(businessId);
+      const voiceResult = this.buildVoiceCommandResult({
+        transcript: stt.transcript,
+        execution,
+        timeZone: settings.timezone
+      });
       voiceCommand = await this.ownerVoiceCommands.update({
         id: voiceCommand.id,
         executionStatus: execution.status,
-        executionResult: execution as Prisma.InputJsonValue
+        executionResult: { ...execution, voiceResult } as Prisma.InputJsonValue
       });
       await this.audit.record({
         businessId,
@@ -1125,15 +1137,22 @@ class CoreController {
         voiceCommand,
         stt,
         llm: intent,
-        execution
+        execution,
+        voiceResult
       };
     } catch (error) {
       const response = error instanceof HttpException ? error.getResponse() : undefined;
+      const message = error instanceof Error ? error.message : String(error);
+      const voiceResult = this.buildFailedVoiceCommandResult({
+        transcript: voiceCommand.transcript,
+        message
+      });
       voiceCommand = await this.ownerVoiceCommands.update({
         id: voiceCommand.id,
         executionStatus: "FAILED",
         executionResult: {
-          message: error instanceof Error ? error.message : String(error),
+          message,
+          voiceResult,
           ...(typeof response === "object" && response !== null ? { details: response } : {})
         }
       });
@@ -1148,7 +1167,12 @@ class CoreController {
         after: voiceCommand as Prisma.InputJsonValue,
         result: "FAILED"
       });
-      throw error;
+      return {
+        duplicate: false,
+        voiceCommand,
+        execution: voiceCommand.executionResult,
+        voiceResult
+      };
     }
   }
 
@@ -2948,6 +2972,246 @@ class CoreController {
     const visibleCharacters = normalized.replace(/\s+/g, "");
     return visibleCharacters.length < 2 ||
       normalized === "הקלטה של בעל עסק בעברית שמבקש ליצור משימה, לקוח, פגישה, עבודה או הערה במערכת CRM.";
+  }
+
+  private voiceResultFromStoredCommand(command: { transcript?: string | null; executionResult?: Prisma.JsonValue | null }): VoiceCommandResult {
+    const execution = this.asRecord(command.executionResult);
+    const storedResult = this.asRecord(execution.voiceResult);
+    if (typeof storedResult.state === "string") {
+      return storedResult as VoiceCommandResult;
+    }
+    if (typeof execution.status === "string" && Array.isArray(execution.results)) {
+      return this.buildVoiceCommandResult({
+        transcript: command.transcript ?? null,
+        execution: {
+          status: execution.status,
+          results: execution.results.filter((result): result is Record<string, unknown> => typeof result === "object" && result !== null)
+        },
+        timeZone: "Asia/Jerusalem"
+      });
+    }
+
+    return this.buildFailedVoiceCommandResult({
+      transcript: command.transcript ?? null,
+      message: typeof execution.message === "string" ? execution.message : "Voice command execution failed"
+    });
+  }
+
+  private buildFailedVoiceCommandResult(input: { transcript?: string | null; message: string }): VoiceCommandResult {
+    const unclearRecording = input.message.includes("לא זוהה דיבור ברור") || !input.transcript;
+    return {
+      state: "failed",
+      title: unclearRecording ? "לא הצלחתי להבין את ההקלטה" : "לא הצלחתי לבצע את הפקודה",
+      summary: unclearRecording
+        ? "אפשר להקליט שוב או להקליד את הפקודה."
+        : "אפשר לבדוק את מה שנשמע, להקליט שוב או ליצור את הפעולה ידנית.",
+      transcript: input.transcript ?? null,
+      items: [],
+      primaryAction: "הקלט שוב",
+      secondaryActions: ["סגור"]
+    };
+  }
+
+  private buildVoiceCommandResult(input: {
+    transcript: string | null;
+    execution: VoiceCommandExecutionResult;
+    timeZone: string;
+  }): VoiceCommandResult {
+    const items = input.execution.results.map((result, index) => this.voiceResultItemFromExecutionResult(result, index, input.timeZone));
+    if (items.length === 0) {
+      return {
+        state: "unsupported",
+        title: "לא מצאתי פעולה מתאימה",
+        summary: "אפשר לבקש ליצור לקוח, תזכורת, ביקור, הצעת מחיר או הערת לקוח.",
+        transcript: input.transcript,
+        items: [],
+        primaryAction: "הקלט שוב",
+        secondaryActions: ["סגור"]
+      };
+    }
+
+    const pendingCount = items.filter((item) => item.status === "pending").length;
+    const failedCount = items.filter((item) => item.status === "failed").length;
+    const doneCount = items.length - pendingCount - failedCount;
+    const state: VoiceCommandResult["state"] = pendingCount > 0 ? "needs_input" : failedCount === items.length ? "failed" : "done";
+
+    return {
+      state,
+      title: state === "needs_input" ? "צריך עוד פרט" : state === "failed" ? "לא הצלחתי לבצע את הפקודה" : "בוצע",
+      summary: this.voiceResultSummary({ state, doneCount, pendingCount, failedCount }),
+      transcript: input.transcript,
+      items,
+      primaryAction: state === "needs_input" ? "פתח פעולות AI" : "סגור",
+      secondaryActions: state === "done" ? ["הקלט שוב"] : ["הקלט שוב", "סגור"]
+    };
+  }
+
+  private voiceResultSummary(input: {
+    state: VoiceCommandResult["state"];
+    doneCount: number;
+    pendingCount: number;
+    failedCount: number;
+  }) {
+    if (input.state === "needs_input") {
+      if (input.doneCount > 0) {
+        return `ביצעתי ${input.doneCount} ${input.doneCount === 1 ? "פעולה" : "פעולות"}. יש ${input.pendingCount} ${input.pendingCount === 1 ? "פעולה שצריכה" : "פעולות שצריכות"} השלמה.`;
+      }
+      return "הבנתי את הפעולה, אבל חסר פרט כדי להשלים אותה.";
+    }
+    if (input.state === "failed") {
+      return "אפשר לבדוק את מה שנשמע, להקליט שוב או ליצור את הפעולה ידנית.";
+    }
+    return input.doneCount === 1 ? "ביצעתי פעולה אחת מהפקודה הקולית." : `ביצעתי ${input.doneCount} פעולות מהפקודה הקולית.`;
+  }
+
+  private voiceResultItemFromExecutionResult(result: Record<string, unknown>, index: number, timeZone: string): VoiceCommandResult["items"][number] {
+    const actionType = typeof result.actionType === "string" ? result.actionType : "ACTION";
+    const status = result.status === "PENDING" ? "pending" : result.status === "EXECUTED" ? "created" : "failed";
+    const executionPayload = this.asRecord(result.result);
+    const pendingAction = this.asRecord(result.pendingAction);
+    const payload = this.asRecord(pendingAction.payload);
+    const entity = this.voiceResultEntity(executionPayload);
+    const fields = status === "pending"
+      ? this.voicePendingFields(actionType, payload, pendingAction, timeZone)
+      : this.voiceEntityFields(actionType, entity, timeZone);
+
+    return {
+      id: typeof result.idempotencyKey === "string" ? result.idempotencyKey : `${actionType}:${index}`,
+      kind: this.voiceResultKind(actionType),
+      status,
+      title: this.voiceResultTitle(actionType, status),
+      subtitle: status === "pending" ? this.pendingReason(pendingAction) : undefined,
+      fields,
+      entityId: typeof entity.id === "string" ? entity.id : undefined,
+      pendingActionId: typeof pendingAction.id === "string" ? pendingAction.id : undefined,
+      missingFields: this.stringList(pendingAction.missingFields)
+    };
+  }
+
+  private voiceResultEntity(result: Record<string, unknown>) {
+    for (const value of [result.customer, result.task, result.appointment, result.quote, result.note, result.job, result.item]) {
+      const record = this.asRecord(value);
+      if (Object.keys(record).length > 0) return record;
+    }
+    return result;
+  }
+
+  private voiceResultKind(actionType: string): VoiceCommandResult["items"][number]["kind"] {
+    if (actionType.includes("CUSTOMER") && !actionType.includes("NOTE")) return "customer";
+    if (actionType.includes("HOME_VISIT") || actionType.includes("APPOINTMENT")) return "home_visit";
+    if (actionType.includes("QUOTE")) return "quote";
+    if (actionType.includes("NOTE")) return "note";
+    if (actionType.includes("TASK") || actionType.includes("CALLBACK")) return "callback";
+    return "action";
+  }
+
+  private voiceResultTitle(actionType: string, status: VoiceCommandResult["items"][number]["status"]) {
+    const prefix = status === "pending" ? "" : status === "completed" ? "הושלם: " : "";
+    if (actionType.includes("CUSTOMER") && !actionType.includes("NOTE")) return `${prefix}לקוח`;
+    if (actionType.includes("HOME_VISIT") || actionType.includes("APPOINTMENT")) return `${prefix}ביקור בית`;
+    if (actionType.includes("QUOTE")) return `${prefix}הצעת מחיר`;
+    if (actionType.includes("NOTE")) return `${prefix}הערת לקוח`;
+    if (actionType.includes("TASK") || actionType.includes("CALLBACK")) return `${prefix}תזכורת חזרה`;
+    return `${prefix}פעולה`;
+  }
+
+  private voicePendingFields(actionType: string, payload: Record<string, unknown>, pendingAction: Record<string, unknown>, timeZone: string) {
+    const missingFields = new Set(this.stringList(pendingAction.missingFields));
+    const fields = this.voiceEntityFields(actionType, payload, timeZone);
+    for (const field of missingFields) {
+      if (!fields.some((item) => item.label === this.voiceFieldLabel(field))) {
+        fields.push({ label: this.voiceFieldLabel(field), value: "חסר", state: "missing" as const });
+      }
+    }
+    return fields.map((field) => missingFields.has(this.fieldKeyFromHebrewLabel(field.label)) ? { ...field, state: "missing" as const, value: field.value || "חסר" } : field);
+  }
+
+  private voiceEntityFields(actionType: string, entity: Record<string, unknown>, timeZone: string): VoiceCommandResult["items"][number]["fields"] {
+    const fields: VoiceCommandResult["items"][number]["fields"] = [];
+    const title = this.stringValue(entity.title) ?? this.stringValue(entity.name) ?? this.stringValue(entity.text);
+    if (title) fields.push({ label: actionType.includes("CUSTOMER") && !actionType.includes("NOTE") ? "שם" : "נושא", value: title, state: "normal" });
+    const phone = this.stringValue(entity.phone);
+    if (phone) fields.push({ label: "טלפון", value: phone, state: "normal" });
+    const dueAt = this.stringValue(entity.dueAt) ?? this.stringValue(entity.startsAt);
+    if (dueAt) fields.push({ label: "מועד", value: this.formatVoiceDate(dueAt, timeZone), state: "normal" });
+    const amount = this.stringValue(entity.estimatedAmount);
+    if (amount) fields.push({ label: "סכום", value: amount, state: "normal" });
+    const location = this.stringValue(entity.location) ?? this.stringValue(entity.address);
+    if (location) fields.push({ label: "כתובת", value: location, state: "normal" });
+    const customerName = this.stringValue(this.asRecord(entity.customer).name) ?? this.stringValue(entity.customerName);
+    if (customerName) fields.push({ label: "לקוח", value: customerName, state: "normal" });
+    return fields;
+  }
+
+  private pendingReason(pendingAction: Record<string, unknown>) {
+    const missingFields = this.stringList(pendingAction.missingFields).map((field) => this.voiceFieldLabel(field));
+    return missingFields.length > 0 ? `חסר: ${missingFields.join(", ")}` : "ממתין לאישור";
+  }
+
+  private voiceFieldLabel(field: string) {
+    const labels: Record<string, string> = {
+      customerId: "לקוח",
+      customerName: "לקוח",
+      taskId: "תזכורת",
+      callbackId: "תזכורת",
+      appointmentId: "ביקור",
+      homeVisitId: "ביקור",
+      quoteId: "הצעת מחיר",
+      title: "נושא",
+      text: "תוכן",
+      name: "שם",
+      phone: "טלפון",
+      dueAt: "מועד",
+      startsAt: "מועד",
+      estimatedAmount: "סכום",
+      location: "כתובת"
+    };
+    return labels[field] ?? field;
+  }
+
+  private fieldKeyFromHebrewLabel(label: string) {
+    const labels: Record<string, string> = {
+      לקוח: "customerId",
+      תזכורת: "taskId",
+      ביקור: "homeVisitId",
+      "הצעת מחיר": "quoteId",
+      נושא: "title",
+      תוכן: "text",
+      שם: "name",
+      טלפון: "phone",
+      מועד: "dueAt",
+      סכום: "estimatedAmount",
+      כתובת: "location"
+    };
+    return labels[label] ?? label;
+  }
+
+  private formatVoiceDate(value: string, timeZone: string) {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return new Intl.DateTimeFormat("he-IL", {
+      timeZone,
+      day: "2-digit",
+      month: "2-digit",
+      year: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit"
+    }).format(date);
+  }
+
+  private stringValue(value: unknown) {
+    if (typeof value === "string" && value.trim()) return value;
+    if (typeof value === "number" || typeof value === "boolean") return String(value);
+    if (value instanceof Prisma.Decimal) return value.toString();
+    return undefined;
+  }
+
+  private stringList(value: unknown) {
+    return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
+  }
+
+  private asRecord(value: unknown): Record<string, unknown> {
+    return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {};
   }
 
   private async executeVoiceCommandActions(input: {

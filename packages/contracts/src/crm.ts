@@ -283,3 +283,33 @@ export const OwnerVoiceCommandHeadersSchema = z.object({
 });
 
 export type OwnerVoiceCommandHeaders = z.infer<typeof OwnerVoiceCommandHeadersSchema>;
+
+export const VoiceCommandResultFieldSchema = z.object({
+  label: z.string(),
+  value: z.string(),
+  state: z.enum(["normal", "missing"]).default("normal")
+});
+
+export const VoiceCommandResultItemSchema = z.object({
+  id: z.string(),
+  kind: z.enum(["customer", "callback", "home_visit", "quote", "note", "action"]),
+  status: z.enum(["created", "updated", "completed", "pending", "failed"]),
+  title: z.string(),
+  subtitle: z.string().optional(),
+  fields: z.array(VoiceCommandResultFieldSchema).default([]),
+  entityId: z.string().optional(),
+  pendingActionId: z.string().optional(),
+  missingFields: z.array(z.string()).default([])
+});
+
+export const VoiceCommandResultSchema = z.object({
+  state: z.enum(["done", "needs_input", "failed", "unsupported"]),
+  title: z.string(),
+  summary: z.string(),
+  transcript: z.string().nullable(),
+  items: z.array(VoiceCommandResultItemSchema).default([]),
+  primaryAction: z.string().optional(),
+  secondaryActions: z.array(z.string()).default([])
+});
+
+export type VoiceCommandResult = z.infer<typeof VoiceCommandResultSchema>;
