@@ -45,6 +45,7 @@ import {
   ListByStatusQuerySchema,
   MergeCustomerSchema,
   OwnerVoiceCommandHeadersSchema,
+  OwnerVoiceCommandTranscriptSchema,
   RegisterBusinessSchema,
   RegisterDeviceTokenSchema,
   SnoozeNotificationSchema,
@@ -1043,6 +1044,184 @@ class CoreController {
     return { voiceCommands: await this.ownerVoiceCommands.listByBusiness(businessId) };
   }
 
+  @Post("businesses/:businessId/voice-commands/realtime-session")
+  async createOwnerVoiceRealtimeSession(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string) {
+    await this.requireBusinessAccess(headers, businessId);
+    const apiKey = getEnv("OPENAI_API_KEY", "");
+    if (!apiKey) {
+      throw new BadRequestException("OpenAI API key is not configured");
+    }
+    const model = getEnv("OPENAI_REALTIME_TRANSCRIPTION_MODEL", "gpt-live-transcribe");
+    const response = await fetch("https://api.openai.com/v1/realtime/client_secrets", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${apiKey}`,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        expires_after: { anchor: "created_at", seconds: 120 },
+        session: {
+          type: "transcription",
+          audio: {
+            input: {
+              format: { type: "audio/pcm", rate: 24000 },
+              noise_reduction: { type: "near_field" },
+              transcription: {
+                model,
+                language: "he",
+                prompt: "עברית ישראלית. פקודות קצרות לניהול לקוחות, תזכורות, ביקורי בית, הצעות מחיר והערות לקוח."
+              }
+            }
+          }
+        }
+      })
+    });
+    const json = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!response.ok) {
+      log("error", "openai realtime client secret failed", {
+        status: response.status,
+        error: json
+      });
+      throw new BadRequestException("לא הצלחנו להכין הקלטה קולית");
+    }
+    const value = typeof json.value === "string" ? json.value : "";
+    const expiresAt = typeof json.expires_at === "number" ? json.expires_at : 0;
+    if (!value || !expiresAt) {
+      throw new BadRequestException("OpenAI realtime session response is invalid");
+    }
+    return { value, expiresAt, model };
+  }
+
+  @Post("businesses/:businessId/voice-commands/transcript")
+  async createOwnerVoiceCommandFromTranscript(
+    @Headers() headers: RequestHeaders,
+    @Param("businessId") businessId: string,
+    @Body() body: unknown
+  ) {
+    const user = await this.requireBusinessAccess(headers, businessId);
+    const commandHeaders = OwnerVoiceCommandHeadersSchema.parse({
+      idempotencyKey: headerValue(headers, "x-idempotency-key"),
+      languageCode: headerValue(headers, "x-language-code") ?? "he-IL"
+    });
+    const transcriptBody = OwnerVoiceCommandTranscriptSchema.parse(body);
+    const existing = await this.ownerVoiceCommands.findByIdempotencyKey(commandHeaders.idempotencyKey);
+    if (existing) {
+      return {
+        duplicate: true,
+        voiceCommand: existing,
+        execution: existing.executionResult,
+        voiceResult: this.voiceResultFromStoredCommand(existing)
+      };
+    }
+
+    let voiceCommand = await this.ownerVoiceCommands.create({
+      businessId,
+      userId: user.id,
+      languageCode: transcriptBody.languageCode,
+      idempotencyKey: commandHeaders.idempotencyKey
+    });
+
+    try {
+      if (this.isInvalidOwnerVoiceTranscript(transcriptBody.transcript)) {
+        throw new BadRequestException("לא זוהה דיבור ברור בהקלטה. נסה להקליט שוב קרוב יותר למיקרופון.");
+      }
+      voiceCommand = await this.ownerVoiceCommands.update({
+        id: voiceCommand.id,
+        transcript: transcriptBody.transcript,
+        sttProvider: transcriptBody.sttProvider,
+        sttConfidence: transcriptBody.sttConfidence ?? undefined,
+        executionStatus: "TRANSCRIBED"
+      });
+
+      const intent = await this.parseOwnerCommandIntent({
+        transcript: transcriptBody.transcript,
+        businessId,
+        userId: user.id,
+        idempotencyKey: commandHeaders.idempotencyKey
+      });
+      voiceCommand = await this.ownerVoiceCommands.update({
+        id: voiceCommand.id,
+        llmProvider: intent.provider,
+        llmAction: { actions: intent.actions } as Prisma.InputJsonValue,
+        executionStatus: "PARSED"
+      });
+
+      const execution = await this.executeVoiceCommandActions({
+        businessId,
+        userId: user.id,
+        transcript: transcriptBody.transcript,
+        actions: intent.actions
+      });
+      const settings = await this.settings.getByBusiness(businessId);
+      const voiceResult = this.buildVoiceCommandResult({
+        transcript: transcriptBody.transcript,
+        execution,
+        timeZone: settings.timezone
+      });
+      voiceCommand = await this.ownerVoiceCommands.update({
+        id: voiceCommand.id,
+        executionStatus: execution.status,
+        executionResult: { ...execution, voiceResult } as Prisma.InputJsonValue
+      });
+      await this.audit.record({
+        businessId,
+        actorType: "user",
+        actorId: user.id,
+        source: "owner_voice_command",
+        entityType: "owner_voice_command",
+        entityId: voiceCommand.id,
+        action: "EXECUTE_OWNER_VOICE_COMMAND",
+        after: voiceCommand as Prisma.InputJsonValue
+      });
+
+      return {
+        duplicate: false,
+        voiceCommand,
+        stt: {
+          transcript: transcriptBody.transcript,
+          provider: transcriptBody.sttProvider,
+          confidence: transcriptBody.sttConfidence ?? null
+        },
+        llm: intent,
+        execution,
+        voiceResult
+      };
+    } catch (error) {
+      const response = error instanceof HttpException ? error.getResponse() : undefined;
+      const message = error instanceof Error ? error.message : String(error);
+      const voiceResult = this.buildFailedVoiceCommandResult({
+        transcript: voiceCommand.transcript,
+        message
+      });
+      voiceCommand = await this.ownerVoiceCommands.update({
+        id: voiceCommand.id,
+        executionStatus: "FAILED",
+        executionResult: {
+          message,
+          voiceResult,
+          ...(typeof response === "object" && response !== null ? { details: response } : {})
+        } as Prisma.InputJsonValue
+      });
+      await this.audit.record({
+        businessId,
+        actorType: "user",
+        actorId: user.id,
+        source: "owner_voice_command",
+        entityType: "owner_voice_command",
+        entityId: voiceCommand.id,
+        action: "FAIL_OWNER_VOICE_COMMAND",
+        after: voiceCommand as Prisma.InputJsonValue,
+        result: "FAILED"
+      });
+      return {
+        duplicate: false,
+        voiceCommand,
+        execution: voiceCommand.executionResult,
+        voiceResult
+      };
+    }
+  }
+
   @Post("businesses/:businessId/voice-commands/audio")
   async createOwnerVoiceCommandFromAudio(
     @Headers() headers: RequestHeaders,
@@ -1154,7 +1333,7 @@ class CoreController {
           message,
           voiceResult,
           ...(typeof response === "object" && response !== null ? { details: response } : {})
-        }
+        } as Prisma.InputJsonValue
       });
       await this.audit.record({
         businessId,
@@ -2341,10 +2520,17 @@ class CoreController {
       throw new BadRequestException("Pending action is already resolved");
     }
 
-    const payload = {
+    let payload = {
       ...(existing.payload as Record<string, unknown>),
       ...(command.payload ?? {})
     };
+    payload = this.normalizeVoiceActionPayload(existing.actionType, payload);
+    payload = await this.resolveVoiceActionReferences({
+      businessId,
+      actionType: existing.actionType,
+      payload,
+      transcript: ""
+    });
     const execution = await this.executeStructuredAction({
       businessId,
       userId: user.id,
@@ -3030,19 +3216,27 @@ class CoreController {
       };
     }
 
-    const pendingCount = items.filter((item) => item.status === "pending").length;
+    const pendingItems = items.filter((item) => item.status === "pending");
+    const pendingCount = pendingItems.length;
+    const missingPendingCount = pendingItems.filter((item) => item.missingFields.length > 0).length;
     const failedCount = items.filter((item) => item.status === "failed").length;
     const doneCount = items.length - pendingCount - failedCount;
-    const state: VoiceCommandResult["state"] = pendingCount > 0 ? "needs_input" : failedCount === items.length ? "failed" : "done";
+    const state: VoiceCommandResult["state"] = missingPendingCount > 0
+      ? "needs_input"
+      : pendingCount > 0
+        ? "needs_review"
+        : failedCount === items.length
+          ? "failed"
+          : "done";
 
     return {
       state,
-      title: state === "needs_input" ? "צריך עוד פרט" : state === "failed" ? "לא הצלחתי לבצע את הפקודה" : "בוצע",
+      title: state === "needs_input" ? "צריך עוד פרט" : state === "needs_review" ? "לאישור" : state === "failed" ? "לא הצלחתי לבצע את הפקודה" : "בוצע",
       summary: this.voiceResultSummary({ state, doneCount, pendingCount, failedCount }),
       transcript: input.transcript,
       items,
-      primaryAction: state === "needs_input" ? "פתח פעולות AI" : "סגור",
-      secondaryActions: state === "done" ? ["הקלט שוב"] : ["הקלט שוב", "סגור"]
+      primaryAction: "סגור",
+      secondaryActions: state === "done" ? ["הקלט שוב"] : ["פתח פעולות AI", "הקלט שוב"]
     };
   }
 
@@ -3057,6 +3251,11 @@ class CoreController {
         return `ביצעתי ${input.doneCount} ${input.doneCount === 1 ? "פעולה" : "פעולות"}. יש ${input.pendingCount} ${input.pendingCount === 1 ? "פעולה שצריכה" : "פעולות שצריכות"} השלמה.`;
       }
       return "הבנתי את הפעולה, אבל חסר פרט כדי להשלים אותה.";
+    }
+    if (input.state === "needs_review") {
+      return input.pendingCount === 1
+        ? "הבנתי את הפעולה. אפשר לפתוח, לערוך ולאשר לפני שהיא נשמרת."
+        : `הבנתי ${input.pendingCount} פעולות. אפשר לפתוח כל כרטיס, לערוך ולאשר לפני שמירה.`;
     }
     if (input.state === "failed") {
       return "אפשר לבדוק את מה שנשמע, להקליט שוב או ליצור את הפעולה ידנית.";
@@ -3077,10 +3276,12 @@ class CoreController {
 
     return {
       id: typeof result.idempotencyKey === "string" ? result.idempotencyKey : `${actionType}:${index}`,
+      actionType,
       kind: this.voiceResultKind(actionType),
       status,
       title: this.voiceResultTitle(actionType, status),
       subtitle: status === "pending" ? this.pendingReason(pendingAction) : undefined,
+      payload: status === "pending" ? payload : entity,
       fields,
       entityId: typeof entity.id === "string" ? entity.id : undefined,
       pendingActionId: typeof pendingAction.id === "string" ? pendingAction.id : undefined,
@@ -3221,12 +3422,11 @@ class CoreController {
     actions: AiAction[];
   }) {
     const results = [];
-    const createdCustomers: Array<{ id: string; name?: string | null; phone?: string | null }> = [];
     const settings = await this.settings.getByBusiness(input.businessId);
     const actions = this.applyVoiceCustomerAddressHints(input.actions, input.transcript);
 
     for (const action of actions) {
-      let payload = this.resolveVoiceActionPayload(action.payload, createdCustomers);
+      let payload = this.resolveVoiceActionPayload(action.payload, []);
       payload = this.enrichVoiceActionPayload(action, payload, input.transcript, settings.timezone);
       payload = this.normalizeVoiceActionPayload(action.type, payload);
       payload = await this.resolveVoiceActionReferences({
@@ -3236,41 +3436,24 @@ class CoreController {
         transcript: input.transcript
       });
       const missingFields = this.requiredVoiceMissingFields(action, payload);
-      const requiresConfirmation = action.requiresConfirmation && (action.missingFields.length === 0 || missingFields.length > 0);
-      if (missingFields.length > 0 || requiresConfirmation) {
-        const pending = await this.pendingActions.create({
-          businessId: input.businessId,
-          userId: input.userId,
-          actionType: action.type,
-          payload: payload as Prisma.InputJsonValue,
-          missingFields
-        });
-        await this.audit.record({
-          businessId: input.businessId,
-          actorType: "user",
-          actorId: input.userId,
-          source: "owner_voice_command",
-          entityType: "pending_action",
-          entityId: pending.id,
-          action: "CREATE_PENDING_ACTION_FROM_VOICE_COMMAND",
-          after: pending as Prisma.InputJsonValue
-        });
-        results.push({ status: "PENDING", actionType: action.type, idempotencyKey: action.idempotencyKey, pendingAction: pending });
-        continue;
-      }
-
-      const result = await this.executeStructuredAction({
+      const pending = await this.pendingActions.create({
         businessId: input.businessId,
         userId: input.userId,
         actionType: action.type,
-        payload,
-        idempotencyKey: action.idempotencyKey
+        payload: payload as Prisma.InputJsonValue,
+        missingFields
       });
-
-      if (action.type === "CREATE_CUSTOMER" && "customer" in result && result.customer) {
-        createdCustomers.push(result.customer);
-      }
-      results.push({ status: "EXECUTED", actionType: action.type, idempotencyKey: action.idempotencyKey, result });
+      await this.audit.record({
+        businessId: input.businessId,
+        actorType: "user",
+        actorId: input.userId,
+        source: "owner_voice_command",
+        entityType: "pending_action",
+        entityId: pending.id,
+        action: "CREATE_PENDING_ACTION_FROM_VOICE_COMMAND",
+        after: pending as Prisma.InputJsonValue
+      });
+      results.push({ status: "PENDING", actionType: action.type, idempotencyKey: action.idempotencyKey, pendingAction: pending });
     }
 
     const hasPending = results.some((result) => result.status === "PENDING");

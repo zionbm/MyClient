@@ -284,6 +284,23 @@ export const OwnerVoiceCommandHeadersSchema = z.object({
 
 export type OwnerVoiceCommandHeaders = z.infer<typeof OwnerVoiceCommandHeadersSchema>;
 
+export const OwnerVoiceCommandTranscriptSchema = z.object({
+  transcript: z.string().trim().min(2),
+  languageCode: z.string().trim().min(1).default("he-IL"),
+  sttProvider: z.string().trim().min(1).default("openai-realtime"),
+  sttConfidence: z.number().min(0).max(1).nullable().optional()
+});
+
+export type OwnerVoiceCommandTranscript = z.infer<typeof OwnerVoiceCommandTranscriptSchema>;
+
+export const VoiceRealtimeSessionSchema = z.object({
+  value: z.string().trim().min(1),
+  expiresAt: z.number(),
+  model: z.string().trim().min(1)
+});
+
+export type VoiceRealtimeSession = z.infer<typeof VoiceRealtimeSessionSchema>;
+
 export const VoiceCommandResultFieldSchema = z.object({
   label: z.string(),
   value: z.string(),
@@ -292,10 +309,12 @@ export const VoiceCommandResultFieldSchema = z.object({
 
 export const VoiceCommandResultItemSchema = z.object({
   id: z.string(),
+  actionType: z.string(),
   kind: z.enum(["customer", "callback", "home_visit", "quote", "note", "action"]),
   status: z.enum(["created", "updated", "completed", "pending", "failed"]),
   title: z.string(),
   subtitle: z.string().optional(),
+  payload: z.record(z.unknown()).default({}),
   fields: z.array(VoiceCommandResultFieldSchema).default([]),
   entityId: z.string().optional(),
   pendingActionId: z.string().optional(),
@@ -303,7 +322,7 @@ export const VoiceCommandResultItemSchema = z.object({
 });
 
 export const VoiceCommandResultSchema = z.object({
-  state: z.enum(["done", "needs_input", "failed", "unsupported"]),
+  state: z.enum(["done", "needs_review", "needs_input", "failed", "unsupported"]),
   title: z.string(),
   summary: z.string(),
   transcript: z.string().nullable(),
