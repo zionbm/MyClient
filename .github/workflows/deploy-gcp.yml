@@ -267,7 +267,7 @@ jobs:
                 --time-zone="Asia/Jerusalem" \
                 --uri="${core_url}/internal/reminders/due" \
                 --http-method=POST \
-                --headers="Content-Type=application/json" \
+                --update-headers="Content-Type=application/json" \
                 --message-body='{"limit":20}' \
                 --oidc-service-account-email="$scheduler_sa" \
                 --oidc-token-audience="$core_url" \
