@@ -1721,6 +1721,31 @@ class CoreController {
     return { customer };
   }
 
+  @Delete("businesses/:businessId/customers/:customerId")
+  async deleteCustomer(
+    @Headers() headers: RequestHeaders,
+    @Param("businessId") businessId: string,
+    @Param("customerId") customerId: string
+  ) {
+    const user = await this.requireBusinessAccess(headers, businessId);
+    const deletion = await this.customers.softDelete({ businessId, customerId });
+    if (!deletion) {
+      throw new NotFoundException("Customer not found");
+    }
+
+    await this.audit.record({
+      businessId,
+      actorType: "user",
+      actorId: user.id,
+      source: "core",
+      entityType: "customer",
+      entityId: deletion.customer.id,
+      action: "DELETE_CUSTOMER",
+      after: deletion as Prisma.InputJsonValue
+    });
+    return { customer: deletion.customer, deleted: deletion.deleted };
+  }
+
   @Post("businesses/:businessId/customers/:customerId/merge")
   async mergeCustomer(
     @Headers() headers: RequestHeaders,
@@ -3236,7 +3261,7 @@ class CoreController {
       transcript: input.transcript,
       items,
       primaryAction: "סגור",
-      secondaryActions: state === "done" ? ["הקלט שוב"] : ["פתח פעולות AI", "הקלט שוב"]
+      secondaryActions: state === "done" ? ["הקלט שוב"] : ["אשר מאוחר יותר", "הקלט שוב"]
     };
   }
 

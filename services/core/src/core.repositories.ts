@@ -1190,6 +1190,57 @@ export class CustomersRepository {
     });
   }
 
+  async softDelete(input: { businessId: string; customerId: string }) {
+    const existing = await this.findByBusinessAndId(input.businessId, input.customerId);
+    if (!existing) {
+      return null;
+    }
+
+    const deletedAt = new Date();
+    return this.prisma.$transaction(async (tx) => {
+      const [tasks, appointments, quotes] = await Promise.all([
+        tx.task.updateMany({
+          where: {
+            businessId: input.businessId,
+            customerId: existing.id,
+            deletedAt: null
+          },
+          data: { deletedAt }
+        }),
+        tx.appointment.updateMany({
+          where: {
+            businessId: input.businessId,
+            customerId: existing.id,
+            deletedAt: null
+          },
+          data: { deletedAt }
+        }),
+        tx.quote.updateMany({
+          where: {
+            businessId: input.businessId,
+            customerId: existing.id,
+            deletedAt: null
+          },
+          data: { deletedAt }
+        })
+      ]);
+
+      const customer = await tx.customer.update({
+        where: { id: existing.id },
+        data: { deletedAt }
+      });
+
+      return {
+        customer,
+        deleted: {
+          callbacks: tasks.count,
+          homeVisits: appointments.count,
+          quotes: quotes.count
+        }
+      };
+    });
+  }
+
   async findDuplicateByPhone(businessId: string, phone?: string) {
     if (!phone) {
       return null;
