@@ -32,7 +32,7 @@ type ReminderPollState = {
 
 const reminderPollState: ReminderPollState = {
   enabled: getEnv("WORKER_REMINDER_POLL_ENABLED", "true") === "true",
-  intervalMs: positiveNumberEnv("WORKER_REMINDER_POLL_INTERVAL_MS", 30000),
+  intervalMs: positiveNumberEnv("WORKER_REMINDER_POLL_INTERVAL_MS", 300000),
   running: false,
   runs: 0
 };

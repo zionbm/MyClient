@@ -23,7 +23,7 @@ import { Prisma, type Business, type User } from "@prisma/client";
 import { applicationDefault, getApps, initializeApp } from "firebase-admin/app";
 import { getAuth, type DecodedIdToken } from "firebase-admin/auth";
 import { getMessaging } from "firebase-admin/messaging";
-import { ApiExceptionFilter, cloudRunServiceAuthHeaders, getEnv, getPort, health, log, stableIdempotencyKey } from "@myclient/common";
+import { ApiExceptionFilter, cloudRunServiceAuthHeaders, getEnv, getPort, health, log, stableIdempotencyKey, verifyGoogleOidcToken } from "@myclient/common";
 import {
   AiActionBatchSchema,
   AiActionSchema,
@@ -266,6 +266,11 @@ function tryParseAiDueAt(value: string, timeZone: string) {
 }
 
 function parseHebrewVoiceDueAt(text: string, timeZone: string, now = new Date()) {
+  const relativeDueAt = parseHebrewRelativeDueAt(text, now);
+  if (relativeDueAt) {
+    return relativeDueAt;
+  }
+
   const dayMatch = text.match(/(?:ביום\s+)?(ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת)|\b(מחר)\b/);
   const timeMatch = text.match(/בשעה\s+([0-9]{1,2}|אחת|אחד|שתיים|שניים|שתים|שתי|שני|שלוש|שלושה|ארבע|ארבעה|חמש|חמישה|שש|שישה|שבע|שבעה|שמונה|תשע|תשעה|עשר|עשרה|אחת עשרה|שתים עשרה|שתיים עשרה)/);
   if (!dayMatch || !timeMatch) {
@@ -306,6 +311,74 @@ function parseHebrewVoiceDueAt(text: string, timeZone: string, now = new Date())
     hour,
     minute: 0
   }, timeZone);
+}
+
+function parseHebrewRelativeDueAt(text: string, now = new Date()) {
+  if (/(?:בעוד|עוד)\s+רבע\s+שעה/.test(text)) {
+    return new Date(now.getTime() + 15 * 60 * 1000);
+  }
+  if (/(?:בעוד|עוד)\s+חצי\s+שעה/.test(text)) {
+    return new Date(now.getTime() + 30 * 60 * 1000);
+  }
+  if (/(?:בעוד|עוד)\s+שעה/.test(text)) {
+    return new Date(now.getTime() + 60 * 60 * 1000);
+  }
+
+  const relativeMatch = text.match(/(?:בעוד|עוד)\s+([0-9]{1,3}|אחת|אחד|שתיים|שניים|שתים|שתי|שני|שלוש|שלושה|ארבע|ארבעה|חמש|חמישה|שש|שישה|שבע|שבעה|שמונה|תשע|תשעה|עשר|עשרה|עשרים|שלושים|ארבעים|חמישים|שישים)\s+(דקות?|שעות?|רבע שעה|חצי שעה)/);
+  if (!relativeMatch) {
+    return undefined;
+  }
+
+  const amount = parseHebrewNumber(relativeMatch[1]);
+  if (amount === undefined || amount <= 0) {
+    return undefined;
+  }
+
+  const unit = relativeMatch[2];
+  const minutes = unit.includes("שעה") && !unit.includes("רבע") && !unit.includes("חצי")
+    ? amount * 60
+    : unit.includes("חצי")
+      ? 30
+      : unit.includes("רבע")
+        ? 15
+        : amount;
+  return new Date(now.getTime() + minutes * 60 * 1000);
+}
+
+function parseHebrewNumber(value: string) {
+  const numeric = Number(value);
+  if (Number.isFinite(numeric)) {
+    return numeric;
+  }
+  return {
+    "אחת": 1,
+    "אחד": 1,
+    "שתיים": 2,
+    "שניים": 2,
+    "שתים": 2,
+    "שתי": 2,
+    "שני": 2,
+    "שלוש": 3,
+    "שלושה": 3,
+    "ארבע": 4,
+    "ארבעה": 4,
+    "חמש": 5,
+    "חמישה": 5,
+    "שש": 6,
+    "שישה": 6,
+    "שבע": 7,
+    "שבעה": 7,
+    "שמונה": 8,
+    "תשע": 9,
+    "תשעה": 9,
+    "עשר": 10,
+    "עשרה": 10,
+    "עשרים": 20,
+    "שלושים": 30,
+    "ארבעים": 40,
+    "חמישים": 50,
+    "שישים": 60
+  }[value];
 }
 
 function parseHebrewHour(value: string, context: string) {
@@ -398,6 +471,17 @@ function parseBearerToken(headers: RequestHeaders): string {
   }
 
   return token;
+}
+
+function parseOptionalBearerToken(headers: RequestHeaders): string | undefined {
+  const authorization = headerValue(headers, "authorization");
+  const prefix = "Bearer ";
+  if (!authorization?.startsWith(prefix)) {
+    return undefined;
+  }
+
+  const token = authorization.slice(prefix.length).trim();
+  return token || undefined;
 }
 
 function displayNameFromToken(decoded: DecodedIdToken): string | undefined {
@@ -926,7 +1010,7 @@ class CoreController {
 
   @Post("internal/reminders/due")
   async processDueReminders(@Headers() headers: RequestHeaders, @Body() body: unknown) {
-    this.requireInternalSecret(headers);
+    await this.requireInternalScheduler(headers);
     const requestedLimit = Number((body as { limit?: unknown })?.limit ?? 20);
     const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 100)) : 20;
     const tasks = await this.tasks.listDueReminders(limit);
@@ -3333,6 +3417,12 @@ class CoreController {
 
   private voiceResultTitle(actionType: string, status: VoiceCommandResult["items"][number]["status"]) {
     const prefix = status === "pending" ? "" : status === "completed" ? "הושלם: " : "";
+    if (status === "pending") {
+      if (actionType === "CREATE_CUSTOMER") return "לקוח חדש";
+      if (actionType === "CREATE_TASK" || actionType === "CREATE_CALLBACK") return "תזכורת חדשה";
+      if (actionType === "CREATE_HOME_VISIT" || actionType === "CREATE_APPOINTMENT") return "ביקור בית חדש";
+      if (actionType === "CREATE_QUOTE") return "הצעת מחיר חדשה";
+    }
     if (actionType.includes("CUSTOMER") && !actionType.includes("NOTE")) return `${prefix}לקוח`;
     if (actionType.includes("HOME_VISIT") || actionType.includes("APPOINTMENT")) return `${prefix}ביקור בית`;
     if (actionType.includes("QUOTE")) return `${prefix}הצעת מחיר`;
@@ -3354,18 +3444,28 @@ class CoreController {
 
   private voiceEntityFields(actionType: string, entity: Record<string, unknown>, timeZone: string): VoiceCommandResult["items"][number]["fields"] {
     const fields: VoiceCommandResult["items"][number]["fields"] = [];
-    const title = this.stringValue(entity.title) ?? this.stringValue(entity.name) ?? this.stringValue(entity.text);
-    if (title) fields.push({ label: actionType.includes("CUSTOMER") && !actionType.includes("NOTE") ? "שם" : "נושא", value: title, state: "normal" });
+    const isCustomerAction = actionType.includes("CUSTOMER") && !actionType.includes("NOTE");
+    const isWorkItemAction = actionType.includes("TASK") ||
+      actionType.includes("CALLBACK") ||
+      actionType.includes("HOME_VISIT") ||
+      actionType.includes("APPOINTMENT") ||
+      actionType.includes("QUOTE");
+    const title = isCustomerAction
+      ? this.stringValue(entity.name)
+      : this.stringValue(entity.title) ?? this.stringValue(entity.text);
+    if (title) fields.push({ label: isCustomerAction ? "שם" : "נושא", value: title, state: "normal" });
     const phone = this.stringValue(entity.phone);
     if (phone) fields.push({ label: "טלפון", value: phone, state: "normal" });
+    const customerName = this.stringValue(this.asRecord(entity.customer).name) ??
+      this.stringValue(entity.customerName) ??
+      (isWorkItemAction ? this.stringValue(entity.name) : undefined);
+    if (customerName) fields.push({ label: "לקוח", value: customerName, state: "normal" });
     const dueAt = this.stringValue(entity.dueAt) ?? this.stringValue(entity.startsAt);
     if (dueAt) fields.push({ label: "מועד", value: this.formatVoiceDate(dueAt, timeZone), state: "normal" });
     const amount = this.stringValue(entity.estimatedAmount);
     if (amount) fields.push({ label: "סכום", value: amount, state: "normal" });
     const location = this.stringValue(entity.location) ?? this.stringValue(entity.address);
     if (location) fields.push({ label: "כתובת", value: location, state: "normal" });
-    const customerName = this.stringValue(this.asRecord(entity.customer).name) ?? this.stringValue(entity.customerName);
-    if (customerName) fields.push({ label: "לקוח", value: customerName, state: "normal" });
     return fields;
   }
 
@@ -3570,6 +3670,15 @@ class CoreController {
       normalized.title = normalized.text;
     }
 
+    if ((actionType === "CREATE_QUOTE" || actionType === "UPDATE_QUOTE") &&
+      typeof normalized.title !== "string") {
+      const description = typeof normalized.description === "string" ? normalized.description : undefined;
+      const subject = description?.match(/(?:על|עבור)\s+(.+)$/)?.[1]?.trim();
+      if (subject) {
+        normalized.title = subject;
+      }
+    }
+
     if (actionType === "ADD_CUSTOMER_NOTE" &&
       typeof normalized.text !== "string" &&
       typeof normalized.description === "string") {
@@ -3741,10 +3850,23 @@ class CoreController {
       }
     }
 
+    if ((action.type === "CREATE_QUOTE" || action.type === "UPDATE_QUOTE") &&
+      typeof normalized.title !== "string") {
+      const subject = transcript.match(/(?:על|עבור)\s+(.+?)(?:[.!?。]|$)/)?.[1]?.trim();
+      if (subject) {
+        normalized.title = subject;
+      }
+    }
+
     return normalized;
   }
 
   private normalizeVoiceDateValue(value: unknown, transcript: string, timeZone: string) {
+    const relativeFromTranscript = parseHebrewRelativeDueAt(transcript);
+    if (relativeFromTranscript) {
+      return relativeFromTranscript;
+    }
+
     if (typeof value === "string") {
       const parsed = tryParseAiDueAt(value, timeZone);
       if (parsed) {
@@ -3779,6 +3901,9 @@ class CoreController {
     const fields = new Set(action.missingFields);
     if (this.voiceActionUsesStartsAt(action.type) && payload.startsAt === undefined) {
       fields.add("startsAt");
+    }
+    if ((action.type === "CREATE_QUOTE" || action.type === "UPDATE_QUOTE") && payload.title === undefined) {
+      fields.add("title");
     }
     return [...fields].filter((field) => !this.isOptionalVoiceField(action.type, field) && payload[field] === undefined);
   }
@@ -3957,6 +4082,31 @@ class CoreController {
     const actual = headerValue(headers, "x-internal-secret");
     if (actual !== expected) {
       throw new UnauthorizedException("Missing or invalid internal secret");
+    }
+  }
+
+  private async requireInternalScheduler(headers: RequestHeaders): Promise<void> {
+    const token = parseOptionalBearerToken(headers);
+    const allowedServiceAccount = getEnv("SCHEDULER_SERVICE_ACCOUNT_EMAIL", "");
+    const audience = getEnv("SCHEDULER_OIDC_AUDIENCE", "");
+
+    if (!allowedServiceAccount || !audience) {
+      this.requireInternalSecret(headers);
+      return;
+    }
+
+    if (!token) {
+      throw new UnauthorizedException("Missing scheduler identity token");
+    }
+
+    try {
+      await verifyGoogleOidcToken({
+        token,
+        audiences: audience.split(",").map((value) => value.trim()).filter(Boolean),
+        allowedServiceAccounts: allowedServiceAccount.split(",").map((value) => value.trim()).filter(Boolean)
+      });
+    } catch {
+      throw new UnauthorizedException("Missing or invalid scheduler identity token");
     }
   }
 
