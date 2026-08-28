@@ -132,10 +132,6 @@ jobs:
           }
 
           ensure_scheduler_service_account() {
-            gcloud services enable cloudscheduler.googleapis.com iamcredentials.googleapis.com \
-              --project="$PROJECT_ID" \
-              --quiet
-
             if ! gcloud iam service-accounts describe "$(scheduler_service_account_email)" \
               --project="$PROJECT_ID" >/dev/null 2>&1; then
               gcloud iam service-accounts create "$SCHEDULER_SERVICE_ACCOUNT_ID" \
