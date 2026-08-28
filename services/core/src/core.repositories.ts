@@ -1056,6 +1056,10 @@ export class TasksRepository {
       await this.ensureCustomerBelongsToBusiness(input.businessId, input.customerId);
     }
 
+    const dueAtChanged = input.dueAt !== undefined &&
+      (existing.dueAt?.getTime() ?? null) !== (input.dueAt?.getTime() ?? null);
+    const reopened = input.status === "OPEN" && existing.status !== "OPEN";
+
     return this.prisma.task.update({
       where: { id: existing.id },
       data: {
@@ -1064,7 +1068,8 @@ export class TasksRepository {
         description: input.description,
         priority: input.priority,
         dueAt: input.dueAt,
-        status: input.status
+        status: input.status,
+        reminderSentAt: dueAtChanged || reopened ? null : undefined
       }
     });
   }

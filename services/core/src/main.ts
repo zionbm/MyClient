@@ -619,6 +619,12 @@ async function sendFirebaseMulticast(tokens: string[], input: NotificationSendIn
 
   return getMessaging().sendEachForMulticast({
     tokens,
+    android: {
+      priority: "high",
+      notification: {
+        channelId: "task_reminders"
+      }
+    },
     notification: {
       title: input.title,
       body: input.body
@@ -1016,6 +1022,8 @@ class CoreController {
     const tasks = await this.tasks.listDueReminders(limit);
     const reminders = [];
 
+    log("info", "due reminder poll started", { limit, dueTaskCount: tasks.length });
+
     for (const task of tasks) {
       const notification = await this.notifications.create({
         businessId: task.businessId,
@@ -1049,6 +1057,8 @@ class CoreController {
         notificationDelivery
       });
     }
+
+    log("info", "due reminder poll finished", { processed: reminders.length });
 
     return {
       processed: reminders.length,
@@ -4019,6 +4029,10 @@ class CoreController {
 
     const tokens = await this.deviceTokens.listActiveByBusiness(notification.businessId);
     if (tokens.length === 0) {
+      log("warn", "notification delivery skipped without active device tokens", {
+        businessId: notification.businessId,
+        notificationId: notification.id
+      });
       const failed = await this.notifications.updateStatus({
         businessId: notification.businessId,
         notificationId: notification.id,
@@ -4034,6 +4048,17 @@ class CoreController {
       title: notification.title,
       body: notification.body,
       payload: notification.payload
+    });
+
+    log("info", "firebase notification delivery finished", {
+      businessId: notification.businessId,
+      notificationId: notification.id,
+      tokenCount: tokens.length,
+      successCount: response.successCount,
+      failureCount: response.failureCount,
+      errors: response.responses
+        .filter((result) => !result.success)
+        .map((result) => result.error?.code ?? result.error?.message ?? "unknown")
     });
 
     await Promise.all(response.responses.map((result, index) =>
