@@ -261,6 +261,49 @@ export class CustomersRepository {
     });
   }
 
+  async createWithInitialNoteAndAudit(input: CreateCustomerInput & {
+    initialNote?: string;
+    actorUserId: string;
+  }) {
+    await this.businesses.requireBusiness(input.businessId);
+    return this.prisma.$transaction(async (tx) => {
+      const customer = await tx.customer.create({
+        data: {
+          businessId: input.businessId,
+          name: input.name,
+          phone: input.phone,
+          email: input.email,
+          address: input.address
+        }
+      });
+      const initialNote = input.initialNote
+        ? await tx.note.create({
+          data: {
+            businessId: input.businessId,
+            customerId: customer.id,
+            text: input.initialNote
+          }
+        })
+        : null;
+
+      await tx.auditEvent.create({
+        data: {
+          businessId: input.businessId,
+          actorType: "user",
+          actorId: input.actorUserId,
+          source: "core",
+          entityType: "customer",
+          entityId: customer.id,
+          action: "CREATE_CUSTOMER",
+          result: "SUCCESS",
+          after: customer as Prisma.InputJsonValue
+        }
+      });
+
+      return { customer, initialNote };
+    });
+  }
+
   async listByBusiness(businessId: string, pagination?: PaginationInput) {
     await this.businesses.requireBusiness(businessId);
     return this.prisma.customer.findMany({
@@ -575,4 +618,3 @@ export class NotesRepository {
     });
   }
 }
-

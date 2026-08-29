@@ -23,25 +23,14 @@ export class CoreCustomersService {
     const user = await this.access.requireBusinessAccess(headers, businessId);
     const command = CreateCustomerSchema.parse(body);
     const duplicate = await this.customers.findDuplicateByPhone(businessId, command.phone);
-    const customer = await this.customers.create({
+    const { customer, initialNote } = await this.customers.createWithInitialNoteAndAudit({
       businessId,
       name: command.name,
       phone: command.phone,
       email: command.email,
-      address: command.address
-    });
-    const initialNote = command.initialNote
-      ? await this.notes.create({ businessId, customerId: customer.id, text: command.initialNote })
-      : null;
-    await this.audit.record({
-      businessId,
-      actorType: "user",
-      actorId: user.id,
-      source: "core",
-      entityType: "customer",
-      entityId: customer.id,
-      action: "CREATE_CUSTOMER",
-      after: customer as Prisma.InputJsonValue
+      address: command.address,
+      initialNote: command.initialNote,
+      actorUserId: user.id
     });
     return { customer, duplicateCustomer: duplicate, initialNote };
   }
