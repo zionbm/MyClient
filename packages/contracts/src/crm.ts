@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { CallbackTaskPrioritySchema } from "./actions.js";
+import { ReminderPrioritySchema } from "./actions.js";
 
 const OptionalNonEmptyStringSchema = z.string().trim().min(1).optional();
 const OptionalDateStringSchema = z.string().trim().min(1).optional();
@@ -20,7 +20,7 @@ export const UpdateBusinessSettingsSchema = z.object({
   locale: OptionalNonEmptyStringSchema,
   timezone: OptionalNonEmptyStringSchema,
   greetingText: z.string().trim().min(1).nullable().optional(),
-  callbackPrompt: z.string().trim().min(1).nullable().optional(),
+  reminderPrompt: z.string().trim().min(1).nullable().optional(),
   urgentPrompt: z.string().trim().min(1).nullable().optional(),
   workingHours: WorkingHoursSchema.nullable().optional(),
   notificationPhone: z.string().trim().min(1).nullable().optional(),
@@ -84,61 +84,42 @@ export const MergeCustomerSchema = z.object({
 
 export type MergeCustomer = z.infer<typeof MergeCustomerSchema>;
 
-export const CreateTaskSchema = z.object({
+export const WorkItemStatusSchema = z.enum(["OPEN", "DONE", "CANCELLED"]);
+export const QuoteStatusSchema = z.enum(["OPEN", "PAID", "CANCELLED"]);
+
+export const CreateReminderSchema = z.object({
   customerId: OptionalNonEmptyStringSchema,
   title: z.string().trim().min(1),
   description: OptionalNonEmptyStringSchema,
-  priority: CallbackTaskPrioritySchema.default("NORMAL"),
+  priority: ReminderPrioritySchema.default("NORMAL"),
   dueAt: OptionalNonEmptyStringSchema,
-  status: z.enum(["OPEN", "COMPLETED", "CANCELLED"]).optional()
+  status: WorkItemStatusSchema.optional()
 });
 
-export type CreateTask = z.infer<typeof CreateTaskSchema>;
+export type CreateReminder = z.infer<typeof CreateReminderSchema>;
 
-export const UpdateTaskSchema = z.object({
-  customerId: OptionalNonEmptyStringSchema,
-  title: OptionalNonEmptyStringSchema,
-  description: OptionalNonEmptyStringSchema,
-  priority: CallbackTaskPrioritySchema.optional(),
-  dueAt: z.string().trim().min(1).nullable().optional(),
-  status: z.enum(["OPEN", "COMPLETED", "CANCELLED"]).optional()
-}).refine((value) => Object.keys(value).length > 0, "At least one task field is required");
-
-export type UpdateTask = z.infer<typeof UpdateTaskSchema>;
-
-export const CreateCallbackSchema = z.object({
-  customerId: OptionalNonEmptyStringSchema,
-  title: z.string().trim().min(1),
-  description: OptionalNonEmptyStringSchema,
-  priority: CallbackTaskPrioritySchema.default("NORMAL"),
-  dueAt: OptionalDateStringSchema,
-  status: z.enum(["OPEN", "DONE"]).optional()
-});
-
-export type CreateCallback = z.infer<typeof CreateCallbackSchema>;
-
-export const UpdateCallbackSchema = z.object({
+export const UpdateReminderSchema = z.object({
   customerId: z.string().trim().min(1).nullable().optional(),
   title: OptionalNonEmptyStringSchema,
   description: z.string().trim().min(1).nullable().optional(),
-  priority: CallbackTaskPrioritySchema.optional(),
+  priority: ReminderPrioritySchema.optional(),
   dueAt: z.string().trim().min(1).nullable().optional(),
-  status: z.enum(["OPEN", "DONE"]).optional()
-}).refine((value) => Object.keys(value).length > 0, "At least one callback field is required");
+  status: WorkItemStatusSchema.optional()
+}).refine((value) => Object.keys(value).length > 0, "At least one reminder field is required");
 
-export type UpdateCallback = z.infer<typeof UpdateCallbackSchema>;
+export type UpdateReminder = z.infer<typeof UpdateReminderSchema>;
 
-export const CreateCustomerNoteSchema = z.object({
+export const CreateNoteSchema = z.object({
   text: z.string().trim().min(1)
 });
 
-export type CreateCustomerNote = z.infer<typeof CreateCustomerNoteSchema>;
+export type CreateNote = z.infer<typeof CreateNoteSchema>;
 
-export const UpdateCustomerNoteSchema = z.object({
-  status: z.enum(["OPEN", "DONE"]).optional()
-}).refine((value) => Object.keys(value).length > 0, "At least one customer note field is required");
+export const UpdateNoteSchema = z.object({
+  status: WorkItemStatusSchema.optional()
+}).refine((value) => Object.keys(value).length > 0, "At least one note field is required");
 
-export type UpdateCustomerNote = z.infer<typeof UpdateCustomerNoteSchema>;
+export type UpdateNote = z.infer<typeof UpdateNoteSchema>;
 
 export const CreateAppointmentSchema = z.object({
   customerId: OptionalNonEmptyStringSchema,
@@ -146,7 +127,8 @@ export const CreateAppointmentSchema = z.object({
   startsAt: z.string().trim().min(1),
   endsAt: z.string().trim().min(1).nullable().optional(),
   location: OptionalNonEmptyStringSchema,
-  notes: OptionalNonEmptyStringSchema
+  notes: OptionalNonEmptyStringSchema,
+  status: WorkItemStatusSchema.optional()
 });
 
 export type CreateAppointment = z.infer<typeof CreateAppointmentSchema>;
@@ -158,7 +140,7 @@ export const UpdateAppointmentSchema = z.object({
   endsAt: z.string().trim().min(1).nullable().optional(),
   location: z.string().trim().min(1).nullable().optional(),
   notes: z.string().trim().min(1).nullable().optional(),
-  status: z.enum(["SCHEDULED", "CANCELLED", "COMPLETED"]).optional()
+  status: WorkItemStatusSchema.optional()
 }).refine((value) => Object.keys(value).length > 0, "At least one appointment field is required");
 
 export type UpdateAppointment = z.infer<typeof UpdateAppointmentSchema>;
@@ -170,7 +152,7 @@ export const CreateHomeVisitSchema = z.object({
   endsAt: z.string().trim().min(1).nullable().optional(),
   location: OptionalNonEmptyStringSchema,
   notes: OptionalNonEmptyStringSchema,
-  status: z.enum(["OPEN", "DONE"]).optional()
+  status: WorkItemStatusSchema.optional()
 });
 
 export type CreateHomeVisit = z.infer<typeof CreateHomeVisitSchema>;
@@ -182,7 +164,7 @@ export const UpdateHomeVisitSchema = z.object({
   endsAt: z.string().trim().min(1).nullable().optional(),
   location: z.string().trim().min(1).nullable().optional(),
   notes: z.string().trim().min(1).nullable().optional(),
-  status: z.enum(["OPEN", "DONE"]).optional()
+  status: WorkItemStatusSchema.optional()
 }).refine((value) => Object.keys(value).length > 0, "At least one home visit field is required");
 
 export type UpdateHomeVisit = z.infer<typeof UpdateHomeVisitSchema>;
@@ -193,7 +175,7 @@ export const CreateQuoteSchema = z.object({
   dueAt: RequiredDateStringSchema,
   description: OptionalNonEmptyStringSchema,
   estimatedAmount: OptionalAmountSchema,
-  status: z.enum(["OPEN", "PAID"]).optional()
+  status: QuoteStatusSchema.optional()
 });
 
 export type CreateQuote = z.infer<typeof CreateQuoteSchema>;
@@ -204,28 +186,10 @@ export const UpdateQuoteSchema = z.object({
   dueAt: OptionalDateStringSchema,
   description: z.string().trim().min(1).nullable().optional(),
   estimatedAmount: z.union([z.number(), z.string().trim().min(1)]).nullable().optional(),
-  status: z.enum(["OPEN", "PAID"]).optional()
+  status: QuoteStatusSchema.optional()
 }).refine((value) => Object.keys(value).length > 0, "At least one quote field is required");
 
 export type UpdateQuote = z.infer<typeof UpdateQuoteSchema>;
-
-export const CreateJobSchema = z.object({
-  customerId: z.string().trim().min(1),
-  title: z.string().trim().min(1),
-  description: OptionalNonEmptyStringSchema,
-  status: OptionalNonEmptyStringSchema
-});
-
-export type CreateJob = z.infer<typeof CreateJobSchema>;
-
-export const UpdateJobSchema = z.object({
-  customerId: OptionalNonEmptyStringSchema,
-  title: OptionalNonEmptyStringSchema,
-  description: z.string().trim().min(1).nullable().optional(),
-  status: OptionalNonEmptyStringSchema
-}).refine((value) => Object.keys(value).length > 0, "At least one job field is required");
-
-export type UpdateJob = z.infer<typeof UpdateJobSchema>;
 
 export const ListByStatusQuerySchema = z.object({
   status: z.string().trim().min(1).optional()
@@ -236,7 +200,7 @@ export type ListByStatusQuery = z.infer<typeof ListByStatusQuerySchema>;
 export const HomeQuerySchema = z.object({
   date: OptionalDateStringSchema,
   search: OptionalNonEmptyStringSchema,
-  filter: z.enum(["all", "urgent", "callbacks", "home_visits", "quotes", "calls"]).default("all")
+  filter: z.enum(["all", "urgent", "reminders", "home_visits", "appointments", "quotes", "calls"]).default("all")
 });
 
 export type HomeQuery = z.infer<typeof HomeQuerySchema>;
@@ -310,7 +274,7 @@ export const VoiceCommandResultFieldSchema = z.object({
 export const VoiceCommandResultItemSchema = z.object({
   id: z.string(),
   actionType: z.string(),
-  kind: z.enum(["customer", "callback", "home_visit", "quote", "note", "action"]),
+  kind: z.enum(["customer", "reminder", "home_visit", "appointment", "quote", "note", "action"]),
   status: z.enum(["created", "updated", "completed", "pending", "failed"]),
   title: z.string(),
   subtitle: z.string().optional(),

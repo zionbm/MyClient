@@ -58,18 +58,13 @@ expectStatus(request("POST", `${core}/businesses/${businessId}/appointments`, {
   startsAt: "2026-08-21T09:00:00.000Z"
 }, { authorization: token }), 201, "create appointment");
 
-expectStatus(request("POST", `${core}/businesses/${businessId}/jobs`, {
-  customerId,
-  title: "עבודת אינטגרציה"
-}, { authorization: token }), 201, "create job");
-
-const callbackResult = request("POST", `${core}/businesses/${businessId}/callbacks`, {
+const reminderResult = request("POST", `${core}/businesses/${businessId}/reminders`, {
   customerId,
   title: "לחזור ללקוח אינטגרציה",
   dueAt: "2026-08-21T10:00:00.000Z"
 }, { authorization: token });
-expectStatus(callbackResult, 201, "create callback");
-const callbackId = callbackResult.body.callback.id;
+expectStatus(reminderResult, 201, "create reminder");
+const reminderId = reminderResult.body.reminder.id;
 
 expectStatus(request("POST", `${core}/businesses/${businessId}/home-visits`, {
   customerId,
@@ -91,13 +86,14 @@ expectStatus(request("POST", `${core}/businesses/${businessId}/quotes/${quoteId}
 
 const home = request("GET", `${core}/businesses/${businessId}/home?date=2026-08-21`, undefined, { authorization: token });
 expectStatus(home, 200, "home work items");
-assert(home.body.items.some((item) => item.type === "callback"), "expected callback home item");
+assert(home.body.items.some((item) => item.type === "reminder"), "expected reminder home item");
 assert(home.body.items.some((item) => item.type === "home_visit"), "expected home visit home item");
+assert(home.body.items.some((item) => item.type === "appointment"), "expected appointment home item");
 assert(home.body.items.some((item) => item.type === "quote"), "expected quote home item");
 
 const customerDetail = request("GET", `${core}/businesses/${businessId}/customers/${customerId}`, undefined, { authorization: token });
 expectStatus(customerDetail, 200, "customer detail activity");
-assert(customerDetail.body.activity.some((item) => item.type === "callback"), "expected customer callback activity");
+assert(customerDetail.body.activity.some((item) => item.type === "reminder"), "expected customer reminder activity");
 assert(customerDetail.body.activity.some((item) => item.type === "home_visit"), "expected customer home visit activity");
 assert(customerDetail.body.activity.some((item) => item.type === "quote"), "expected customer quote activity");
 assert(customerDetail.body.activity.some((item) => item.type === "note"), "expected customer note activity");
@@ -105,7 +101,7 @@ assert(customerDetail.body.activity.some((item) => item.type === "note"), "expec
 const aiPending = request("POST", `${core}/owner-actions/execute`, {
   businessId,
   action: {
-    type: "CREATE_TASK",
+    type: "CREATE_REMINDER",
     idempotencyKey: `it_pending_${suffix}`,
     confidence: 0.7,
     requiresConfirmation: false,
@@ -148,10 +144,10 @@ expectStatus(request("POST", `${core}/businesses/${businessId}/notifications/${n
   preset: "IN_15_MINUTES"
 }, { authorization: token }), 201, "snooze notification");
 
-const callbackNotification = request("POST", `${core}/businesses/${businessId}/notifications/${notificationId}/read`, undefined, { authorization: token });
-expectStatus(callbackNotification, 201, "mark notification read");
+const reminderNotification = request("POST", `${core}/businesses/${businessId}/notifications/${notificationId}/read`, undefined, { authorization: token });
+expectStatus(reminderNotification, 201, "mark notification read");
 
-expectStatus(request("POST", `${core}/businesses/${businessId}/callbacks/${callbackId}/complete`, undefined, { authorization: token }), 201, "complete callback");
+expectStatus(request("POST", `${core}/businesses/${businessId}/reminders/${reminderId}/complete`, undefined, { authorization: token }), 201, "complete reminder");
 
 const calls = request("GET", `${core}/businesses/${businessId}/calls`, undefined, { authorization: token });
 expectStatus(calls, 200, "list calls");

@@ -3,7 +3,7 @@ import { BadGatewayException, Body, Controller, Get, Module, Post } from "@nestj
 import { NestFactory } from "@nestjs/core";
 import { FastifyAdapter, type NestFastifyApplication } from "@nestjs/platform-fastify";
 import { ApiExceptionFilter, cloudRunServiceAuthHeaders, getEnv, getPort, health, log, stableIdempotencyKey } from "@myclient/common";
-import type { CreateCallbackTask } from "@myclient/contracts";
+import type { CreateReminderFromCall } from "@myclient/contracts";
 
 type IvrDigit = "1" | "2" | "3";
 type IncomingCallResult = {
@@ -44,8 +44,8 @@ class TelephonyController {
     });
   }
 
-  @Post("plivo/callback-request")
-  async callbackRequest(@Body() body: { businessId?: string; callId: string; from?: string; to?: string }) {
+  @Post("plivo/reminder-request")
+  async reminderRequest(@Body() body: { businessId?: string; callId: string; from?: string; to?: string }) {
     const incoming = await this.createCoreIncomingCall({
       businessId: body.businessId,
       plivoCallId: this.requireCallId(body.callId),
@@ -53,13 +53,13 @@ class TelephonyController {
       toNumber: this.requireToNumber(body.to),
       selectedDigit: "1"
     });
-    return this.createCoreCallbackTask({
+    return this.createCoreReminderFromCall({
       businessId: incoming.businessId,
       incomingCallId: incoming.incomingCall.id,
       callerPhone: body.from,
       priority: "NORMAL",
       sourceCallId: body.callId,
-      idempotencyKey: stableIdempotencyKey("plivo_callback", body.callId)
+      idempotencyKey: stableIdempotencyKey("plivo_reminder", body.callId)
     });
   }
 
@@ -181,9 +181,9 @@ class TelephonyController {
     return response.json();
   }
 
-  private async createCoreCallbackTask(command: CreateCallbackTask) {
+  private async createCoreReminderFromCall(command: CreateReminderFromCall) {
     const coreBaseUrl = getEnv("CORE_BASE_URL", "http://localhost:3000");
-    const response = await fetch(`${coreBaseUrl}/internal/tasks/callback`, {
+    const response = await fetch(`${coreBaseUrl}/internal/reminders/from-call`, {
       method: "POST",
       headers: {
         ...(await cloudRunServiceAuthHeaders(coreBaseUrl)),
@@ -201,7 +201,7 @@ class TelephonyController {
     }
 
     const result = await response.json();
-    log("info", "telephony callback task forwarded", {
+    log("info", "telephony reminder from call forwarded", {
       businessId: command.businessId,
       sourceCallId: command.sourceCallId,
       priority: command.priority

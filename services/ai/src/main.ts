@@ -69,12 +69,12 @@ class AiController {
             content:
               "אתה ממיר פקודות קוליות של בעל עסק בעברית ל-JSON פעולה עבור שרת CRM. " +
               "החזר מערך actions לפי סדר הביצוע. אם המשתמש מבקש כמה דברים באותו משפט, החזר כמה פעולות. " +
-              "אם המשתמש מבקש תזכורת, משימה או לחזור למישהו, השתמש ב-CREATE_TASK. " +
+              "אם המשתמש מבקש תזכורת או לחזור למישהו, השתמש ב-CREATE_REMINDER. " +
               "אם המשתמש מבקש ביקור בית, התקנה או הגעה לכתובת, השתמש ב-CREATE_HOME_VISIT והכנס כתובת לשדה location. " +
               "אם המשתמש מבקש הצעת מחיר, השתמש ב-CREATE_QUOTE, הכנס את נושא העבודה לשדה title, והכנס סכום ל-estimatedAmount אם נאמר סכום. לדוגמה 'על התקנה של 5 דלתות' חייב להיות title ולא description בלבד. " +
               "השתמש בשמות שדות שתואמים לפעולות השרת: location ו-notes לביקור/פגישה, description למשימה/הצעה, address לכתובת לקוח. " +
               "כל שדה זמן כמו dueAt, startsAt או endsAt חייב להיות ISO datetime בלבד, למשל 2026-08-25T14:30:00+03:00. אל תחזיר תאריך טבעי כמו 'יום רביעי בשעה 14:00' בתוך payload. כאשר המשתמש אומר זמן יחסי כמו 'עוד 10 דקות' או 'בעוד שעה', חשב אותו ביחס לזמן הנוכחי ואל תבחר שעה שרירותית. " +
-              "לתזכורת ללא מועד בכלל, או ללא מועד מדויק כמו 'מאוחר יותר' או 'בהמשך', צור CREATE_TASK בלי dueAt ובלי requiresConfirmation. " +
+              "לתזכורת ללא מועד בכלל, או ללא מועד מדויק כמו 'מאוחר יותר' או 'בהמשך', צור CREATE_REMINDER בלי dueAt ובלי requiresConfirmation. " +
               "אם פעולה מאוחרת מתייחסת ללקוח שנוצר בפעולה קודמת, כלול name ו-phone בפעולה המאוחרת כשאפשר. " +
               "מספר טלפון של לקוח הוא אופציונלי: אם המשתמש לא אמר מספר טלפון, אל תוסיף phone ל-missingFields ואל תדרוש אישור בגלל זה. " +
               "מותר ליצור לקוח ותזכורת חזרה גם בלי מספר טלפון. " +
@@ -109,24 +109,21 @@ class AiController {
                         enum: [
                           "CREATE_CUSTOMER",
                           "UPDATE_CUSTOMER",
-                          "CREATE_JOB",
-                          "UPDATE_JOB",
+                          "CREATE_REMINDER",
+                          "UPDATE_REMINDER",
+                          "COMPLETE_REMINDER",
                           "CREATE_APPOINTMENT",
                           "UPDATE_APPOINTMENT",
                           "CANCEL_APPOINTMENT",
-                          "CREATE_TASK",
-                          "UPDATE_TASK",
-                          "COMPLETE_TASK",
-                          "ADD_CUSTOMER_NOTE",
-                          "CREATE_CALLBACK",
-                          "UPDATE_CALLBACK",
-                          "COMPLETE_CALLBACK",
-                          "DELETE_TREATMENT_ITEM",
+                          "CREATE_NOTE",
+                          "UPDATE_NOTE",
                           "CREATE_HOME_VISIT",
                           "UPDATE_HOME_VISIT",
+                          "COMPLETE_HOME_VISIT",
                           "CREATE_QUOTE",
                           "UPDATE_QUOTE",
                           "MARK_QUOTE_PAID",
+                          "DELETE_WORK_ITEM",
                           "MERGE_CUSTOMERS"
                         ]
                       },
@@ -153,15 +150,14 @@ class AiController {
                           location: { type: "string" },
                           notes: { type: "string" },
                           text: { type: "string" },
-                          taskId: { type: "string" },
-                          callbackId: { type: "string" },
+                          reminderId: { type: "string" },
                           appointmentId: { type: "string" },
                           homeVisitId: { type: "string" },
                           quoteId: { type: "string" },
                           estimatedAmount: { type: ["number", "string"] },
                           sourceCustomerId: { type: "string" },
                           targetCustomerId: { type: "string" },
-                          itemType: { type: "string", enum: ["callback", "home_visit", "quote"] },
+                          itemType: { type: "string", enum: ["reminder", "home_visit", "appointment", "quote", "note"] },
                           itemId: { type: "string" }
                         }
                       }
@@ -198,7 +194,7 @@ class AiController {
   private mockActions(text: string, idempotencyKey: string): AiAction[] {
     if (!text) {
       return [{
-        type: "CREATE_TASK",
+        type: "CREATE_REMINDER",
         idempotencyKey,
         confidence: 0.2,
         requiresConfirmation: false,
@@ -231,7 +227,7 @@ class AiController {
         ? [
             { ...action, idempotencyKey: `${idempotencyKey}:1` },
             {
-              type: "CREATE_TASK",
+              type: "CREATE_REMINDER",
               idempotencyKey: `${idempotencyKey}:2`,
               confidence: 0.7,
               requiresConfirmation: false,
@@ -246,7 +242,7 @@ class AiController {
     }
 
     return [{
-      type: "CREATE_TASK",
+      type: "CREATE_REMINDER",
       idempotencyKey,
       confidence: 0.82,
       requiresConfirmation: false,

@@ -3,24 +3,21 @@ import { z } from "zod";
 export const ActionTypeSchema = z.enum([
   "CREATE_CUSTOMER",
   "UPDATE_CUSTOMER",
-  "CREATE_JOB",
-  "UPDATE_JOB",
+  "CREATE_REMINDER",
+  "UPDATE_REMINDER",
+  "COMPLETE_REMINDER",
   "CREATE_APPOINTMENT",
   "UPDATE_APPOINTMENT",
   "CANCEL_APPOINTMENT",
-  "CREATE_TASK",
-  "UPDATE_TASK",
-  "COMPLETE_TASK",
-  "ADD_CUSTOMER_NOTE",
-  "CREATE_CALLBACK",
-  "UPDATE_CALLBACK",
-  "COMPLETE_CALLBACK",
-  "DELETE_TREATMENT_ITEM",
   "CREATE_HOME_VISIT",
   "UPDATE_HOME_VISIT",
+  "COMPLETE_HOME_VISIT",
   "CREATE_QUOTE",
   "UPDATE_QUOTE",
   "MARK_QUOTE_PAID",
+  "CREATE_NOTE",
+  "UPDATE_NOTE",
+  "DELETE_WORK_ITEM",
   "MERGE_CUSTOMERS"
 ]);
 
@@ -43,22 +40,22 @@ export const AiActionBatchSchema = z.object({
 
 export type AiActionBatch = z.infer<typeof AiActionBatchSchema>;
 
-export const CallbackTaskPrioritySchema = z.enum(["NORMAL", "URGENT"]);
-export type CallbackTaskPriority = z.infer<typeof CallbackTaskPrioritySchema>;
+export const ReminderPrioritySchema = z.enum(["NORMAL", "URGENT"]);
+export type ReminderPriority = z.infer<typeof ReminderPrioritySchema>;
 
-export const CreateCallbackTaskSchema = z.object({
+export const CreateReminderFromCallSchema = z.object({
   businessId: z.string().min(1),
   incomingCallId: z.string().min(1).optional(),
   callerPhone: z.string().optional(),
   callerName: z.string().optional(),
   transcript: z.string().optional(),
   recordingUrl: z.string().optional(),
-  priority: CallbackTaskPrioritySchema.default("NORMAL"),
+  priority: ReminderPrioritySchema.default("NORMAL"),
   sourceCallId: z.string().min(1),
   idempotencyKey: z.string().min(8)
 });
 
-export type CreateCallbackTask = z.infer<typeof CreateCallbackTaskSchema>;
+export type CreateReminderFromCall = z.infer<typeof CreateReminderFromCallSchema>;
 
 export const CreateIncomingCallSchema = z.object({
   businessId: z.string().min(1).optional(),

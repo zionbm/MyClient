@@ -2,28 +2,28 @@ import { BadRequestException, ConflictException, Inject, Injectable, NotFoundExc
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "./prisma.service.js";
 
-type CreateTaskInput = {
+type CreateReminderInput = {
   businessId: string;
   customerId?: string;
   title: string;
   description?: string;
   priority?: "NORMAL" | "URGENT";
   dueAt?: Date;
-  status?: "OPEN" | "COMPLETED" | "CANCELLED";
+  status?: "OPEN" | "DONE" | "CANCELLED";
   source: string;
   sourceRef?: string;
   idempotencyKey?: string;
 };
 
-type UpdateTaskInput = {
+type UpdateReminderInput = {
   businessId: string;
-  taskId: string;
-  customerId?: string;
+  reminderId: string;
+  customerId?: string | null;
   title?: string;
-  description?: string;
+  description?: string | null;
   priority?: "NORMAL" | "URGENT";
   dueAt?: Date | null;
-  status?: "OPEN" | "COMPLETED" | "CANCELLED";
+  status?: "OPEN" | "DONE" | "CANCELLED";
 };
 
 type CreateBusinessMemberInput = {
@@ -97,22 +97,22 @@ type UpdateCustomerInput = {
   address?: string | null;
 };
 
-type CreateCustomerNoteInput = {
+type CreateNoteInput = {
   businessId: string;
   customerId: string;
   text: string;
 };
 
-type UpdateCustomerNoteInput = {
+type UpdateNoteInput = {
   businessId: string;
   customerId: string;
   noteId: string;
-  status?: string;
+  status?: "OPEN" | "DONE" | "CANCELLED";
 };
 
 type CreateNotificationInput = {
   businessId: string;
-  taskId?: string;
+  reminderId?: string;
   itemType?: string;
   itemId?: string;
   title: string;
@@ -195,7 +195,7 @@ type UpdateBusinessSettingsInput = {
   locale?: string;
   timezone?: string;
   greetingText?: string | null;
-  callbackPrompt?: string | null;
+  reminderPrompt?: string | null;
   urgentPrompt?: string | null;
   workingHours?: Prisma.InputJsonValue | null;
   notificationPhone?: string | null;
@@ -238,7 +238,7 @@ type CreateCallTranscriptInput = {
   businessId: string;
   incomingCallId: string;
   transcript: string;
-  taskId?: string;
+  reminderId?: string;
   provider?: string;
   confidence?: number;
 };
@@ -251,7 +251,7 @@ type CreateAppointmentInput = {
   notes?: string;
   startsAt: Date;
   endsAt?: Date | null;
-  status?: "SCHEDULED" | "CANCELLED" | "COMPLETED";
+  status?: "OPEN" | "DONE" | "CANCELLED";
 };
 
 type UpdateAppointmentInput = {
@@ -263,7 +263,30 @@ type UpdateAppointmentInput = {
   notes?: string | null;
   startsAt?: Date;
   endsAt?: Date | null;
-  status?: "SCHEDULED" | "CANCELLED" | "COMPLETED";
+  status?: "OPEN" | "DONE" | "CANCELLED";
+};
+
+type CreateHomeVisitInput = {
+  businessId: string;
+  customerId?: string;
+  title: string;
+  location?: string;
+  notes?: string;
+  startsAt: Date;
+  endsAt?: Date | null;
+  status?: "OPEN" | "DONE" | "CANCELLED";
+};
+
+type UpdateHomeVisitInput = {
+  businessId: string;
+  homeVisitId: string;
+  customerId?: string | null;
+  title?: string;
+  location?: string | null;
+  notes?: string | null;
+  startsAt?: Date;
+  endsAt?: Date | null;
+  status?: "OPEN" | "DONE" | "CANCELLED";
 };
 
 type CreateQuoteInput = {
@@ -273,7 +296,7 @@ type CreateQuoteInput = {
   description?: string;
   estimatedAmount?: Prisma.Decimal | number | string;
   dueAt: Date;
-  status?: "OPEN" | "PAID";
+  status?: "OPEN" | "PAID" | "CANCELLED";
   source?: string;
   sourceRef?: string;
   idempotencyKey?: string;
@@ -287,24 +310,7 @@ type UpdateQuoteInput = {
   description?: string | null;
   estimatedAmount?: Prisma.Decimal | number | string | null;
   dueAt?: Date;
-  status?: "OPEN" | "PAID";
-};
-
-type CreateJobInput = {
-  businessId: string;
-  customerId: string;
-  title: string;
-  description?: string;
-  status?: string;
-};
-
-type UpdateJobInput = {
-  businessId: string;
-  jobId: string;
-  customerId?: string;
-  title?: string;
-  description?: string | null;
-  status?: string;
+  status?: "OPEN" | "PAID" | "CANCELLED";
 };
 
 type AuditEventInput = {
@@ -657,7 +663,7 @@ export class BusinessSettingsRepository {
         locale: "he-IL",
         timezone: "Asia/Jerusalem",
         greetingText: `שלום הגעתם ל${business.name}, ${ownerDisplayName} לא יכול לענות כרגע אבל יחזור אליכם בהקדם האפשרי. הקישו 1 לבקשת חזרה. הקישו 2 לבקשת חזרה עם השארת הודעה. הקישו 3 לפנייה דחופה.`,
-        callbackPrompt: "הבקשה התקבלה. נחזור אליך בהקדם.",
+        reminderPrompt: "הבקשה התקבלה. נחזור אליך בהקדם.",
         urgentPrompt: "אנא השאר הודעה דחופה אחרי הצליל.",
         workingHours: {
           sunday: { open: "09:00", close: "17:00" },
@@ -696,7 +702,7 @@ export class BusinessSettingsRepository {
         locale: input.locale,
         timezone: input.timezone,
         greetingText: input.greetingText,
-        callbackPrompt: input.callbackPrompt,
+        reminderPrompt: input.reminderPrompt,
         urgentPrompt: input.urgentPrompt,
         workingHours,
         notificationPhone: input.notificationPhone,
@@ -857,7 +863,7 @@ export class CallTranscriptsRepository {
         businessId: input.businessId,
         incomingCallId: input.incomingCallId,
         transcript: input.transcript,
-        taskId: input.taskId,
+        reminderId: input.reminderId,
         provider: input.provider ?? "mock",
         confidence: input.confidence
       }
@@ -916,14 +922,14 @@ export class OwnerVoiceCommandsRepository {
 }
 
 @Injectable()
-export class TasksRepository {
+export class RemindersRepository {
   constructor(
     @Inject(PrismaService) private readonly prisma: PrismaService,
     @Inject(BusinessesRepository) private readonly businesses: BusinessesRepository
   ) {}
 
   async findByIdempotencyKey(businessId: string, idempotencyKey: string) {
-    return this.prisma.task.findFirst({
+    return this.prisma.reminder.findFirst({
       where: {
         businessId,
         idempotencyKey
@@ -931,13 +937,13 @@ export class TasksRepository {
     });
   }
 
-  async create(input: CreateTaskInput) {
+  async create(input: CreateReminderInput) {
     await this.businesses.requireBusiness(input.businessId);
     if (input.customerId) {
       await this.ensureCustomerBelongsToBusiness(input.businessId, input.customerId);
     }
 
-    return this.prisma.task.create({
+    return this.prisma.reminder.create({
       data: {
         businessId: input.businessId,
         customerId: input.customerId,
@@ -955,16 +961,16 @@ export class TasksRepository {
 
   async listByBusiness(businessId: string) {
     await this.businesses.requireBusiness(businessId);
-    return this.prisma.task.findMany({
+    return this.prisma.reminder.findMany({
       where: { businessId, deletedAt: null },
       include: { customer: true },
       orderBy: { createdAt: "desc" }
     });
   }
 
-  async listCallbacksByBusiness(businessId: string) {
+  async listRemindersByBusiness(businessId: string) {
     await this.businesses.requireBusiness(businessId);
-    return this.prisma.task.findMany({
+    return this.prisma.reminder.findMany({
       where: {
         businessId,
         deletedAt: null
@@ -974,9 +980,9 @@ export class TasksRepository {
     });
   }
 
-  async listCallbacksForDate(input: { businessId: string; start: Date; end: Date; search?: string; urgentOnly?: boolean; includeOpenBeforeStart?: boolean }) {
+  async listRemindersForDate(input: { businessId: string; start: Date; end: Date; search?: string; urgentOnly?: boolean; includeOpenBeforeStart?: boolean }) {
     await this.businesses.requireBusiness(input.businessId);
-    return this.prisma.task.findMany({
+    return this.prisma.reminder.findMany({
       where: {
         businessId: input.businessId,
         deletedAt: null,
@@ -1011,7 +1017,7 @@ export class TasksRepository {
 
   async listByCustomer(businessId: string, customerId: string) {
     await this.ensureCustomerBelongsToBusiness(businessId, customerId);
-    return this.prisma.task.findMany({
+    return this.prisma.reminder.findMany({
       where: {
         businessId,
         customerId,
@@ -1023,7 +1029,7 @@ export class TasksRepository {
   }
 
   async listDueReminders(limit: number) {
-    return this.prisma.task.findMany({
+    return this.prisma.reminder.findMany({
       where: {
         status: "OPEN",
         deletedAt: null,
@@ -1037,17 +1043,17 @@ export class TasksRepository {
     });
   }
 
-  async findByBusinessAndId(businessId: string, taskId: string) {
-    return this.prisma.task.findFirst({
+  async findByBusinessAndId(businessId: string, reminderId: string) {
+    return this.prisma.reminder.findFirst({
       where: {
         businessId,
-        id: taskId
+        id: reminderId
       }
     });
   }
 
-  async update(input: UpdateTaskInput) {
-    const existing = await this.findByBusinessAndId(input.businessId, input.taskId);
+  async update(input: UpdateReminderInput) {
+    const existing = await this.findByBusinessAndId(input.businessId, input.reminderId);
     if (!existing) {
       return null;
     }
@@ -1060,7 +1066,7 @@ export class TasksRepository {
       (existing.dueAt?.getTime() ?? null) !== (input.dueAt?.getTime() ?? null);
     const reopened = input.status === "OPEN" && existing.status !== "OPEN";
 
-    return this.prisma.task.update({
+    return this.prisma.reminder.update({
       where: { id: existing.id },
       data: {
         customerId: input.customerId,
@@ -1074,37 +1080,37 @@ export class TasksRepository {
     });
   }
 
-  async complete(businessId: string, taskId: string) {
-    const existing = await this.findByBusinessAndId(businessId, taskId);
+  async complete(businessId: string, reminderId: string) {
+    const existing = await this.findByBusinessAndId(businessId, reminderId);
     if (!existing) {
       return null;
     }
 
-    return this.prisma.task.update({
+    return this.prisma.reminder.update({
       where: { id: existing.id },
-      data: { status: "COMPLETED" }
+      data: { status: "DONE" }
     });
   }
 
-  async softDelete(businessId: string, taskId: string) {
-    const existing = await this.findByBusinessAndId(businessId, taskId);
+  async softDelete(businessId: string, reminderId: string) {
+    const existing = await this.findByBusinessAndId(businessId, reminderId);
     if (!existing) {
       return null;
     }
 
-    return this.prisma.task.update({
+    return this.prisma.reminder.update({
       where: { id: existing.id },
       data: { deletedAt: new Date() }
     });
   }
 
-  async snooze(businessId: string, taskId: string, dueAt: Date) {
-    const existing = await this.findByBusinessAndId(businessId, taskId);
+  async snooze(businessId: string, reminderId: string, dueAt: Date) {
+    const existing = await this.findByBusinessAndId(businessId, reminderId);
     if (!existing || existing.deletedAt) {
       return null;
     }
 
-    return this.prisma.task.update({
+    return this.prisma.reminder.update({
       where: { id: existing.id },
       data: {
         dueAt,
@@ -1114,9 +1120,9 @@ export class TasksRepository {
     });
   }
 
-  async markReminderSent(taskId: string) {
-    return this.prisma.task.update({
-      where: { id: taskId },
+  async markReminderSent(reminderId: string) {
+    return this.prisma.reminder.update({
+      where: { id: reminderId },
       data: { reminderSentAt: new Date() }
     });
   }
@@ -1203,8 +1209,8 @@ export class CustomersRepository {
 
     const deletedAt = new Date();
     return this.prisma.$transaction(async (tx) => {
-      const [tasks, appointments, quotes] = await Promise.all([
-        tx.task.updateMany({
+      const [reminders, appointments, homeVisits, quotes] = await Promise.all([
+        tx.reminder.updateMany({
           where: {
             businessId: input.businessId,
             customerId: existing.id,
@@ -1213,6 +1219,14 @@ export class CustomersRepository {
           data: { deletedAt }
         }),
         tx.appointment.updateMany({
+          where: {
+            businessId: input.businessId,
+            customerId: existing.id,
+            deletedAt: null
+          },
+          data: { deletedAt }
+        }),
+        tx.homeVisit.updateMany({
           where: {
             businessId: input.businessId,
             customerId: existing.id,
@@ -1238,8 +1252,9 @@ export class CustomersRepository {
       return {
         customer,
         deleted: {
-          callbacks: tasks.count,
-          homeVisits: appointments.count,
+          reminders: reminders.count,
+          homeVisits: homeVisits.count,
+          appointments: appointments.count,
           quotes: quotes.count
         }
       };
@@ -1280,8 +1295,8 @@ export class CustomersRepository {
     const customerUpdates = mergeCustomerFields(source, target, input.fieldChoices);
 
     return this.prisma.$transaction(async (tx) => {
-      const [tasks, appointments, quotes, notes] = await Promise.all([
-        tx.task.updateMany({
+      const [reminders, appointments, homeVisits, quotes, notes] = await Promise.all([
+        tx.reminder.updateMany({
           where: { businessId: input.businessId, customerId: source.id },
           data: { customerId: target.id }
         }),
@@ -1289,11 +1304,15 @@ export class CustomersRepository {
           where: { businessId: input.businessId, customerId: source.id },
           data: { customerId: target.id }
         }),
+        tx.homeVisit.updateMany({
+          where: { businessId: input.businessId, customerId: source.id },
+          data: { customerId: target.id }
+        }),
         tx.quote.updateMany({
           where: { businessId: input.businessId, customerId: source.id },
           data: { customerId: target.id }
         }),
-        tx.customerNote.updateMany({
+        tx.note.updateMany({
           where: { businessId: input.businessId, customerId: source.id },
           data: { customerId: target.id }
         })
@@ -1317,8 +1336,9 @@ export class CustomersRepository {
         sourceCustomer: mergedSource,
         targetCustomer: updatedTarget,
         moved: {
-          callbacks: tasks.count,
-          homeVisits: appointments.count,
+          reminders: reminders.count,
+          homeVisits: homeVisits.count,
+          appointments: appointments.count,
           quotes: quotes.count,
           notes: notes.count
         }
@@ -1328,13 +1348,13 @@ export class CustomersRepository {
 }
 
 @Injectable()
-export class CustomerNotesRepository {
+export class NotesRepository {
   constructor(
     @Inject(PrismaService) private readonly prisma: PrismaService,
     @Inject(BusinessesRepository) private readonly businesses: BusinessesRepository
   ) {}
 
-  async create(input: CreateCustomerNoteInput) {
+  async create(input: CreateNoteInput) {
     await this.businesses.requireBusiness(input.businessId);
     const customer = await this.prisma.customer.findFirst({
       where: {
@@ -1348,7 +1368,7 @@ export class CustomerNotesRepository {
       return null;
     }
 
-    return this.prisma.customerNote.create({
+    return this.prisma.note.create({
       data: {
         businessId: input.businessId,
         customerId: input.customerId,
@@ -1370,7 +1390,7 @@ export class CustomerNotesRepository {
       return null;
     }
 
-    return this.prisma.customerNote.findMany({
+    return this.prisma.note.findMany({
       where: {
         businessId,
         customerId
@@ -1379,8 +1399,8 @@ export class CustomerNotesRepository {
     });
   }
 
-  async update(input: UpdateCustomerNoteInput) {
-    const existing = await this.prisma.customerNote.findFirst({
+  async update(input: UpdateNoteInput) {
+    const existing = await this.prisma.note.findFirst({
       where: {
         businessId: input.businessId,
         customerId: input.customerId,
@@ -1392,7 +1412,7 @@ export class CustomerNotesRepository {
       return null;
     }
 
-    return this.prisma.customerNote.update({
+    return this.prisma.note.update({
       where: { id: existing.id },
       data: {
         status: input.status
@@ -1413,7 +1433,7 @@ export class NotificationsRepository {
     return this.prisma.notification.create({
       data: {
         businessId: input.businessId,
-        taskId: input.taskId,
+        reminderId: input.reminderId,
         itemType: input.itemType,
         itemId: input.itemId,
         title: input.title,
@@ -1669,7 +1689,7 @@ export class AppointmentsRepository {
             }
           },
           ...(input.includeOpenBeforeStart ? [{
-            status: "SCHEDULED" as const,
+            status: "OPEN" as const,
             startsAt: {
               lt: input.start
             }
@@ -1743,6 +1763,154 @@ export class AppointmentsRepository {
       return null;
     }
     return this.prisma.appointment.update({
+      where: { id: existing.id },
+      data: { deletedAt: new Date() }
+    });
+  }
+
+  private async ensureCustomerBelongsToBusiness(businessId: string, customerId: string) {
+    const customer = await this.prisma.customer.findFirst({
+      where: {
+        businessId,
+        id: customerId
+      },
+      select: { id: true }
+    });
+
+    if (!customer) {
+      throw new NotFoundException("Customer not found");
+    }
+  }
+}
+
+@Injectable()
+export class HomeVisitsRepository {
+  constructor(
+    @Inject(PrismaService) private readonly prisma: PrismaService,
+    @Inject(BusinessesRepository) private readonly businesses: BusinessesRepository
+  ) {}
+
+  async create(input: CreateHomeVisitInput) {
+    await this.businesses.requireBusiness(input.businessId);
+    if (input.customerId) {
+      await this.ensureCustomerBelongsToBusiness(input.businessId, input.customerId);
+    }
+
+    return this.prisma.homeVisit.create({
+      data: {
+        businessId: input.businessId,
+        customerId: input.customerId,
+        title: input.title,
+        location: input.location,
+        notes: input.notes,
+        startsAt: input.startsAt,
+        endsAt: input.endsAt,
+        status: input.status
+      }
+    });
+  }
+
+  async listByBusiness(businessId: string) {
+    await this.businesses.requireBusiness(businessId);
+    return this.prisma.homeVisit.findMany({
+      where: { businessId, deletedAt: null },
+      include: { customer: true },
+      orderBy: { startsAt: "asc" }
+    });
+  }
+
+  async listForDate(input: { businessId: string; start: Date; end: Date; search?: string; includeOpenBeforeStart?: boolean }) {
+    await this.businesses.requireBusiness(input.businessId);
+    return this.prisma.homeVisit.findMany({
+      where: {
+        businessId: input.businessId,
+        deletedAt: null,
+        OR: [
+          {
+            startsAt: {
+              gte: input.start,
+              lt: input.end
+            }
+          },
+          ...(input.includeOpenBeforeStart ? [{
+            status: "OPEN" as const,
+            startsAt: {
+              lt: input.start
+            }
+          }] : [])
+        ],
+        AND: input.search ? [{
+          OR: [
+          { title: { contains: input.search, mode: "insensitive" } },
+          { location: { contains: input.search, mode: "insensitive" } },
+          { notes: { contains: input.search, mode: "insensitive" } },
+          { customer: { name: { contains: input.search, mode: "insensitive" } } },
+          { customer: { phone: { contains: input.search, mode: "insensitive" } } }
+          ]
+        }] : undefined
+      },
+      include: { customer: true },
+      orderBy: { startsAt: "asc" }
+    });
+  }
+
+  async listByCustomer(businessId: string, customerId: string) {
+    await this.ensureCustomerBelongsToBusiness(businessId, customerId);
+    return this.prisma.homeVisit.findMany({
+      where: {
+        businessId,
+        customerId,
+        deletedAt: null
+      },
+      include: { customer: true },
+      orderBy: { startsAt: "asc" }
+    });
+  }
+
+  async update(input: UpdateHomeVisitInput) {
+    const existing = await this.prisma.homeVisit.findFirst({
+      where: {
+        businessId: input.businessId,
+        id: input.homeVisitId
+      }
+    });
+    if (!existing) {
+      return null;
+    }
+
+    if (input.customerId) {
+      await this.ensureCustomerBelongsToBusiness(input.businessId, input.customerId);
+    }
+
+    return this.prisma.homeVisit.update({
+      where: { id: existing.id },
+      data: {
+        customerId: input.customerId,
+        title: input.title,
+        location: input.location,
+        notes: input.notes,
+        startsAt: input.startsAt,
+        endsAt: input.endsAt,
+        status: input.status
+      }
+    });
+  }
+
+  async complete(businessId: string, homeVisitId: string) {
+    return this.update({ businessId, homeVisitId, status: "DONE" });
+  }
+
+  async softDelete(businessId: string, homeVisitId: string) {
+    const existing = await this.prisma.homeVisit.findFirst({
+      where: {
+        businessId,
+        id: homeVisitId
+      }
+    });
+    if (!existing) {
+      return null;
+    }
+    return this.prisma.homeVisit.update({
       where: { id: existing.id },
       data: { deletedAt: new Date() }
     });
@@ -1929,77 +2097,6 @@ export class QuotesRepository {
         businessId,
         id: customerId,
         deletedAt: null
-      },
-      select: { id: true }
-    });
-
-    if (!customer) {
-      throw new NotFoundException("Customer not found");
-    }
-  }
-}
-
-@Injectable()
-export class JobsRepository {
-  constructor(
-    @Inject(PrismaService) private readonly prisma: PrismaService,
-    @Inject(BusinessesRepository) private readonly businesses: BusinessesRepository
-  ) {}
-
-  async create(input: CreateJobInput) {
-    await this.businesses.requireBusiness(input.businessId);
-    await this.ensureCustomerBelongsToBusiness(input.businessId, input.customerId);
-
-    return this.prisma.job.create({
-      data: {
-        businessId: input.businessId,
-        customerId: input.customerId,
-        title: input.title,
-        description: input.description,
-        status: input.status ?? "OPEN"
-      }
-    });
-  }
-
-  async listByBusiness(businessId: string) {
-    await this.businesses.requireBusiness(businessId);
-    return this.prisma.job.findMany({
-      where: { businessId },
-      orderBy: { createdAt: "desc" }
-    });
-  }
-
-  async update(input: UpdateJobInput) {
-    const existing = await this.prisma.job.findFirst({
-      where: {
-        businessId: input.businessId,
-        id: input.jobId
-      }
-    });
-    if (!existing) {
-      return null;
-    }
-
-    if (input.customerId) {
-      await this.ensureCustomerBelongsToBusiness(input.businessId, input.customerId);
-    }
-
-    return this.prisma.job.update({
-      where: { id: existing.id },
-      data: {
-        customerId: input.customerId,
-        title: input.title,
-        description: input.description,
-        status: input.status
-      }
-    });
-  }
-
-  private async ensureCustomerBelongsToBusiness(businessId: string, customerId: string) {
-    const customer = await this.prisma.customer.findFirst({
-      where: {
-        businessId,
-        id: customerId
       },
       select: { id: true }
     });

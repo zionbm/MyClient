@@ -34,15 +34,17 @@ const customer = request("POST", `${core}/businesses/${businessId}/customers`, {
 
 request("POST", `${core}/businesses/${businessId}/appointments`, {
   customerId: customer.id,
-  title: "ביקור דמו",
+  title: "פגישת דמו",
   startsAt: "2026-08-21T09:00:00.000Z",
   endsAt: "2026-08-21T10:00:00.000Z"
 }, { authorization: token });
 
-request("POST", `${core}/businesses/${businessId}/jobs`, {
+request("POST", `${core}/businesses/${businessId}/home-visits`, {
   customerId: customer.id,
-  title: "קריאת שירות דמו",
-  description: "בדיקת מזגן"
+  title: "ביקור בית דמו",
+  location: "הרצל 10, תל אביב",
+  notes: "בדיקת מזגן",
+  startsAt: "2026-08-21T11:00:00.000Z"
 }, { authorization: token });
 
 request("POST", `${telephony}/plivo/recording`, {

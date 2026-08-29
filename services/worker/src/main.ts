@@ -4,15 +4,15 @@ import { NestFactory } from "@nestjs/core";
 import { FastifyAdapter, type NestFastifyApplication } from "@nestjs/platform-fastify";
 import { ApiExceptionFilter, cloudRunServiceAuthHeaders, getEnv, getPort, health, log } from "@myclient/common";
 
-type MockJob = {
+type MockRun = {
   id: string;
   type: string;
   payload: unknown;
-  status: "QUEUED" | "COMPLETED";
+  status: "QUEUED" | "DONE";
   createdAt: string;
 };
 
-const jobs: MockJob[] = [];
+const mockRuns: MockRun[] = [];
 
 function positiveNumberEnv(name: string, fallback: number) {
   const value = Number(getEnv(name, String(fallback)));
@@ -99,23 +99,23 @@ class WorkerController {
     return { reminders: reminderPollState };
   }
 
-  @Post("jobs/mock")
+  @Post("mock-runs")
   enqueue(@Body() body: { type?: string; payload?: unknown }) {
-    const job: MockJob = {
-      id: `job_${crypto.randomUUID()}`,
-      type: body.type ?? "MOCK_JOB",
+    const run: MockRun = {
+      id: `mock_run_${crypto.randomUUID()}`,
+      type: body.type ?? "MOCK_RUN",
       payload: body.payload ?? {},
       status: "QUEUED",
       createdAt: new Date().toISOString()
     };
-    jobs.push(job);
-    log("info", "mock job queued", { jobId: job.id, type: job.type });
-    return { job };
+    mockRuns.push(run);
+    log("info", "mock run queued", { runId: run.id, type: run.type });
+    return { run };
   }
 
-  @Get("jobs/mock")
+  @Get("mock-runs")
   list() {
-    return { jobs };
+    return { runs: mockRuns };
   }
 }
 

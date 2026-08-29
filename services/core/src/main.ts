@@ -30,16 +30,14 @@ import {
   CreateBusinessMemberSchema,
   CreateAppointmentSchema,
   CreateBusinessPhoneNumberSchema,
-  CreateCallbackSchema,
-  CreateCallbackTaskSchema,
+  CreateReminderFromCallSchema,
   CreateCallTranscriptSchema,
-  CreateCustomerNoteSchema,
+  CreateNoteSchema,
   CreateCustomerSchema,
   CreateHomeVisitSchema,
   CreateIncomingCallSchema,
-  CreateJobSchema,
   CreateQuoteSchema,
-  CreateTaskSchema,
+  CreateReminderSchema,
   CompletePendingActionSchema,
   HomeQuerySchema,
   ListByStatusQuerySchema,
@@ -52,15 +50,13 @@ import {
   UpdateAppointmentSchema,
   UpdateBusinessPhoneNumberSchema,
   UpdateBusinessSettingsSchema,
-  UpdateCallbackSchema,
-  UpdateCustomerNoteSchema,
+  UpdateNoteSchema,
   UpdateCustomerSchema,
   UpdateHomeVisitSchema,
-  UpdateJobSchema,
   UpdateNotificationSchema,
   UpdatePendingActionSchema,
   UpdateQuoteSchema,
-  UpdateTaskSchema
+  UpdateReminderSchema
 } from "@myclient/contracts";
 import type { AiAction, VoiceCommandResult } from "@myclient/contracts";
 import {
@@ -72,16 +68,16 @@ import {
   BusinessPhoneNumbersRepository,
   BusinessSettingsRepository,
   CallTranscriptsRepository,
-  CustomerNotesRepository,
+  NotesRepository,
   CustomersRepository,
   DeviceTokensRepository,
+  HomeVisitsRepository,
   IncomingCallsRepository,
-    JobsRepository,
-    NotificationsRepository,
-    OwnerVoiceCommandsRepository,
+  NotificationsRepository,
+  OwnerVoiceCommandsRepository,
   PendingActionsRepository,
   QuotesRepository,
-  TasksRepository
+  RemindersRepository
 } from "./core.repositories.js";
 import { PrismaService } from "./prisma.service.js";
 
@@ -116,7 +112,7 @@ function formatCaller(callerPhone: string | undefined): string {
   return callerPhone ?? "מספר לא מזוהה";
 }
 
-function buildCallbackTaskDescription(callerPhone: string | undefined, transcript: string | undefined): string {
+function buildReminderFromCallDescription(callerPhone: string | undefined, transcript: string | undefined): string {
   const caller = formatCaller(callerPhone);
   if (transcript) {
     return `מתקשר: ${caller}\nהודעה: ${transcript}`;
@@ -125,7 +121,7 @@ function buildCallbackTaskDescription(callerPhone: string | undefined, transcrip
   return `מתקשר: ${caller}\nהלקוח ביקש שתחזור אליו.`;
 }
 
-function buildCallbackNotificationBody(callerPhone: string | undefined, transcript: string | undefined): string {
+function buildReminderNotificationBody(callerPhone: string | undefined, transcript: string | undefined): string {
   const caller = formatCaller(callerPhone);
   if (transcript) {
     return `${caller}: ${transcript}`;
@@ -134,8 +130,8 @@ function buildCallbackNotificationBody(callerPhone: string | undefined, transcri
   return `${caller} ביקש שתחזור אליו.`;
 }
 
-function buildTaskReminderBody(task: { title: string; description?: string | null }) {
-  return task.description ? `${task.title}\n${task.description}` : task.title;
+function buildReminderReminderBody(reminder: { title: string; description?: string | null }) {
+  return reminder.description ? `${reminder.title}\n${reminder.description}` : reminder.title;
 }
 
 function parseOptionalDate(value: string | null | undefined): Date | null | undefined {
@@ -163,6 +159,10 @@ function parseRequiredDate(value: string): Date {
 
 function timeOrZero(value: string | number | Date | null | undefined) {
   return value ? new Date(value).getTime() : 0;
+}
+
+function scheduledTimeOrZero(item: { dueAt?: Date | string | null; startsAt?: Date | string | null }) {
+  return timeOrZero(item.dueAt ?? item.startsAt);
 }
 
 function getZonedParts(date: Date, timeZone: string) {
@@ -207,7 +207,7 @@ function addLocalDays(parts: { year: number; month: number; day: number }, days:
   };
 }
 
-function defaultAiTaskDueAt(timeZone: string, now = new Date()) {
+function defaultAiReminderDueAt(timeZone: string, now = new Date()) {
   const workdayStartMinutes = 9 * 60;
   const eveningCutoffMinutes = 19 * 60;
   const nowParts = getZonedParts(now, timeZone);
@@ -551,12 +551,12 @@ function publicCustomer(customer: { id: string; name: string; phone?: string | n
   };
 }
 
-function callbackStatus(status: string) {
-  return status === "COMPLETED" ? "DONE" : "OPEN";
+function reminderStatus(status: string) {
+  return status;
 }
 
 function homeVisitStatus(status: string) {
-  return status === "COMPLETED" ? "DONE" : "OPEN";
+  return status;
 }
 
 function startOfLocalDate(dateText: string | undefined, timeZone: string) {
@@ -604,9 +604,9 @@ function callIvrSelection(call: { selectedDigit?: string | null }) {
   return "NO_SELECTION";
 }
 
-function callDisplayStatus(call: { selectedDigit?: string | null; transcripts?: Array<{ taskId?: string | null }> }) {
-  if (call.transcripts?.some((transcript) => transcript.taskId)) {
-    return "TASK_CREATED";
+function callDisplayStatus(call: { selectedDigit?: string | null; transcripts?: Array<{ reminderId?: string | null }> }) {
+  if (call.transcripts?.some((transcript) => transcript.reminderId)) {
+    return "REMINDER_CREATED";
   }
   if (call.selectedDigit) {
     return "NO_ACTION";
@@ -622,7 +622,7 @@ async function sendFirebaseMulticast(tokens: string[], input: NotificationSendIn
     android: {
       priority: "high",
       notification: {
-        channelId: "task_reminders"
+        channelId: "reminder_reminders"
       }
     },
     notification: {
@@ -644,11 +644,11 @@ class CoreController {
     @Inject(IncomingCallsRepository) private readonly incomingCalls: IncomingCallsRepository,
     @Inject(CallTranscriptsRepository) private readonly callTranscripts: CallTranscriptsRepository,
     @Inject(CustomersRepository) private readonly customers: CustomersRepository,
-    @Inject(TasksRepository) private readonly tasks: TasksRepository,
-    @Inject(CustomerNotesRepository) private readonly customerNotes: CustomerNotesRepository,
+    @Inject(RemindersRepository) private readonly reminders: RemindersRepository,
+    @Inject(NotesRepository) private readonly notes: NotesRepository,
     @Inject(AppointmentsRepository) private readonly appointments: AppointmentsRepository,
+    @Inject(HomeVisitsRepository) private readonly homeVisits: HomeVisitsRepository,
     @Inject(QuotesRepository) private readonly quotes: QuotesRepository,
-    @Inject(JobsRepository) private readonly jobs: JobsRepository,
     @Inject(NotificationsRepository) private readonly notifications: NotificationsRepository,
     @Inject(DeviceTokensRepository) private readonly deviceTokens: DeviceTokensRepository,
     @Inject(OwnerVoiceCommandsRepository) private readonly ownerVoiceCommands: OwnerVoiceCommandsRepository,
@@ -755,7 +755,7 @@ class CoreController {
       locale: command.locale,
       timezone: command.timezone,
       greetingText: command.greetingText,
-      callbackPrompt: command.callbackPrompt,
+      reminderPrompt: command.reminderPrompt,
       urgentPrompt: command.urgentPrompt,
       workingHours: command.workingHours as Prisma.InputJsonValue | null | undefined,
       notificationPhone: command.notificationPhone,
@@ -924,7 +924,7 @@ class CoreController {
         incomingCall,
         mode: "RECORD_MESSAGE",
         reason: "CALLER_ID_MISSING",
-        prompt: settings.callbackPrompt ?? "אנא ציין את שמך ואת מספר הטלפון לחזרה אחרי הצליל."
+        prompt: settings.reminderPrompt ?? "אנא ציין את שמך ואת מספר הטלפון לחזרה אחרי הצליל."
       };
     }
 
@@ -941,8 +941,8 @@ class CoreController {
       return {
         businessId,
         incomingCall,
-        mode: "CREATE_CALLBACK_WITHOUT_RECORDING",
-        nextWebhook: "/plivo/callback-request"
+        mode: "CREATE_REMINDER_WITHOUT_RECORDING",
+        nextWebhook: "/plivo/reminder-request"
       };
     }
 
@@ -951,7 +951,7 @@ class CoreController {
       incomingCall,
       mode: "RECORD_MESSAGE",
       urgent: selectedDigit === "3",
-      prompt: selectedDigit === "3" ? settings.urgentPrompt : settings.callbackPrompt,
+      prompt: selectedDigit === "3" ? settings.urgentPrompt : settings.reminderPrompt,
       maxSeconds: 60,
       finishOnKey: "#"
     };
@@ -972,7 +972,7 @@ class CoreController {
       urgent: command.urgent ?? incomingCall.urgent,
       recordingUrl: command.recordingUrl
     });
-    const callbackResult = await this.executeCallbackTask({
+    const reminderResult = await this.executeReminderFromCall({
       businessId: incomingCall.businessId,
       incomingCallId: incomingCall.id,
       callerPhone: incomingCall.fromNumber ?? undefined,
@@ -986,7 +986,7 @@ class CoreController {
       businessId: incomingCall.businessId,
       incomingCallId: incomingCall.id,
       transcript: command.transcript,
-      taskId: "task" in callbackResult ? callbackResult.task.id : undefined,
+      reminderId: "reminder" in reminderResult ? reminderResult.reminder.id : undefined,
       provider: command.provider,
       confidence: command.confidence
     });
@@ -1003,15 +1003,15 @@ class CoreController {
     return {
       incomingCall: updatedCall,
       transcript,
-      callback: callbackResult
+      reminder: reminderResult
     };
   }
 
-  @Post("internal/tasks/callback")
-  async createCallbackTask(@Headers() headers: RequestHeaders, @Body() body: unknown) {
+  @Post("internal/reminders/from-call")
+  async createReminderFromCall(@Headers() headers: RequestHeaders, @Body() body: unknown) {
     this.requireInternalSecret(headers);
-    const command = CreateCallbackTaskSchema.parse(body);
-    return this.executeCallbackTask(command);
+    const command = CreateReminderFromCallSchema.parse(body);
+    return this.executeReminderFromCall(command);
   }
 
   @Post("internal/reminders/due")
@@ -1019,50 +1019,50 @@ class CoreController {
     await this.requireInternalScheduler(headers);
     const requestedLimit = Number((body as { limit?: unknown })?.limit ?? 20);
     const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 100)) : 20;
-    const tasks = await this.tasks.listDueReminders(limit);
-    const reminders = [];
+    const dueReminders = await this.reminders.listDueReminders(limit);
+    const processedReminders = [];
 
-    log("info", "due reminder poll started", { limit, dueTaskCount: tasks.length });
+    log("info", "due reminder poll started", { limit, dueReminderCount: dueReminders.length });
 
-    for (const task of tasks) {
+    for (const reminder of dueReminders) {
       const notification = await this.notifications.create({
-        businessId: task.businessId,
-        taskId: task.id,
-        itemType: "callback",
-        itemId: task.id,
+        businessId: reminder.businessId,
+        reminderId: reminder.id,
+        itemType: "reminder",
+        itemId: reminder.id,
         title: "תזכורת למשימה",
-        body: buildTaskReminderBody(task),
+        body: buildReminderReminderBody(reminder),
         payload: {
-          source: "task_reminder",
-          taskId: task.id,
-          dueAt: task.dueAt?.toISOString() ?? null,
-          priority: task.priority
+          source: "reminder_reminder",
+          reminderId: reminder.id,
+          dueAt: reminder.dueAt?.toISOString() ?? null,
+          priority: reminder.priority
         }
       });
       const notificationDelivery = await this.sendNotification(notification);
-      const updatedTask = await this.tasks.markReminderSent(task.id);
+      const updatedReminder = await this.reminders.markReminderSent(reminder.id);
       await this.audit.record({
-        businessId: task.businessId,
+        businessId: reminder.businessId,
         actorType: "system",
         source: "worker",
-        entityType: "task",
-        entityId: task.id,
-        action: "SEND_TASK_REMINDER",
-        after: updatedTask as Prisma.InputJsonValue,
+        entityType: "reminder",
+        entityId: reminder.id,
+        action: "SEND_REMINDER_NOTIFICATION",
+        after: updatedReminder as Prisma.InputJsonValue,
         result: notificationDelivery.status
       });
-      reminders.push({
-        task: updatedTask,
+      processedReminders.push({
+        reminder: updatedReminder,
         notification: notificationDelivery.notification,
         notificationDelivery
       });
     }
 
-    log("info", "due reminder poll finished", { processed: reminders.length });
+    log("info", "due reminder poll finished", { processed: processedReminders.length });
 
     return {
-      processed: reminders.length,
-      reminders
+      processed: processedReminders.length,
+      reminders: processedReminders
     };
   }
 
@@ -1096,19 +1096,19 @@ class CoreController {
       return { status: "PENDING_MISSING_INFORMATION", pending };
     }
 
-    if (action.type === "CREATE_TASK") {
-      const existing = await this.tasks.findByIdempotencyKey(request.businessId, action.idempotencyKey);
+    if (action.type === "CREATE_REMINDER") {
+      const existing = await this.reminders.findByIdempotencyKey(request.businessId, action.idempotencyKey);
       if (existing) {
-        return { status: "EXECUTED", duplicate: true, task: existing };
+        return { status: "EXECUTED", duplicate: true, reminder: existing };
       }
 
-      const title = typeof action.payload.title === "string" ? action.payload.title : "Owner task";
-      const task = await this.tasks.create({
+      const title = typeof action.payload.title === "string" ? action.payload.title : "Owner reminder";
+      const reminder = await this.reminders.create({
         businessId: request.businessId,
         title,
         description: typeof action.payload.description === "string" ? action.payload.description : undefined,
         priority: "NORMAL",
-        dueAt: await this.resolveAiTaskDueAt(request.businessId, action.payload),
+        dueAt: await this.resolveAiReminderDueAt(request.businessId, action.payload),
         source: "ai_owner_command",
         sourceRef: action.idempotencyKey,
         idempotencyKey: action.idempotencyKey
@@ -1118,12 +1118,12 @@ class CoreController {
         actorType: "user",
         actorId: user.id,
         source: "ai_owner_command",
-        entityType: "task",
-        entityId: task.id,
-        action: "CREATE_TASK_FROM_OWNER_ACTION",
-        after: task as Prisma.InputJsonValue
+        entityType: "reminder",
+        entityId: reminder.id,
+        action: "CREATE_REMINDER_FROM_OWNER_ACTION",
+        after: reminder as Prisma.InputJsonValue
       });
-      return { status: "EXECUTED", duplicate: false, task };
+      return { status: "EXECUTED", duplicate: false, reminder };
     }
 
     return {
@@ -1457,14 +1457,17 @@ class CoreController {
     const start = startOfLocalDate(command.date, settings.timezone);
     const end = addUtcDays(start, 1);
     const includeOpenBeforeStart = isSameUtcInstant(start, startOfLocalDate(undefined, settings.timezone));
-    const [callbacks, homeVisits, quotes, notifications] = await Promise.all([
-      command.filter === "home_visits" || command.filter === "quotes" || command.filter === "calls"
+    const [reminders, homeVisits, appointments, quotes, notifications] = await Promise.all([
+      command.filter === "home_visits" || command.filter === "appointments" || command.filter === "quotes" || command.filter === "calls"
         ? Promise.resolve([])
-        : this.tasks.listCallbacksForDate({ businessId, start, end, search: command.search, urgentOnly: command.filter === "urgent", includeOpenBeforeStart }),
-      command.filter === "callbacks" || command.filter === "quotes" || command.filter === "calls" || command.filter === "urgent"
+        : this.reminders.listRemindersForDate({ businessId, start, end, search: command.search, urgentOnly: command.filter === "urgent", includeOpenBeforeStart }),
+      command.filter === "reminders" || command.filter === "appointments" || command.filter === "quotes" || command.filter === "calls" || command.filter === "urgent"
+        ? Promise.resolve([])
+        : this.homeVisits.listForDate({ businessId, start, end, search: command.search, includeOpenBeforeStart }),
+      command.filter === "reminders" || command.filter === "home_visits" || command.filter === "quotes" || command.filter === "calls" || command.filter === "urgent"
         ? Promise.resolve([])
         : this.appointments.listForDate({ businessId, start, end, search: command.search, includeOpenBeforeStart }),
-      command.filter === "callbacks" || command.filter === "home_visits" || command.filter === "calls" || command.filter === "urgent"
+      command.filter === "reminders" || command.filter === "home_visits" || command.filter === "appointments" || command.filter === "calls" || command.filter === "urgent"
         ? Promise.resolve([])
         : this.quotes.listForDate({ businessId, start, end, search: command.search, includeOpenBeforeStart }),
       command.filter === "all" || command.filter === "urgent"
@@ -1486,21 +1489,22 @@ class CoreController {
         source: "notification",
         customer: null,
         linkedEntity: {
-          type: notification.itemType ?? (notification.taskId ? "callback" : "notification"),
-          id: notification.itemId ?? notification.taskId ?? notification.id
+          type: notification.itemType ?? (notification.reminderId ? "reminder" : "notification"),
+          id: notification.itemId ?? notification.reminderId ?? notification.id
         },
         actions: ["open", "mark_read"]
       }));
 
     const items = [
-      ...callbacks.map((task) => this.publicCallbackWorkItem(task)),
-      ...homeVisits.map((appointment) => this.publicHomeVisitWorkItem(appointment)),
+      ...reminders.map((reminder) => this.publicReminderWorkItem(reminder)),
+      ...homeVisits.map((homeVisit) => this.publicHomeVisitWorkItem(homeVisit)),
+      ...appointments.map((appointment) => this.publicAppointmentWorkItem(appointment)),
       ...quotes.map((quote) => this.publicQuoteWorkItem(quote)),
       ...notificationItems
     ].sort((a, b) => {
       const priority = Number(b.priority === "URGENT") - Number(a.priority === "URGENT");
       if (priority !== 0) return priority;
-      return new Date(a.dueAt).getTime() - new Date(b.dueAt).getTime();
+      return scheduledTimeOrZero(a) - scheduledTimeOrZero(b);
     });
 
     return {
@@ -1510,23 +1514,24 @@ class CoreController {
     };
   }
 
-  @Get("businesses/:businessId/tasks")
-  async listTasks(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string) {
+  @Get("businesses/:businessId/reminders")
+  async listReminders(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string) {
     await this.requireBusinessAccess(headers, businessId);
-    return { tasks: await this.tasks.listByBusiness(businessId) };
+    const reminders = await this.reminders.listRemindersByBusiness(businessId);
+    return { reminders: reminders.map((reminder) => this.publicReminder(reminder)) };
   }
 
-  @Post("businesses/:businessId/tasks")
-  async createTask(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Body() body: unknown) {
+  @Post("businesses/:businessId/reminders")
+  async createReminder(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Body() body: unknown) {
     const user = await this.requireBusinessAccess(headers, businessId);
-    const command = CreateTaskSchema.parse(body);
-    const task = await this.tasks.create({
+    const command = CreateReminderSchema.parse(body);
+    const reminder = await this.reminders.create({
       businessId,
       customerId: command.customerId,
       title: command.title,
       description: command.description,
       priority: command.priority,
-      dueAt: parseOptionalDate(command.dueAt) ?? undefined,
+      dueAt: parseOptionalDate(command.dueAt) ?? await this.resolveAiReminderDueAt(businessId, {}),
       status: command.status,
       source: "app"
     });
@@ -1535,179 +1540,87 @@ class CoreController {
       actorType: "user",
       actorId: user.id,
       source: "core",
-      entityType: "task",
-      entityId: task.id,
-      action: "CREATE_TASK",
-      after: task as Prisma.InputJsonValue
+      entityType: "reminder",
+      entityId: reminder.id,
+      action: "CREATE_REMINDER",
+      after: reminder as Prisma.InputJsonValue
     });
-    return { task };
+    return { reminder: this.publicReminder(reminder) };
   }
 
-  @Get("businesses/:businessId/callbacks")
-  async listCallbacks(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string) {
-    await this.requireBusinessAccess(headers, businessId);
-    const callbacks = await this.tasks.listCallbacksByBusiness(businessId);
-    return { callbacks: callbacks.map((task) => this.publicCallback(task)) };
-  }
-
-  @Post("businesses/:businessId/callbacks")
-  async createCallback(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Body() body: unknown) {
-    const user = await this.requireBusinessAccess(headers, businessId);
-    const command = CreateCallbackSchema.parse(body);
-    const task = await this.tasks.create({
-      businessId,
-      customerId: command.customerId,
-      title: command.title,
-      description: command.description,
-      priority: command.priority,
-      dueAt: parseOptionalDate(command.dueAt) ?? await this.resolveAiTaskDueAt(businessId, {}),
-      status: command.status === "DONE" ? "COMPLETED" : command.status === "OPEN" ? "OPEN" : undefined,
-      source: "app"
-    });
-    await this.audit.record({
-      businessId,
-      actorType: "user",
-      actorId: user.id,
-      source: "core",
-      entityType: "callback",
-      entityId: task.id,
-      action: "CREATE_CALLBACK",
-      after: task as Prisma.InputJsonValue
-    });
-    return { callback: this.publicCallback(task) };
-  }
-
-  @Patch("businesses/:businessId/callbacks/:callbackId")
-  async updateCallback(
+  @Patch("businesses/:businessId/reminders/:reminderId")
+  async updateReminder(
     @Headers() headers: RequestHeaders,
     @Param("businessId") businessId: string,
-    @Param("callbackId") callbackId: string,
+    @Param("reminderId") reminderId: string,
     @Body() body: unknown
   ) {
     const user = await this.requireBusinessAccess(headers, businessId);
-    const command = UpdateCallbackSchema.parse(body);
-    const task = await this.tasks.update({
+    const command = UpdateReminderSchema.parse(body);
+    const reminder = await this.reminders.update({
       businessId,
-      taskId: callbackId,
+      reminderId: reminderId,
       customerId: command.customerId === null ? undefined : command.customerId,
       title: command.title,
       description: command.description === null ? undefined : command.description,
       priority: command.priority,
       dueAt: parseOptionalDate(command.dueAt),
-      status: command.status === "DONE" ? "COMPLETED" : command.status === "OPEN" ? "OPEN" : undefined
-    });
-    if (!task) {
-      throw new NotFoundException("Callback not found");
-    }
-    await this.audit.record({
-      businessId,
-      actorType: "user",
-      actorId: user.id,
-      source: "core",
-      entityType: "callback",
-      entityId: task.id,
-      action: "UPDATE_CALLBACK",
-      after: task as Prisma.InputJsonValue
-    });
-    return { callback: this.publicCallback(task) };
-  }
-
-  @Post("businesses/:businessId/callbacks/:callbackId/complete")
-  async completeCallback(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Param("callbackId") callbackId: string) {
-    const user = await this.requireBusinessAccess(headers, businessId);
-    const task = await this.tasks.complete(businessId, callbackId);
-    if (!task) {
-      throw new NotFoundException("Callback not found");
-    }
-    await this.audit.record({
-      businessId,
-      actorType: "user",
-      actorId: user.id,
-      source: "core",
-      entityType: "callback",
-      entityId: task.id,
-      action: "COMPLETE_CALLBACK",
-      after: task as Prisma.InputJsonValue
-    });
-    return { callback: this.publicCallback(task) };
-  }
-
-  @Delete("businesses/:businessId/callbacks/:callbackId")
-  async deleteCallback(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Param("callbackId") callbackId: string) {
-    const user = await this.requireBusinessAccess(headers, businessId);
-    const task = await this.tasks.softDelete(businessId, callbackId);
-    if (!task) {
-      throw new NotFoundException("Callback not found");
-    }
-    await this.audit.record({
-      businessId,
-      actorType: "user",
-      actorId: user.id,
-      source: "core",
-      entityType: "callback",
-      entityId: task.id,
-      action: "DELETE_CALLBACK",
-      after: task as Prisma.InputJsonValue
-    });
-    return { callback: this.publicCallback(task) };
-  }
-
-  @Patch("businesses/:businessId/tasks/:taskId")
-  async updateTask(
-    @Headers() headers: RequestHeaders,
-    @Param("businessId") businessId: string,
-    @Param("taskId") taskId: string,
-    @Body() body: unknown
-  ) {
-    const user = await this.requireBusinessAccess(headers, businessId);
-    const command = UpdateTaskSchema.parse(body);
-    const task = await this.tasks.update({
-      businessId,
-      taskId,
-      customerId: command.customerId,
-      title: command.title,
-      description: command.description,
-      priority: command.priority,
-      dueAt: parseOptionalDate(command.dueAt),
       status: command.status
     });
-
-    if (!task) {
-      throw new NotFoundException("Task not found");
+    if (!reminder) {
+      throw new NotFoundException("Reminder not found");
     }
-
     await this.audit.record({
       businessId,
       actorType: "user",
       actorId: user.id,
       source: "core",
-      entityType: "task",
-      entityId: task.id,
-      action: "UPDATE_TASK",
-      after: task as Prisma.InputJsonValue
+      entityType: "reminder",
+      entityId: reminder.id,
+      action: "UPDATE_REMINDER",
+      after: reminder as Prisma.InputJsonValue
     });
-    return { task };
+    return { reminder: this.publicReminder(reminder) };
   }
 
-  @Post("businesses/:businessId/tasks/:taskId/complete")
-  async completeTask(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Param("taskId") taskId: string) {
+  @Post("businesses/:businessId/reminders/:reminderId/complete")
+  async completeReminder(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Param("reminderId") reminderId: string) {
     const user = await this.requireBusinessAccess(headers, businessId);
-    const task = await this.tasks.complete(businessId, taskId);
-    if (!task) {
-      throw new NotFoundException("Task not found");
+    const reminder = await this.reminders.complete(businessId, reminderId);
+    if (!reminder) {
+      throw new NotFoundException("Reminder not found");
     }
-
     await this.audit.record({
       businessId,
       actorType: "user",
       actorId: user.id,
       source: "core",
-      entityType: "task",
-      entityId: task.id,
-      action: "COMPLETE_TASK",
-      after: task as Prisma.InputJsonValue
+      entityType: "reminder",
+      entityId: reminder.id,
+      action: "COMPLETE_REMINDER",
+      after: reminder as Prisma.InputJsonValue
     });
-    return { task };
+    return { reminder: this.publicReminder(reminder) };
+  }
+
+  @Delete("businesses/:businessId/reminders/:reminderId")
+  async deleteReminder(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Param("reminderId") reminderId: string) {
+    const user = await this.requireBusinessAccess(headers, businessId);
+    const reminder = await this.reminders.softDelete(businessId, reminderId);
+    if (!reminder) {
+      throw new NotFoundException("Reminder not found");
+    }
+    await this.audit.record({
+      businessId,
+      actorType: "user",
+      actorId: user.id,
+      source: "core",
+      entityType: "reminder",
+      entityId: reminder.id,
+      action: "DELETE_REMINDER",
+      after: reminder as Prisma.InputJsonValue
+    });
+    return { reminder: this.publicReminder(reminder) };
   }
 
   @Post("businesses/:businessId/customers")
@@ -1723,7 +1636,7 @@ class CoreController {
       address: command.address
     });
     const initialNote = command.initialNote
-      ? await this.customerNotes.create({ businessId, customerId: customer.id, text: command.initialNote })
+      ? await this.notes.create({ businessId, customerId: customer.id, text: command.initialNote })
       : null;
     await this.audit.record({
       businessId,
@@ -1752,15 +1665,15 @@ class CoreController {
       throw new NotFoundException("Customer not found");
     }
 
-    const [callbacks, homeVisits, quotes, notes] = await Promise.all([
-      this.tasks.listByCustomer(businessId, customerId),
-      this.appointments.listByCustomer(businessId, customerId),
+    const [reminders, homeVisits, quotes, notes] = await Promise.all([
+      this.reminders.listByCustomer(businessId, customerId),
+      this.homeVisits.listByCustomer(businessId, customerId),
       this.quotes.listByCustomer(businessId, customerId),
-      this.customerNotes.listByCustomer(businessId, customerId)
+      this.notes.listByCustomer(businessId, customerId)
     ]);
     const activity = [
-      ...callbacks.map((task) => this.publicCallbackWorkItem(task)),
-      ...homeVisits.map((appointment) => this.publicHomeVisitWorkItem(appointment)),
+      ...reminders.map((reminder) => this.publicReminderWorkItem(reminder)),
+      ...homeVisits.map((homeVisit) => this.publicHomeVisitWorkItem(homeVisit)),
       ...quotes.map((quote) => this.publicQuoteWorkItem(quote)),
       ...(notes ?? []).map((note) => ({
         id: note.id,
@@ -1775,7 +1688,7 @@ class CoreController {
         linkedEntity: { type: "note", id: note.id },
         actions: note.status === "DONE" ? ["open", "reopen"] : ["open", "complete"]
       }))
-    ].sort((a, b) => timeOrZero(b.dueAt) - timeOrZero(a.dueAt));
+    ].sort((a, b) => scheduledTimeOrZero(b) - scheduledTimeOrZero(a));
 
     return { customer, activity };
   }
@@ -1873,15 +1786,15 @@ class CoreController {
   }
 
   @Post("businesses/:businessId/customers/:customerId/notes")
-  async createCustomerNote(
+  async createNote(
     @Headers() headers: RequestHeaders,
     @Param("businessId") businessId: string,
     @Param("customerId") customerId: string,
     @Body() body: unknown
   ) {
     const user = await this.requireBusinessAccess(headers, businessId);
-    const command = CreateCustomerNoteSchema.parse(body);
-    const note = await this.customerNotes.create({
+    const command = CreateNoteSchema.parse(body);
+    const note = await this.notes.create({
       businessId,
       customerId,
       text: command.text
@@ -1905,7 +1818,7 @@ class CoreController {
   }
 
   @Patch("businesses/:businessId/customers/:customerId/notes/:noteId")
-  async updateCustomerNote(
+  async updateNote(
     @Headers() headers: RequestHeaders,
     @Param("businessId") businessId: string,
     @Param("customerId") customerId: string,
@@ -1913,8 +1826,8 @@ class CoreController {
     @Body() body: unknown
   ) {
     const user = await this.requireBusinessAccess(headers, businessId);
-    const command = UpdateCustomerNoteSchema.parse(body);
-    const note = await this.customerNotes.update({
+    const command = UpdateNoteSchema.parse(body);
+    const note = await this.notes.update({
       businessId,
       customerId,
       noteId,
@@ -1939,9 +1852,9 @@ class CoreController {
   }
 
   @Get("businesses/:businessId/customers/:customerId/notes")
-  async listCustomerNotes(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Param("customerId") customerId: string) {
+  async listNotes(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Param("customerId") customerId: string) {
     await this.requireBusinessAccess(headers, businessId);
-    const notes = await this.customerNotes.listByCustomer(businessId, customerId);
+    const notes = await this.notes.listByCustomer(businessId, customerId);
     if (!notes) {
       throw new NotFoundException("Customer not found");
     }
@@ -1956,7 +1869,7 @@ class CoreController {
     return {
       calls: await Promise.all(calls.map(async (call) => {
         const transcript = call.transcripts.at(-1) ?? null;
-        const relatedTask = transcript?.taskId ? await this.tasks.findByBusinessAndId(businessId, transcript.taskId) : null;
+        const relatedReminder = transcript?.reminderId ? await this.reminders.findByBusinessAndId(businessId, transcript.reminderId) : null;
         const customer = call.fromNumber ? await this.customers.findDuplicateByPhone(businessId, call.fromNumber) : null;
         return {
           id: call.id,
@@ -1965,14 +1878,14 @@ class CoreController {
           calledAt: call.createdAt,
           durationSeconds: null,
           ivrSelection: callIvrSelection(call),
-          displayStatus: relatedTask?.status === "COMPLETED" ? "TASK_COMPLETED" : callDisplayStatus(call),
+          displayStatus: relatedReminder?.status === "DONE" ? "REMINDER_DONE" : callDisplayStatus(call),
           urgent: call.urgent,
           transcriptPreview: transcript?.transcript ?? null,
-          relatedTask: relatedTask ? {
-            id: relatedTask.id,
-            status: callbackStatus(relatedTask.status),
-            dueAt: relatedTask.dueAt,
-            priority: relatedTask.priority
+          relatedReminder: relatedReminder ? {
+            id: relatedReminder.id,
+            status: reminderStatus(relatedReminder.status),
+            dueAt: relatedReminder.dueAt,
+            priority: relatedReminder.priority
           } : null,
           customer: publicCustomer(customer)
         };
@@ -1997,7 +1910,8 @@ class CoreController {
       location: command.location,
       notes: command.notes,
       startsAt: parseRequiredDate(command.startsAt),
-      endsAt: parseOptionalDate(command.endsAt)
+      endsAt: parseOptionalDate(command.endsAt),
+      status: command.status
     });
     await this.audit.record({
       businessId,
@@ -2051,15 +1965,15 @@ class CoreController {
   @Get("businesses/:businessId/home-visits")
   async listHomeVisits(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string) {
     await this.requireBusinessAccess(headers, businessId);
-    const homeVisits = await this.appointments.listByBusiness(businessId);
-    return { homeVisits: homeVisits.map((appointment) => this.publicHomeVisit(appointment)) };
+    const homeVisits = await this.homeVisits.listByBusiness(businessId);
+    return { homeVisits: homeVisits.map((homeVisit) => this.publicHomeVisit(homeVisit)) };
   }
 
   @Post("businesses/:businessId/home-visits")
   async createHomeVisit(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Body() body: unknown) {
     const user = await this.requireBusinessAccess(headers, businessId);
     const command = CreateHomeVisitSchema.parse(body);
-    const appointment = await this.appointments.create({
+    const homeVisit = await this.homeVisits.create({
       businessId,
       customerId: command.customerId,
       title: command.title,
@@ -2067,7 +1981,7 @@ class CoreController {
       notes: command.notes,
       startsAt: parseRequiredDate(command.startsAt),
       endsAt: parseOptionalDate(command.endsAt) ?? new Date(parseRequiredDate(command.startsAt).getTime() + 30 * 60 * 1000),
-      status: command.status === "DONE" ? "COMPLETED" : command.status === "OPEN" ? "SCHEDULED" : undefined
+      status: command.status
     });
     await this.audit.record({
       businessId,
@@ -2075,11 +1989,11 @@ class CoreController {
       actorId: user.id,
       source: "core",
       entityType: "home_visit",
-      entityId: appointment.id,
+      entityId: homeVisit.id,
       action: "CREATE_HOME_VISIT",
-      after: appointment as Prisma.InputJsonValue
+      after: homeVisit as Prisma.InputJsonValue
     });
-    return { homeVisit: this.publicHomeVisit(appointment) };
+    return { homeVisit: this.publicHomeVisit(homeVisit) };
   }
 
   @Patch("businesses/:businessId/home-visits/:homeVisitId")
@@ -2091,18 +2005,18 @@ class CoreController {
   ) {
     const user = await this.requireBusinessAccess(headers, businessId);
     const command = UpdateHomeVisitSchema.parse(body);
-    const appointment = await this.appointments.update({
+    const homeVisit = await this.homeVisits.update({
       businessId,
-      appointmentId: homeVisitId,
+      homeVisitId,
       customerId: command.customerId,
       title: command.title,
       location: command.location,
       notes: command.notes,
       startsAt: command.startsAt ? parseRequiredDate(command.startsAt) : undefined,
       endsAt: parseOptionalDate(command.endsAt),
-      status: command.status === "DONE" ? "COMPLETED" : command.status === "OPEN" ? "SCHEDULED" : undefined
+      status: command.status
     });
-    if (!appointment) {
+    if (!homeVisit) {
       throw new NotFoundException("Home visit not found");
     }
     await this.audit.record({
@@ -2111,22 +2025,18 @@ class CoreController {
       actorId: user.id,
       source: "core",
       entityType: "home_visit",
-      entityId: appointment.id,
+      entityId: homeVisit.id,
       action: "UPDATE_HOME_VISIT",
-      after: appointment as Prisma.InputJsonValue
+      after: homeVisit as Prisma.InputJsonValue
     });
-    return { homeVisit: this.publicHomeVisit(appointment) };
+    return { homeVisit: this.publicHomeVisit(homeVisit) };
   }
 
   @Post("businesses/:businessId/home-visits/:homeVisitId/complete")
   async completeHomeVisit(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Param("homeVisitId") homeVisitId: string) {
     const user = await this.requireBusinessAccess(headers, businessId);
-    const appointment = await this.appointments.update({
-      businessId,
-      appointmentId: homeVisitId,
-      status: "COMPLETED"
-    });
-    if (!appointment) {
+    const homeVisit = await this.homeVisits.complete(businessId, homeVisitId);
+    if (!homeVisit) {
       throw new NotFoundException("Home visit not found");
     }
     await this.audit.record({
@@ -2135,18 +2045,18 @@ class CoreController {
       actorId: user.id,
       source: "core",
       entityType: "home_visit",
-      entityId: appointment.id,
+      entityId: homeVisit.id,
       action: "COMPLETE_HOME_VISIT",
-      after: appointment as Prisma.InputJsonValue
+      after: homeVisit as Prisma.InputJsonValue
     });
-    return { homeVisit: this.publicHomeVisit(appointment) };
+    return { homeVisit: this.publicHomeVisit(homeVisit) };
   }
 
   @Delete("businesses/:businessId/home-visits/:homeVisitId")
   async deleteHomeVisit(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Param("homeVisitId") homeVisitId: string) {
     const user = await this.requireBusinessAccess(headers, businessId);
-    const appointment = await this.appointments.softDelete(businessId, homeVisitId);
-    if (!appointment) {
+    const homeVisit = await this.homeVisits.softDelete(businessId, homeVisitId);
+    if (!homeVisit) {
       throw new NotFoundException("Home visit not found");
     }
     await this.audit.record({
@@ -2155,11 +2065,11 @@ class CoreController {
       actorId: user.id,
       source: "core",
       entityType: "home_visit",
-      entityId: appointment.id,
+      entityId: homeVisit.id,
       action: "DELETE_HOME_VISIT",
-      after: appointment as Prisma.InputJsonValue
+      after: homeVisit as Prisma.InputJsonValue
     });
-    return { homeVisit: this.publicHomeVisit(appointment) };
+    return { homeVisit: this.publicHomeVisit(homeVisit) };
   }
 
   @Get("businesses/:businessId/quotes")
@@ -2301,7 +2211,7 @@ class CoreController {
     const appointment = await this.appointments.update({
       businessId,
       appointmentId,
-      status: "COMPLETED"
+      status: "DONE"
     });
     if (!appointment) {
       throw new NotFoundException("Appointment not found");
@@ -2317,69 +2227,6 @@ class CoreController {
       after: appointment as Prisma.InputJsonValue
     });
     return { appointment };
-  }
-
-  @Get("businesses/:businessId/jobs")
-  async listJobs(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string) {
-    await this.requireBusinessAccess(headers, businessId);
-    return { jobs: await this.jobs.listByBusiness(businessId) };
-  }
-
-  @Post("businesses/:businessId/jobs")
-  async createJob(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Body() body: unknown) {
-    const user = await this.requireBusinessAccess(headers, businessId);
-    const command = CreateJobSchema.parse(body);
-    const job = await this.jobs.create({
-      businessId,
-      customerId: command.customerId,
-      title: command.title,
-      description: command.description,
-      status: command.status
-    });
-    await this.audit.record({
-      businessId,
-      actorType: "user",
-      actorId: user.id,
-      source: "core",
-      entityType: "job",
-      entityId: job.id,
-      action: "CREATE_JOB",
-      after: job as Prisma.InputJsonValue
-    });
-    return { job };
-  }
-
-  @Patch("businesses/:businessId/jobs/:jobId")
-  async updateJob(
-    @Headers() headers: RequestHeaders,
-    @Param("businessId") businessId: string,
-    @Param("jobId") jobId: string,
-    @Body() body: unknown
-  ) {
-    const user = await this.requireBusinessAccess(headers, businessId);
-    const command = UpdateJobSchema.parse(body);
-    const job = await this.jobs.update({
-      businessId,
-      jobId,
-      customerId: command.customerId,
-      title: command.title,
-      description: command.description,
-      status: command.status
-    });
-    if (!job) {
-      throw new NotFoundException("Job not found");
-    }
-    await this.audit.record({
-      businessId,
-      actorType: "user",
-      actorId: user.id,
-      source: "core",
-      entityType: "job",
-      entityId: job.id,
-      action: "UPDATE_JOB",
-      after: job as Prisma.InputJsonValue
-    });
-    return { job };
   }
 
   @Get("businesses/:businessId/notifications")
@@ -2505,15 +2352,15 @@ class CoreController {
     }
     const settings = await this.settings.getByBusiness(businessId);
     const dueAt = snoozeDueAt(command.preset, settings.timezone);
-    const itemType = notification.itemType ?? (notification.taskId ? "callback" : null);
-    const itemId = notification.itemId ?? notification.taskId;
+    const itemType = notification.itemType ?? (notification.reminderId ? "reminder" : null);
+    const itemId = notification.itemId ?? notification.reminderId;
     if (!itemType || !itemId) {
       throw new BadRequestException("Notification is not linked to a snoozable item");
     }
 
     let item: unknown;
-    if (itemType === "callback") {
-      item = await this.tasks.snooze(businessId, itemId, dueAt);
+    if (itemType === "reminder") {
+      item = await this.reminders.snooze(businessId, itemId, dueAt);
     } else if (itemType === "quote") {
       item = await this.quotes.snooze(businessId, itemId, dueAt);
     } else {
@@ -2695,7 +2542,7 @@ class CoreController {
     return { auditEvents: await this.audit.listByBusiness(businessId) };
   }
 
-  private publicCallback(task: {
+  private publicReminder(reminder: {
     id: string;
     customerId?: string | null;
     title: string;
@@ -2710,39 +2557,39 @@ class CoreController {
     customer?: { id: string; name: string; phone?: string | null; email?: string | null; address?: string | null } | null;
   }) {
     return {
-      id: task.id,
-      customerId: task.customerId ?? null,
-      title: task.title,
-      description: task.description ?? null,
-      priority: task.priority,
-      dueAt: task.dueAt ?? null,
-      status: callbackStatus(task.status),
-      source: task.source,
-      sourceRef: task.sourceRef ?? null,
-      customer: publicCustomer(task.customer),
-      createdAt: task.createdAt,
-      updatedAt: task.updatedAt
+      id: reminder.id,
+      customerId: reminder.customerId ?? null,
+      title: reminder.title,
+      description: reminder.description ?? null,
+      priority: reminder.priority,
+      dueAt: reminder.dueAt ?? null,
+      status: reminderStatus(reminder.status),
+      source: reminder.source,
+      sourceRef: reminder.sourceRef ?? null,
+      customer: publicCustomer(reminder.customer),
+      createdAt: reminder.createdAt,
+      updatedAt: reminder.updatedAt
     };
   }
 
-  private publicCallbackWorkItem(task: Parameters<CoreController["publicCallback"]>[0]) {
-    const callback = this.publicCallback(task);
+  private publicReminderWorkItem(rawReminder: Parameters<CoreController["publicReminder"]>[0]) {
+    const reminder = this.publicReminder(rawReminder);
     return {
-      id: callback.id,
-      type: "callback",
-      title: callback.title,
-      description: callback.description,
-      customer: callback.customer,
-      dueAt: callback.dueAt ?? callback.createdAt,
-      priority: callback.priority,
-      status: callback.status,
-      source: callback.source,
-      linkedEntity: { type: "callback", id: callback.id },
-      actions: callback.status === "DONE" ? ["open"] : ["call", "complete", "open"]
+      id: reminder.id,
+      type: "reminder",
+      title: reminder.title,
+      description: reminder.description,
+      customer: reminder.customer,
+      dueAt: reminder.dueAt ?? reminder.createdAt,
+      priority: reminder.priority,
+      status: reminder.status,
+      source: reminder.source,
+      linkedEntity: { type: "reminder", id: reminder.id },
+      actions: reminder.status === "DONE" ? ["open"] : ["call", "complete", "open"]
     };
   }
 
-  private publicHomeVisit(appointment: {
+  private publicHomeVisit(homeVisit: {
     id: string;
     customerId?: string | null;
     title: string;
@@ -2756,22 +2603,22 @@ class CoreController {
     customer?: { id: string; name: string; phone?: string | null; email?: string | null; address?: string | null } | null;
   }) {
     return {
-      id: appointment.id,
-      customerId: appointment.customerId ?? null,
-      title: appointment.title,
-      location: appointment.location ?? null,
-      notes: appointment.notes ?? null,
-      startsAt: appointment.startsAt,
-      endsAt: appointment.endsAt ?? null,
-      status: homeVisitStatus(appointment.status),
-      customer: publicCustomer(appointment.customer),
-      createdAt: appointment.createdAt,
-      updatedAt: appointment.updatedAt
+      id: homeVisit.id,
+      customerId: homeVisit.customerId ?? null,
+      title: homeVisit.title,
+      location: homeVisit.location ?? null,
+      notes: homeVisit.notes ?? null,
+      startsAt: homeVisit.startsAt,
+      endsAt: homeVisit.endsAt ?? null,
+      status: homeVisitStatus(homeVisit.status),
+      customer: publicCustomer(homeVisit.customer),
+      createdAt: homeVisit.createdAt,
+      updatedAt: homeVisit.updatedAt
     };
   }
 
-  private publicHomeVisitWorkItem(appointment: Parameters<CoreController["publicHomeVisit"]>[0]) {
-    const homeVisit = this.publicHomeVisit(appointment);
+  private publicHomeVisitWorkItem(rawHomeVisit: Parameters<CoreController["publicHomeVisit"]>[0]) {
+    const homeVisit = this.publicHomeVisit(rawHomeVisit);
     return {
       id: homeVisit.id,
       type: "home_visit",
@@ -2786,6 +2633,25 @@ class CoreController {
       source: "app",
       linkedEntity: { type: "home_visit", id: homeVisit.id },
       actions: homeVisit.status === "DONE" ? ["open"] : ["navigate", "complete", "open"]
+    };
+  }
+
+  private publicAppointmentWorkItem(appointment: Parameters<CoreController["publicHomeVisit"]>[0]) {
+    return {
+      id: appointment.id,
+      type: "appointment",
+      title: appointment.title,
+      description: appointment.notes ?? appointment.location,
+      location: appointment.location ?? null,
+      notes: appointment.notes ?? null,
+      customer: publicCustomer(appointment.customer),
+      startsAt: appointment.startsAt,
+      endsAt: appointment.endsAt ?? null,
+      priority: "NORMAL",
+      status: appointment.status,
+      source: "app",
+      linkedEntity: { type: "appointment", id: appointment.id },
+      actions: appointment.status === "DONE" ? ["open"] : ["complete", "open"]
     };
   }
 
@@ -2843,22 +2709,22 @@ class CoreController {
     payload: Record<string, unknown>;
     idempotencyKey: string;
   }) {
-    if (input.actionType === "CREATE_TASK" || input.actionType === "CREATE_CALLBACK") {
-      const existing = await this.tasks.findByIdempotencyKey(input.businessId, input.idempotencyKey);
+    if (input.actionType === "CREATE_REMINDER" || input.actionType === "CREATE_REMINDER") {
+      const existing = await this.reminders.findByIdempotencyKey(input.businessId, input.idempotencyKey);
       if (existing) {
-        return { type: input.actionType, duplicate: true, task: existing };
+        return { type: input.actionType, duplicate: true, reminder: existing };
       }
       const title = typeof input.payload.title === "string" ? input.payload.title : undefined;
       if (!title) {
-        throw new BadRequestException("Pending action payload is missing task title");
+        throw new BadRequestException("Pending action payload is missing reminder title");
       }
-      const task = await this.tasks.create({
+      const reminder = await this.reminders.create({
         businessId: input.businessId,
         customerId: typeof input.payload.customerId === "string" ? input.payload.customerId : undefined,
         title,
         description: typeof input.payload.description === "string" ? input.payload.description : undefined,
         priority: input.payload.priority === "URGENT" ? "URGENT" : "NORMAL",
-        dueAt: await this.resolveAiTaskDueAt(input.businessId, input.payload),
+        dueAt: await this.resolveAiReminderDueAt(input.businessId, input.payload),
         source: "pending_action",
         sourceRef: input.idempotencyKey,
         idempotencyKey: input.idempotencyKey
@@ -2868,59 +2734,61 @@ class CoreController {
         actorType: "user",
         actorId: input.userId,
         source: "pending_action",
-        entityType: "task",
-        entityId: task.id,
-        action: "CREATE_TASK_FROM_PENDING_ACTION",
-        after: task as Prisma.InputJsonValue
+        entityType: "reminder",
+        entityId: reminder.id,
+        action: "CREATE_REMINDER_FROM_PENDING_ACTION",
+        after: reminder as Prisma.InputJsonValue
       });
-      return { type: input.actionType, duplicate: false, task };
+      return { type: input.actionType, duplicate: false, reminder };
     }
 
-    if (input.actionType === "COMPLETE_TASK" || input.actionType === "COMPLETE_CALLBACK") {
-      const taskId = typeof input.payload.taskId === "string" ? input.payload.taskId
-        : typeof input.payload.callbackId === "string" ? input.payload.callbackId
+    if (input.actionType === "COMPLETE_REMINDER" || input.actionType === "COMPLETE_REMINDER") {
+      const reminderId = typeof input.payload.reminderId === "string" ? input.payload.reminderId
+        : typeof input.payload.reminderId === "string" ? input.payload.reminderId
           : undefined;
-      if (!taskId) {
-        throw new BadRequestException("Action payload is missing callbackId");
+      if (!reminderId) {
+        throw new BadRequestException("Action payload is missing reminderId");
       }
-      const task = await this.tasks.complete(input.businessId, taskId);
-      if (!task) {
-        throw new NotFoundException("Callback not found");
+      const reminder = await this.reminders.complete(input.businessId, reminderId);
+      if (!reminder) {
+        throw new NotFoundException("Reminder not found");
       }
       await this.audit.record({
         businessId: input.businessId,
         actorType: "user",
         actorId: input.userId,
         source: "structured_action",
-        entityType: "callback",
-        entityId: task.id,
-        action: "COMPLETE_CALLBACK_FROM_ACTION",
-        after: task as Prisma.InputJsonValue
+        entityType: "reminder",
+        entityId: reminder.id,
+        action: "COMPLETE_REMINDER_FROM_ACTION",
+        after: reminder as Prisma.InputJsonValue
       });
-      return { type: input.actionType, task };
+      return { type: input.actionType, reminder };
     }
 
-    if (input.actionType === "UPDATE_TASK" || input.actionType === "UPDATE_CALLBACK") {
-      const taskId = typeof input.payload.taskId === "string" ? input.payload.taskId
-        : typeof input.payload.callbackId === "string" ? input.payload.callbackId
+    if (input.actionType === "UPDATE_REMINDER" || input.actionType === "UPDATE_REMINDER") {
+      const reminderId = typeof input.payload.reminderId === "string" ? input.payload.reminderId
+        : typeof input.payload.reminderId === "string" ? input.payload.reminderId
           : undefined;
-      if (!taskId) {
-        throw new BadRequestException("Action payload is missing callbackId");
+      if (!reminderId) {
+        throw new BadRequestException("Action payload is missing reminderId");
       }
-      const task = await this.tasks.update({
+      const reminder = await this.reminders.update({
         businessId: input.businessId,
-        taskId,
+        reminderId,
         customerId: typeof input.payload.customerId === "string" ? input.payload.customerId : undefined,
         title: typeof input.payload.title === "string" ? input.payload.title : undefined,
         description: typeof input.payload.description === "string" ? input.payload.description : undefined,
         priority: input.payload.priority === "URGENT" ? "URGENT" : input.payload.priority === "NORMAL" ? "NORMAL" : undefined,
-        dueAt: typeof input.payload.dueAt === "string" ? await this.resolveAiTaskDueAt(input.businessId, input.payload) : undefined,
-        status: input.payload.status === "DONE" || input.payload.status === "COMPLETED" ? "COMPLETED" : undefined
+        dueAt: typeof input.payload.dueAt === "string" ? await this.resolveAiReminderDueAt(input.businessId, input.payload) : undefined,
+        status: input.payload.status === "DONE" || input.payload.status === "OPEN" || input.payload.status === "CANCELLED"
+          ? input.payload.status
+          : undefined
       });
-      if (!task) {
-        throw new NotFoundException("Callback not found");
+      if (!reminder) {
+        throw new NotFoundException("Reminder not found");
       }
-      return { type: input.actionType, task };
+      return { type: input.actionType, reminder };
     }
 
     if (input.actionType === "CREATE_CUSTOMER") {
@@ -2967,41 +2835,14 @@ class CoreController {
       return { type: input.actionType, customer };
     }
 
-    if (input.actionType === "CREATE_JOB") {
-      const customerId = typeof input.payload.customerId === "string" ? input.payload.customerId : undefined;
-      const title = typeof input.payload.title === "string" ? input.payload.title : undefined;
-      if (!customerId || !title) {
-        throw new BadRequestException("Pending action payload is missing job customerId or title");
-      }
-      const job = await this.jobs.create({
-        businessId: input.businessId,
-        customerId,
-        title,
-        description: typeof input.payload.description === "string" ? input.payload.description : undefined,
-        status: typeof input.payload.status === "string" ? input.payload.status : undefined
-      });
-      await this.audit.record({
-        businessId: input.businessId,
-        actorType: "user",
-        actorId: input.userId,
-        source: "pending_action",
-        entityType: "job",
-        entityId: job.id,
-        action: "CREATE_JOB_FROM_PENDING_ACTION",
-        after: job as Prisma.InputJsonValue
-      });
-      return { type: input.actionType, job };
-    }
-
     if (input.actionType === "CREATE_APPOINTMENT" || input.actionType === "CREATE_HOME_VISIT") {
       const title = typeof input.payload.title === "string" ? input.payload.title : undefined;
-      const startsAt = typeof input.payload.startsAt === "string" ? input.payload.startsAt
-        : typeof input.payload.dueAt === "string" ? input.payload.dueAt
-          : undefined;
+      const startsAt = typeof input.payload.startsAt === "string" ? input.payload.startsAt : undefined;
       if (!title || !startsAt) {
-        throw new BadRequestException("Pending action payload is missing appointment title or startsAt");
+        throw new BadRequestException("Pending action payload is missing title or startsAt");
       }
-      const appointment = await this.appointments.create({
+      const repository = input.actionType === "CREATE_HOME_VISIT" ? this.homeVisits : this.appointments;
+      const result = await repository.create({
         businessId: input.businessId,
         customerId: typeof input.payload.customerId === "string" ? input.payload.customerId : undefined,
         title,
@@ -3010,41 +2851,62 @@ class CoreController {
         startsAt: parseRequiredDate(startsAt),
         endsAt: typeof input.payload.endsAt === "string" ? parseRequiredDate(input.payload.endsAt) : undefined
       });
+      const entityType = input.actionType === "CREATE_HOME_VISIT" ? "home_visit" : "appointment";
       await this.audit.record({
         businessId: input.businessId,
         actorType: "user",
         actorId: input.userId,
         source: "pending_action",
-        entityType: "appointment",
-        entityId: appointment.id,
-        action: "CREATE_APPOINTMENT_FROM_PENDING_ACTION",
-        after: appointment as Prisma.InputJsonValue
+        entityType,
+        entityId: result.id,
+        action: `${input.actionType}_FROM_PENDING_ACTION`,
+        after: result as Prisma.InputJsonValue
       });
-      return { type: input.actionType, appointment };
+      return input.actionType === "CREATE_HOME_VISIT"
+        ? { type: input.actionType, homeVisit: result }
+        : { type: input.actionType, appointment: result };
     }
 
     if (input.actionType === "UPDATE_APPOINTMENT" || input.actionType === "UPDATE_HOME_VISIT") {
-      const appointmentId = typeof input.payload.appointmentId === "string" ? input.payload.appointmentId
-        : typeof input.payload.homeVisitId === "string" ? input.payload.homeVisitId
-          : undefined;
-      if (!appointmentId) {
-        throw new BadRequestException("Action payload is missing homeVisitId");
+      const entityId = input.actionType === "UPDATE_HOME_VISIT"
+        ? typeof input.payload.homeVisitId === "string" ? input.payload.homeVisitId : undefined
+        : typeof input.payload.appointmentId === "string" ? input.payload.appointmentId : undefined;
+      if (!entityId) {
+        throw new BadRequestException(input.actionType === "UPDATE_HOME_VISIT"
+          ? "Action payload is missing homeVisitId"
+          : "Action payload is missing appointmentId");
       }
-      const appointment = await this.appointments.update({
+      const status = input.payload.status === "DONE" || input.payload.status === "OPEN" || input.payload.status === "CANCELLED"
+        ? input.payload.status
+        : undefined;
+      const commonUpdate: {
+        businessId: string;
+        customerId?: string;
+        title?: string;
+        location?: string;
+        notes?: string;
+        startsAt?: Date;
+        endsAt?: Date;
+        status?: "OPEN" | "DONE" | "CANCELLED";
+      } = {
         businessId: input.businessId,
-        appointmentId,
         customerId: typeof input.payload.customerId === "string" ? input.payload.customerId : undefined,
         title: typeof input.payload.title === "string" ? input.payload.title : undefined,
         location: typeof input.payload.location === "string" ? input.payload.location : undefined,
         notes: typeof input.payload.notes === "string" ? input.payload.notes : undefined,
         startsAt: typeof input.payload.startsAt === "string" ? parseRequiredDate(input.payload.startsAt) : undefined,
         endsAt: typeof input.payload.endsAt === "string" ? parseRequiredDate(input.payload.endsAt) : undefined,
-        status: input.payload.status === "DONE" || input.payload.status === "COMPLETED" ? "COMPLETED" : undefined
-      });
-      if (!appointment) {
-        throw new NotFoundException("Home visit not found");
+        status
+      };
+      const result = input.actionType === "UPDATE_HOME_VISIT"
+        ? await this.homeVisits.update({ ...commonUpdate, homeVisitId: entityId })
+        : await this.appointments.update({ ...commonUpdate, appointmentId: entityId });
+      if (!result) {
+        throw new NotFoundException(input.actionType === "UPDATE_HOME_VISIT" ? "Home visit not found" : "Appointment not found");
       }
-      return { type: input.actionType, appointment };
+      return input.actionType === "UPDATE_HOME_VISIT"
+        ? { type: input.actionType, homeVisit: result }
+        : { type: input.actionType, appointment: result };
     }
 
     if (input.actionType === "CREATE_QUOTE") {
@@ -3064,7 +2926,7 @@ class CoreController {
         estimatedAmount: typeof input.payload.estimatedAmount === "string" || typeof input.payload.estimatedAmount === "number"
           ? new Prisma.Decimal(input.payload.estimatedAmount)
           : undefined,
-        dueAt: await this.resolveAiTaskDueAt(input.businessId, input.payload),
+        dueAt: await this.resolveAiReminderDueAt(input.businessId, input.payload),
         source: "structured_action",
         sourceRef: input.idempotencyKey,
         idempotencyKey: input.idempotencyKey
@@ -3108,7 +2970,7 @@ class CoreController {
         estimatedAmount: typeof input.payload.estimatedAmount === "string" || typeof input.payload.estimatedAmount === "number"
           ? new Prisma.Decimal(input.payload.estimatedAmount)
           : undefined,
-        dueAt: typeof input.payload.dueAt === "string" ? await this.resolveAiTaskDueAt(input.businessId, input.payload) : undefined,
+        dueAt: typeof input.payload.dueAt === "string" ? await this.resolveAiReminderDueAt(input.businessId, input.payload) : undefined,
         status: input.payload.status === "PAID" ? "PAID" : input.payload.status === "OPEN" ? "OPEN" : undefined
       });
       if (!quote) {
@@ -3135,14 +2997,14 @@ class CoreController {
       return { type: input.actionType, merge };
     }
 
-    if (input.actionType === "DELETE_TREATMENT_ITEM") {
+    if (input.actionType === "DELETE_WORK_ITEM") {
       const itemType = typeof input.payload.itemType === "string" ? input.payload.itemType : undefined;
       const itemId = typeof input.payload.itemId === "string" ? input.payload.itemId : undefined;
       if (!itemType || !itemId) {
         throw new BadRequestException("Action payload is missing itemType or itemId");
       }
-      if (itemType === "callback") {
-        return { type: input.actionType, item: await this.tasks.softDelete(input.businessId, itemId) };
+      if (itemType === "reminder") {
+        return { type: input.actionType, item: await this.reminders.softDelete(input.businessId, itemId) };
       }
       if (itemType === "home_visit") {
         return { type: input.actionType, item: await this.appointments.softDelete(input.businessId, itemId) };
@@ -3153,13 +3015,13 @@ class CoreController {
       throw new BadRequestException("Unsupported treatment item type");
     }
 
-    if (input.actionType === "ADD_CUSTOMER_NOTE") {
+    if (input.actionType === "CREATE_NOTE") {
       const customerId = typeof input.payload.customerId === "string" ? input.payload.customerId : undefined;
       const text = typeof input.payload.text === "string" ? input.payload.text : undefined;
       if (!customerId || !text) {
         throw new BadRequestException("Pending action payload is missing note customerId or text");
       }
-      const note = await this.customerNotes.create({
+      const note = await this.notes.create({
         businessId: input.businessId,
         customerId,
         text
@@ -3409,7 +3271,7 @@ class CoreController {
   }
 
   private voiceResultEntity(result: Record<string, unknown>) {
-    for (const value of [result.customer, result.task, result.appointment, result.quote, result.note, result.job, result.item]) {
+    for (const value of [result.customer, result.reminder, result.homeVisit, result.appointment, result.quote, result.note, result.item]) {
       const record = this.asRecord(value);
       if (Object.keys(record).length > 0) return record;
     }
@@ -3421,7 +3283,7 @@ class CoreController {
     if (actionType.includes("HOME_VISIT") || actionType.includes("APPOINTMENT")) return "home_visit";
     if (actionType.includes("QUOTE")) return "quote";
     if (actionType.includes("NOTE")) return "note";
-    if (actionType.includes("TASK") || actionType.includes("CALLBACK")) return "callback";
+    if (actionType.includes("TASK") || actionType.includes("CALLBACK")) return "reminder";
     return "action";
   }
 
@@ -3429,7 +3291,7 @@ class CoreController {
     const prefix = status === "pending" ? "" : status === "completed" ? "הושלם: " : "";
     if (status === "pending") {
       if (actionType === "CREATE_CUSTOMER") return "לקוח חדש";
-      if (actionType === "CREATE_TASK" || actionType === "CREATE_CALLBACK") return "תזכורת חדשה";
+      if (actionType === "CREATE_REMINDER" || actionType === "CREATE_REMINDER") return "תזכורת חדשה";
       if (actionType === "CREATE_HOME_VISIT" || actionType === "CREATE_APPOINTMENT") return "ביקור בית חדש";
       if (actionType === "CREATE_QUOTE") return "הצעת מחיר חדשה";
     }
@@ -3488,10 +3350,9 @@ class CoreController {
     const labels: Record<string, string> = {
       customerId: "לקוח",
       customerName: "לקוח",
-      taskId: "תזכורת",
-      callbackId: "תזכורת",
-      appointmentId: "ביקור",
-      homeVisitId: "ביקור",
+      reminderId: "תזכורת",
+      appointmentId: "פגישה",
+      homeVisitId: "ביקור בית",
       quoteId: "הצעת מחיר",
       title: "נושא",
       text: "תוכן",
@@ -3508,7 +3369,7 @@ class CoreController {
   private fieldKeyFromHebrewLabel(label: string) {
     const labels: Record<string, string> = {
       לקוח: "customerId",
-      תזכורת: "taskId",
+      תזכורת: "reminderId",
       ביקור: "homeVisitId",
       "הצעת מחיר": "quoteId",
       נושא: "title",
@@ -3674,7 +3535,7 @@ class CoreController {
       }
     }
 
-    if ((actionType === "CREATE_TASK" || actionType === "CREATE_CALLBACK") &&
+    if ((actionType === "CREATE_REMINDER" || actionType === "CREATE_REMINDER") &&
       typeof normalized.title !== "string" &&
       typeof normalized.text === "string") {
       normalized.title = normalized.text;
@@ -3689,7 +3550,7 @@ class CoreController {
       }
     }
 
-    if (actionType === "ADD_CUSTOMER_NOTE" &&
+    if (actionType === "CREATE_NOTE" &&
       typeof normalized.text !== "string" &&
       typeof normalized.description === "string") {
       normalized.text = normalized.description;
@@ -3713,10 +3574,10 @@ class CoreController {
       }
     }
 
-    if (this.voiceActionNeedsTask(input.actionType, payload)) {
-      const task = await this.resolveVoiceTask(input.businessId, payload, input.transcript);
-      if (task) {
-        payload = { ...payload, taskId: task.id, callbackId: task.id };
+    if (this.voiceActionNeedsReminder(input.actionType, payload)) {
+      const reminder = await this.resolveVoiceReminder(input.businessId, payload, input.transcript);
+      if (reminder) {
+        payload = { ...payload, reminderId: reminder.id };
       }
     }
 
@@ -3728,21 +3589,21 @@ class CoreController {
       return false;
     }
     return actionType === "UPDATE_CUSTOMER" ||
-      actionType === "ADD_CUSTOMER_NOTE" ||
-      actionType === "CREATE_TASK" ||
-      actionType === "CREATE_CALLBACK" ||
+      actionType === "CREATE_NOTE" ||
+      actionType === "CREATE_REMINDER" ||
+      actionType === "CREATE_REMINDER" ||
       actionType === "CREATE_HOME_VISIT" ||
       actionType === "CREATE_APPOINTMENT" ||
       actionType === "CREATE_QUOTE" ||
-      actionType === "COMPLETE_TASK" ||
-      actionType === "COMPLETE_CALLBACK";
+      actionType === "COMPLETE_REMINDER" ||
+      actionType === "COMPLETE_REMINDER";
   }
 
-  private voiceActionNeedsTask(actionType: string, payload: Record<string, unknown>) {
-    if (typeof payload.taskId === "string" || typeof payload.callbackId === "string") {
+  private voiceActionNeedsReminder(actionType: string, payload: Record<string, unknown>) {
+    if (typeof payload.reminderId === "string" || typeof payload.reminderId === "string") {
       return false;
     }
-    return actionType === "COMPLETE_TASK" || actionType === "COMPLETE_CALLBACK";
+    return actionType === "COMPLETE_REMINDER" || actionType === "COMPLETE_REMINDER";
   }
 
   private async resolveVoiceCustomer(businessId: string, payload: Record<string, unknown>) {
@@ -3786,13 +3647,13 @@ class CoreController {
     return customers.length === 1 ? customers[0] : null;
   }
 
-  private async resolveVoiceTask(businessId: string, payload: Record<string, unknown>, transcript: string) {
+  private async resolveVoiceReminder(businessId: string, payload: Record<string, unknown>, transcript: string) {
     const customerId = typeof payload.customerId === "string" ? payload.customerId : undefined;
     const title = this.normalizedVoiceText(payload.title);
     const text = this.normalizedVoiceText(payload.text);
     const lookupText = this.normalizedVoiceText([title, text, transcript].filter(Boolean).join(" "));
 
-    const tasks = await this.prisma.task.findMany({
+    const reminders = await this.prisma.reminder.findMany({
       where: {
         businessId,
         deletedAt: null,
@@ -3804,17 +3665,17 @@ class CoreController {
       take: 20
     });
 
-    if (tasks.length === 1) {
-      return tasks[0];
+    if (reminders.length === 1) {
+      return reminders[0];
     }
 
-    const matchingTasks = tasks.filter((task) => {
-      const normalizedTitle = this.normalizedVoiceText(task.title);
+    const matchingReminders = reminders.filter((reminder) => {
+      const normalizedTitle = this.normalizedVoiceText(reminder.title);
       const haystack = this.normalizedVoiceText([
-        task.title,
-        task.description,
-        task.customer?.name,
-        task.customer?.phone
+        reminder.title,
+        reminder.description,
+        reminder.customer?.name,
+        reminder.customer?.phone
       ].filter(Boolean).join(" "));
       return Boolean(lookupText && haystack && (
         lookupText.includes(haystack) ||
@@ -3823,7 +3684,7 @@ class CoreController {
       ));
     });
 
-    return matchingTasks.length === 1 ? matchingTasks[0] : null;
+    return matchingReminders.length === 1 ? matchingReminders[0] : null;
   }
 
   private normalizedVoiceText(value: unknown) {
@@ -3892,10 +3753,10 @@ class CoreController {
   }
 
   private voiceActionUsesDueAt(actionType: string) {
-    return actionType === "CREATE_TASK" ||
-      actionType === "CREATE_CALLBACK" ||
-      actionType === "UPDATE_TASK" ||
-      actionType === "UPDATE_CALLBACK" ||
+    return actionType === "CREATE_REMINDER" ||
+      actionType === "CREATE_REMINDER" ||
+      actionType === "UPDATE_REMINDER" ||
+      actionType === "UPDATE_REMINDER" ||
       actionType === "CREATE_QUOTE" ||
       actionType === "UPDATE_QUOTE";
   }
@@ -3920,28 +3781,28 @@ class CoreController {
 
   private isOptionalVoiceField(actionType: string, field: string) {
     if (field === "dueAt") {
-      return actionType === "CREATE_TASK" || actionType === "CREATE_CALLBACK";
+      return actionType === "CREATE_REMINDER" || actionType === "CREATE_REMINDER";
     }
 
     if (field === "phone") {
       return actionType === "CREATE_CUSTOMER" ||
-        actionType === "CREATE_TASK" ||
-        actionType === "CREATE_CALLBACK";
+        actionType === "CREATE_REMINDER" ||
+        actionType === "CREATE_REMINDER";
     }
 
     return false;
   }
 
-  private async resolveAiTaskDueAt(businessId: string, payload: Record<string, unknown>) {
+  private async resolveAiReminderDueAt(businessId: string, payload: Record<string, unknown>) {
     const settings = await this.settings.getByBusiness(businessId);
     if (typeof payload.dueAt === "string") {
       return parseAiDueAt(payload.dueAt, settings.timezone);
     }
 
-    return defaultAiTaskDueAt(settings.timezone);
+    return defaultAiReminderDueAt(settings.timezone);
   }
 
-  private async executeCallbackTask(command: {
+  private async executeReminderFromCall(command: {
     businessId: string;
     incomingCallId?: string;
     callerPhone?: string;
@@ -3951,18 +3812,18 @@ class CoreController {
     sourceCallId: string;
     idempotencyKey: string;
   }) {
-    const existing = await this.tasks.findByIdempotencyKey(command.businessId, command.idempotencyKey);
+    const existing = await this.reminders.findByIdempotencyKey(command.businessId, command.idempotencyKey);
     if (existing) {
-      return { duplicate: true, task: existing };
+      return { duplicate: true, reminder: existing };
     }
 
     const urgentPrefix = command.priority === "URGENT" ? "[URGENT] " : "";
-    const task = await this.tasks.create({
+    const reminder = await this.reminders.create({
       businessId: command.businessId,
       title: `${urgentPrefix}לחזור ללקוח`,
-      description: buildCallbackTaskDescription(command.callerPhone, command.transcript),
+      description: buildReminderFromCallDescription(command.callerPhone, command.transcript),
       priority: command.priority,
-      dueAt: await this.resolveAiTaskDueAt(command.businessId, {}),
+      dueAt: await this.resolveAiReminderDueAt(command.businessId, {}),
       source: "telephony",
       sourceRef: command.sourceCallId,
       idempotencyKey: command.idempotencyKey
@@ -3970,11 +3831,11 @@ class CoreController {
 
     const notification = await this.notifications.create({
       businessId: command.businessId,
-      taskId: task.id,
-      itemType: "callback",
-      itemId: task.id,
+      reminderId: reminder.id,
+      itemType: "reminder",
+      itemId: reminder.id,
       title: command.priority === "URGENT" ? "הודעת לקוח דחופה" : "בקשת חזרה ללקוח",
-      body: buildCallbackNotificationBody(command.callerPhone, command.transcript),
+      body: buildReminderNotificationBody(command.callerPhone, command.transcript),
       payload: {
         source: "telephony",
         sourceCallId: command.sourceCallId,
@@ -3990,10 +3851,10 @@ class CoreController {
       businessId: command.businessId,
       actorType: "system",
       source: "telephony",
-      entityType: "task",
-      entityId: task.id,
-      action: "CREATE_CALLBACK_TASK",
-      after: task as Prisma.InputJsonValue
+      entityType: "reminder",
+      entityId: reminder.id,
+      action: "CREATE_REMINDER_TASK",
+      after: reminder as Prisma.InputJsonValue
     });
     await this.audit.record({
       businessId: command.businessId,
@@ -4001,14 +3862,14 @@ class CoreController {
       source: "telephony",
       entityType: "notification",
       entityId: notification.id,
-      action: "CREATE_CALLBACK_NOTIFICATION",
+      action: "CREATE_REMINDER_NOTIFICATION",
       after: notification as Prisma.InputJsonValue,
       result: notificationDelivery.status
     });
 
-    log("info", "callback task created", { businessId: command.businessId, taskId: task.id });
+    log("info", "reminder from call created", { businessId: command.businessId, reminderId: reminder.id });
 
-    return { duplicate: false, task, notification: notificationDelivery.notification, notificationDelivery };
+    return { duplicate: false, reminder, notification: notificationDelivery.notification, notificationDelivery };
   }
 
   private async sendNotification(notification: {
@@ -4172,11 +4033,11 @@ class CoreController {
     IncomingCallsRepository,
     CallTranscriptsRepository,
     CustomersRepository,
-    TasksRepository,
-    CustomerNotesRepository,
+    RemindersRepository,
+    NotesRepository,
     AppointmentsRepository,
+    HomeVisitsRepository,
     QuotesRepository,
-    JobsRepository,
     NotificationsRepository,
     DeviceTokensRepository,
     OwnerVoiceCommandsRepository,
