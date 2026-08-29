@@ -4,6 +4,9 @@ import type { CoreService } from "./main.js";
 import { CoreCustomersService } from "./core-customers.service.js";
 import { CoreWorkItemsService } from "./core-work-items.service.js";
 import { CoreNotificationsApplicationService } from "./core-notifications-application.service.js";
+import { CoreAiPendingActionsApplicationService } from "./core-ai-pending-actions-application.service.js";
+import { CoreBusinessApplicationService } from "./core-business-application.service.js";
+import { CoreVoiceCommandsApplicationService } from "./core-voice-commands-application.service.js";
 
 export const CORE_SERVICE = Symbol("CORE_SERVICE");
 
@@ -50,7 +53,7 @@ function defineRoutes<T>(controller: CoreControllerType<T>, routes: RouteDefinit
 
 @Controller()
 export class SystemController {
-  constructor(@Inject(CORE_SERVICE) readonly core: CoreService) {}
+  constructor(@Inject(CoreBusinessApplicationService) readonly core: CoreBusinessApplicationService) {}
 }
 
 defineRoutes(SystemController, [
@@ -82,7 +85,7 @@ defineRoutes(InternalController, [
 
 @Controller()
 export class VoiceCommandsController {
-  constructor(@Inject(CORE_SERVICE) readonly core: CoreService) {}
+  constructor(@Inject(CoreVoiceCommandsApplicationService) readonly core: CoreVoiceCommandsApplicationService) {}
 }
 
 defineRoutes(VoiceCommandsController, [
@@ -157,7 +160,7 @@ defineRoutes(NotificationsController, [
 
 @Controller()
 export class AiActionsController {
-  constructor(@Inject(CORE_SERVICE) readonly core: CoreService) {}
+  constructor(@Inject(CoreAiPendingActionsApplicationService) readonly core: CoreAiPendingActionsApplicationService) {}
 }
 
 defineRoutes(AiActionsController, [
