@@ -1,29 +1,16 @@
 import "reflect-metadata";
 import {
   BadRequestException,
-  Body,
-  Controller,
-  Delete,
-  ForbiddenException,
-  Get,
-  Headers,
+  Injectable,
   HttpException,
   Inject,
   Module,
-  NotFoundException,
-  Param,
-  Patch,
-  Post,
-  Query,
-  UnauthorizedException
+  NotFoundException
 } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { FastifyAdapter, type NestFastifyApplication } from "@nestjs/platform-fastify";
-import { Prisma, type Business, type User } from "@prisma/client";
-import { applicationDefault, getApps, initializeApp } from "firebase-admin/app";
-import { getAuth, type DecodedIdToken } from "firebase-admin/auth";
-import { getMessaging } from "firebase-admin/messaging";
-import { ApiExceptionFilter, cloudRunServiceAuthHeaders, getEnv, getInternalApiSecret, getPort, health, log, stableIdempotencyKey, verifyGoogleOidcToken } from "@myclient/common";
+import { Prisma } from "@prisma/client";
+import { ApiExceptionFilter, cloudRunServiceAuthHeaders, getEnv, getInternalApiSecret, getPort, health, log, stableIdempotencyKey } from "@myclient/common";
 import {
   AiPendingActionListQuerySchema,
   AiActionBatchSchema,
@@ -82,28 +69,10 @@ import {
   RemindersRepository
 } from "./core.repositories.js";
 import { PrismaService } from "./prisma.service.js";
+import { CoreAccessService } from "./core-access.service.js";
+import { CoreNotificationsService } from "./core-notifications.service.js";
 
 type RequestHeaders = Record<string, string | string[] | undefined>;
-
-type AuthenticatedUser = User & {
-  business: Business | null;
-  memberships?: Array<{ businessId: string; memberType: string; status: string; business?: Business }>;
-};
-
-type VerifiedAuth = {
-  firebaseUid: string;
-  email?: string;
-  phoneNumber?: string;
-  displayName?: string;
-};
-
-type NotificationSendInput = {
-  businessId: string;
-  notificationId: string;
-  title: string;
-  body: string;
-  payload?: Prisma.JsonValue | null;
-};
 
 type VoiceCommandExecutionResult = {
   status: string;
@@ -435,60 +404,8 @@ function headerValue(headers: RequestHeaders, name: string): string | undefined 
   return value;
 }
 
-function parseMockFirebaseUid(headers: RequestHeaders): string {
-  const authorization = headerValue(headers, "authorization");
-  const prefix = "Bearer mock:";
-  if (!authorization?.startsWith(prefix)) {
-    throw new UnauthorizedException("Missing or invalid authorization token");
-  }
-
-  const firebaseUid = authorization.slice(prefix.length).trim();
-  if (!firebaseUid) {
-    throw new UnauthorizedException("Missing or invalid authorization token");
-  }
-
-  return firebaseUid;
-}
-
 function authProviderName() {
   return getEnv("AUTH_PROVIDER", "mock");
-}
-
-function firebaseApp() {
-  if (getApps().length === 0) {
-    initializeApp({ credential: applicationDefault() });
-  }
-}
-
-function parseBearerToken(headers: RequestHeaders): string {
-  const authorization = headerValue(headers, "authorization");
-  const prefix = "Bearer ";
-  if (!authorization?.startsWith(prefix)) {
-    throw new UnauthorizedException("Missing or invalid authorization token");
-  }
-
-  const token = authorization.slice(prefix.length).trim();
-  if (!token) {
-    throw new UnauthorizedException("Missing or invalid authorization token");
-  }
-
-  return token;
-}
-
-function parseOptionalBearerToken(headers: RequestHeaders): string | undefined {
-  const authorization = headerValue(headers, "authorization");
-  const prefix = "Bearer ";
-  if (!authorization?.startsWith(prefix)) {
-    return undefined;
-  }
-
-  const token = authorization.slice(prefix.length).trim();
-  return token || undefined;
-}
-
-function displayNameFromToken(decoded: DecodedIdToken): string | undefined {
-  const value = decoded.name ?? decoded.email;
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
 function requireAudioBody(body: unknown): Buffer {
@@ -503,16 +420,6 @@ function requireAudioBody(body: unknown): Buffer {
 
 function notificationProviderName() {
   return getEnv("MOCK_FCM_PROVIDER", "true") === "true" ? "mock-fcm" : "firebase-fcm";
-}
-
-function notificationPayloadData(payload: Prisma.JsonValue | null | undefined, notificationId: string) {
-  const data: Record<string, string> = {
-    notificationId
-  };
-  if (payload !== undefined && payload !== null) {
-    data.payload = JSON.stringify(payload);
-  }
-  return data;
 }
 
 function publicDeviceToken(deviceToken: {
@@ -666,29 +573,12 @@ function callDisplayStatus(call: { selectedDigit?: string | null; transcripts?: 
   return "NO_ACTION";
 }
 
-async function sendFirebaseMulticast(tokens: string[], input: NotificationSendInput) {
-  firebaseApp();
-
-  return getMessaging().sendEachForMulticast({
-    tokens,
-    android: {
-      priority: "high",
-      notification: {
-        channelId: "reminder_reminders"
-      }
-    },
-    notification: {
-      title: input.title,
-      body: input.body
-    },
-    data: notificationPayloadData(input.payload, input.notificationId)
-  });
-}
-
-@Controller()
-class CoreController {
+@Injectable()
+export class CoreService {
   constructor(
     @Inject(AuthRepository) private readonly auth: AuthRepository,
+    @Inject(CoreAccessService) private readonly access: CoreAccessService,
+    @Inject(CoreNotificationsService) private readonly notificationDelivery: CoreNotificationsService,
     @Inject(AuditRepository) private readonly audit: AuditRepository,
     @Inject(BusinessMembersRepository) private readonly members: BusinessMembersRepository,
     @Inject(BusinessSettingsRepository) private readonly settings: BusinessSettingsRepository,
@@ -707,8 +597,6 @@ class CoreController {
     @Inject(AiPendingActionsRepository) private readonly aiPendingActions: AiPendingActionsRepository,
     @Inject(PrismaService) private readonly prisma: PrismaService
   ) {}
-
-  @Get("health")
   health() {
     return health("core", {
       database: "postgresql-prisma",
@@ -716,11 +604,9 @@ class CoreController {
       notifications: notificationProviderName()
     });
   }
-
-  @Post("auth/register-business")
-  async registerBusiness(@Headers() headers: RequestHeaders, @Body() body: unknown) {
+  async registerBusiness(headers: RequestHeaders, body: unknown) {
     const command = RegisterBusinessSchema.parse(body);
-    const verifiedAuth = await this.verifyAuth(headers, {
+    const verifiedAuth = await this.access.verifyAuth(headers, {
       mockFallback: command.firebaseUid
     });
     const email = command.email ?? verifiedAuth.email;
@@ -761,10 +647,8 @@ class CoreController {
       }
     };
   }
-
-  @Get("auth/me")
-  async me(@Headers() headers: RequestHeaders) {
-    const user = await this.requireAuthenticatedUser(headers);
+  async me(headers: RequestHeaders) {
+    const user = await this.access.requireAuthenticatedUser(headers);
     const membership = user.memberships?.[0] ?? null;
     const business = membership?.business ?? user.business;
     return {
@@ -787,16 +671,12 @@ class CoreController {
       onboardingState: business ? "HAS_BUSINESS" : "NEEDS_CHOICE"
     };
   }
-
-  @Get("businesses/:businessId/settings")
-  async getSettings(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string) {
-    await this.requireBusinessAccess(headers, businessId);
+  async getSettings(headers: RequestHeaders, businessId: string) {
+    await this.access.requireBusinessAccess(headers, businessId);
     return { settings: await this.settings.getByBusiness(businessId) };
   }
-
-  @Patch("businesses/:businessId/settings")
-  async updateSettings(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Body() body: unknown) {
-    const user = await this.requireBusinessAccess(headers, businessId);
+  async updateSettings(headers: RequestHeaders, businessId: string, body: unknown) {
+    const user = await this.access.requireBusinessAccess(headers, businessId);
     const command = UpdateBusinessSettingsSchema.parse(body);
     const before = await this.settings.getByBusiness(businessId);
     const settings = await this.settings.update({
@@ -826,16 +706,12 @@ class CoreController {
     });
     return { settings };
   }
-
-  @Get("businesses/:businessId/members")
-  async listMembers(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string) {
-    await this.requireBusinessAccess(headers, businessId);
+  async listMembers(headers: RequestHeaders, businessId: string) {
+    await this.access.requireBusinessAccess(headers, businessId);
     return { members: await this.members.listByBusiness(businessId) };
   }
-
-  @Post("businesses/:businessId/members")
-  async createMember(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Body() body: unknown) {
-    const user = await this.requireBusinessAccess(headers, businessId);
+  async createMember(headers: RequestHeaders, businessId: string, body: unknown) {
+    const user = await this.access.requireBusinessAccess(headers, businessId);
     const command = CreateBusinessMemberSchema.parse(body);
     const member = await this.members.upsertByPhone({
       businessId,
@@ -856,10 +732,8 @@ class CoreController {
     });
     return { member };
   }
-
-  @Post("businesses/:businessId/members/:memberId/disable")
-  async disableMember(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Param("memberId") memberId: string) {
-    const user = await this.requireBusinessAccess(headers, businessId);
+  async disableMember(headers: RequestHeaders, businessId: string, memberId: string) {
+    const user = await this.access.requireBusinessAccess(headers, businessId);
     const member = await this.members.disable({ businessId, memberId });
     if (!member) {
       throw new NotFoundException("Business member not found");
@@ -876,16 +750,12 @@ class CoreController {
     });
     return { member };
   }
-
-  @Get("businesses/:businessId/phone-numbers")
-  async listPhoneNumbers(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string) {
-    await this.requireBusinessAccess(headers, businessId);
+  async listPhoneNumbers(headers: RequestHeaders, businessId: string) {
+    await this.access.requireBusinessAccess(headers, businessId);
     return { phoneNumbers: await this.phoneNumbers.listByBusiness(businessId) };
   }
-
-  @Post("businesses/:businessId/phone-numbers")
-  async createPhoneNumber(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Body() body: unknown) {
-    const user = await this.requireBusinessAccess(headers, businessId);
+  async createPhoneNumber(headers: RequestHeaders, businessId: string, body: unknown) {
+    const user = await this.access.requireBusinessAccess(headers, businessId);
     const command = CreateBusinessPhoneNumberSchema.parse(body);
     const phoneNumber = await this.phoneNumbers.create({
       businessId,
@@ -905,15 +775,13 @@ class CoreController {
     });
     return { phoneNumber };
   }
-
-  @Patch("businesses/:businessId/phone-numbers/:phoneNumberId")
   async updatePhoneNumber(
-    @Headers() headers: RequestHeaders,
-    @Param("businessId") businessId: string,
-    @Param("phoneNumberId") phoneNumberId: string,
-    @Body() body: unknown
+    headers: RequestHeaders,
+    businessId: string,
+    phoneNumberId: string,
+    body: unknown
   ) {
-    const user = await this.requireBusinessAccess(headers, businessId);
+    const user = await this.access.requireBusinessAccess(headers, businessId);
     const command = UpdateBusinessPhoneNumberSchema.parse(body);
     const phoneNumber = await this.phoneNumbers.update({
       businessId,
@@ -936,10 +804,8 @@ class CoreController {
     });
     return { phoneNumber };
   }
-
-  @Post("internal/telephony/incoming")
-  async createIncomingCall(@Headers() headers: RequestHeaders, @Body() body: unknown) {
-    this.requireInternalSecret(headers);
+  async createIncomingCall(headers: RequestHeaders, body: unknown) {
+    this.access.requireInternalSecret(headers);
     const command = CreateIncomingCallSchema.parse(body);
     const phoneNumber = await this.phoneNumbers.findActiveByNumber(command.toNumber);
     const businessId = command.businessId ?? phoneNumber?.businessId;
@@ -1008,10 +874,8 @@ class CoreController {
       finishOnKey: "#"
     };
   }
-
-  @Post("internal/telephony/recording")
-  async createCallTranscript(@Headers() headers: RequestHeaders, @Body() body: unknown) {
-    this.requireInternalSecret(headers);
+  async createCallTranscript(headers: RequestHeaders, body: unknown) {
+    this.access.requireInternalSecret(headers);
     const command = CreateCallTranscriptSchema.parse(body);
     const incomingCall = await this.incomingCalls.findByPlivoCallId(command.plivoCallId);
     if (!incomingCall) {
@@ -1058,17 +922,13 @@ class CoreController {
       reminder: reminderResult
     };
   }
-
-  @Post("internal/reminders/from-call")
-  async createReminderFromCall(@Headers() headers: RequestHeaders, @Body() body: unknown) {
-    this.requireInternalSecret(headers);
+  async createReminderFromCall(headers: RequestHeaders, body: unknown) {
+    this.access.requireInternalSecret(headers);
     const command = CreateReminderFromCallSchema.parse(body);
     return this.executeReminderFromCall(command);
   }
-
-  @Post("internal/reminders/due")
-  async processDueReminders(@Headers() headers: RequestHeaders, @Body() body: unknown) {
-    await this.requireInternalScheduler(headers);
+  async processDueReminders(headers: RequestHeaders, body: unknown) {
+    await this.access.requireInternalScheduler(headers);
     const requestedLimit = Number((body as { limit?: unknown })?.limit ?? 20);
     const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 100)) : 20;
     const dueReminders = await this.reminders.claimDueReminders(limit);
@@ -1091,7 +951,7 @@ class CoreController {
           priority: reminder.priority
         }
       });
-      const notificationDelivery = await this.sendNotification(notification);
+      const notificationDelivery = await this.notificationDelivery.sendNotification(notification);
       await this.audit.record({
         businessId: reminder.businessId,
         actorType: "system",
@@ -1116,15 +976,13 @@ class CoreController {
       reminders: processedReminders
     };
   }
-
-  @Post("owner-actions/execute")
-  async executeOwnerAction(@Headers() headers: RequestHeaders, @Body() body: unknown) {
+  async executeOwnerAction(headers: RequestHeaders, body: unknown) {
     const request = body as { businessId?: string; action?: unknown };
     if (!request.businessId) {
       throw new BadRequestException("businessId is required");
     }
 
-    const user = await this.requireBusinessAccess(headers, request.businessId);
+    const user = await this.access.requireBusinessAccess(headers, request.businessId);
     const action = AiActionSchema.parse(request.action);
     if (action.missingFields.length > 0) {
       const aiPendingAction = await this.aiPendingActions.create({
@@ -1182,18 +1040,14 @@ class CoreController {
       action
     };
   }
-
-  @Get("businesses/:businessId/voice-commands")
-  async listOwnerVoiceCommands(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Query() query: unknown) {
-    await this.requireBusinessAccess(headers, businessId);
+  async listOwnerVoiceCommands(headers: RequestHeaders, businessId: string, query: unknown) {
+    await this.access.requireBusinessAccess(headers, businessId);
     const pagination = paginationFromQuery(query);
     const page = paginatedResponse(await this.ownerVoiceCommands.listByBusiness(businessId, pagination), pagination.limit);
     return { voiceCommands: page.items, pageInfo: page.pageInfo };
   }
-
-  @Post("businesses/:businessId/voice-commands/realtime-session")
-  async createOwnerVoiceRealtimeSession(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string) {
-    await this.requireBusinessAccess(headers, businessId);
+  async createOwnerVoiceRealtimeSession(headers: RequestHeaders, businessId: string) {
+    await this.access.requireBusinessAccess(headers, businessId);
     const apiKey = getEnv("OPENAI_API_KEY", "");
     if (!apiKey) {
       throw new BadRequestException("OpenAI API key is not configured");
@@ -1238,14 +1092,12 @@ class CoreController {
     }
     return { value, expiresAt, model };
   }
-
-  @Post("businesses/:businessId/voice-commands/transcript")
   async createOwnerVoiceCommandFromTranscript(
-    @Headers() headers: RequestHeaders,
-    @Param("businessId") businessId: string,
-    @Body() body: unknown
+    headers: RequestHeaders,
+    businessId: string,
+    body: unknown
   ) {
-    const user = await this.requireBusinessAccess(headers, businessId);
+    const user = await this.access.requireBusinessAccess(headers, businessId);
     const commandHeaders = OwnerVoiceCommandHeadersSchema.parse({
       idempotencyKey: headerValue(headers, "x-idempotency-key"),
       languageCode: headerValue(headers, "x-language-code") ?? "he-IL"
@@ -1368,14 +1220,12 @@ class CoreController {
       };
     }
   }
-
-  @Post("businesses/:businessId/voice-commands/audio")
   async createOwnerVoiceCommandFromAudio(
-    @Headers() headers: RequestHeaders,
-    @Param("businessId") businessId: string,
-    @Body() body: unknown
+    headers: RequestHeaders,
+    businessId: string,
+    body: unknown
   ) {
-    const user = await this.requireBusinessAccess(headers, businessId);
+    const user = await this.access.requireBusinessAccess(headers, businessId);
     const audio = requireAudioBody(body);
     const commandHeaders = OwnerVoiceCommandHeadersSchema.parse({
       idempotencyKey: headerValue(headers, "x-idempotency-key"),
@@ -1501,10 +1351,8 @@ class CoreController {
       };
     }
   }
-
-  @Get("businesses/:businessId/home")
-  async getHome(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Query() query: unknown) {
-    await this.requireBusinessAccess(headers, businessId);
+  async getHome(headers: RequestHeaders, businessId: string, query: unknown) {
+    await this.access.requireBusinessAccess(headers, businessId);
     const command = HomeQuerySchema.parse(query);
     const settings = await this.settings.getByBusiness(businessId);
     const start = startOfLocalDate(command.date, settings.timezone);
@@ -1566,18 +1414,14 @@ class CoreController {
       items
     };
   }
-
-  @Get("businesses/:businessId/reminders")
-  async listReminders(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Query() query: unknown) {
-    await this.requireBusinessAccess(headers, businessId);
+  async listReminders(headers: RequestHeaders, businessId: string, query: unknown) {
+    await this.access.requireBusinessAccess(headers, businessId);
     const pagination = paginationFromQuery(query);
     const page = paginatedResponse(await this.reminders.listRemindersByBusiness(businessId, pagination), pagination.limit);
     return { reminders: page.items.map((reminder) => this.publicReminder(reminder)), pageInfo: page.pageInfo };
   }
-
-  @Post("businesses/:businessId/reminders")
-  async createReminder(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Body() body: unknown) {
-    const user = await this.requireBusinessAccess(headers, businessId);
+  async createReminder(headers: RequestHeaders, businessId: string, body: unknown) {
+    const user = await this.access.requireBusinessAccess(headers, businessId);
     const command = CreateReminderSchema.parse(body);
     const reminder = await this.reminders.create({
       businessId,
@@ -1601,15 +1445,13 @@ class CoreController {
     });
     return { reminder: this.publicReminder(reminder) };
   }
-
-  @Patch("businesses/:businessId/reminders/:reminderId")
   async updateReminder(
-    @Headers() headers: RequestHeaders,
-    @Param("businessId") businessId: string,
-    @Param("reminderId") reminderId: string,
-    @Body() body: unknown
+    headers: RequestHeaders,
+    businessId: string,
+    reminderId: string,
+    body: unknown
   ) {
-    const user = await this.requireBusinessAccess(headers, businessId);
+    const user = await this.access.requireBusinessAccess(headers, businessId);
     const command = UpdateReminderSchema.parse(body);
     const reminder = await this.reminders.update({
       businessId,
@@ -1636,10 +1478,8 @@ class CoreController {
     });
     return { reminder: this.publicReminder(reminder) };
   }
-
-  @Post("businesses/:businessId/reminders/:reminderId/complete")
-  async completeReminder(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Param("reminderId") reminderId: string) {
-    const user = await this.requireBusinessAccess(headers, businessId);
+  async completeReminder(headers: RequestHeaders, businessId: string, reminderId: string) {
+    const user = await this.access.requireBusinessAccess(headers, businessId);
     const reminder = await this.reminders.complete(businessId, reminderId);
     if (!reminder) {
       throw new NotFoundException("Reminder not found");
@@ -1656,10 +1496,8 @@ class CoreController {
     });
     return { reminder: this.publicReminder(reminder) };
   }
-
-  @Delete("businesses/:businessId/reminders/:reminderId")
-  async deleteReminder(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Param("reminderId") reminderId: string) {
-    const user = await this.requireBusinessAccess(headers, businessId);
+  async deleteReminder(headers: RequestHeaders, businessId: string, reminderId: string) {
+    const user = await this.access.requireBusinessAccess(headers, businessId);
     const reminder = await this.reminders.softDelete(businessId, reminderId);
     if (!reminder) {
       throw new NotFoundException("Reminder not found");
@@ -1676,10 +1514,8 @@ class CoreController {
     });
     return { reminder: this.publicReminder(reminder) };
   }
-
-  @Post("businesses/:businessId/customers")
-  async createCustomer(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Body() body: unknown) {
-    const user = await this.requireBusinessAccess(headers, businessId);
+  async createCustomer(headers: RequestHeaders, businessId: string, body: unknown) {
+    const user = await this.access.requireBusinessAccess(headers, businessId);
     const command = CreateCustomerSchema.parse(body);
     const duplicate = await this.customers.findDuplicateByPhone(businessId, command.phone);
     const customer = await this.customers.create({
@@ -1704,18 +1540,14 @@ class CoreController {
     });
     return { customer, duplicateCustomer: duplicate, initialNote };
   }
-
-  @Get("businesses/:businessId/customers")
-  async listCustomers(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Query() query: unknown) {
-    await this.requireBusinessAccess(headers, businessId);
+  async listCustomers(headers: RequestHeaders, businessId: string, query: unknown) {
+    await this.access.requireBusinessAccess(headers, businessId);
     const pagination = paginationFromQuery(query);
     const page = paginatedResponse(await this.customers.listByBusiness(businessId, pagination), pagination.limit);
     return { customers: page.items, pageInfo: page.pageInfo };
   }
-
-  @Get("businesses/:businessId/customers/:customerId")
-  async getCustomer(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Param("customerId") customerId: string) {
-    await this.requireBusinessAccess(headers, businessId);
+  async getCustomer(headers: RequestHeaders, businessId: string, customerId: string) {
+    await this.access.requireBusinessAccess(headers, businessId);
     const customer = await this.customers.findByBusinessAndId(businessId, customerId);
     if (!customer) {
       throw new NotFoundException("Customer not found");
@@ -1748,15 +1580,13 @@ class CoreController {
 
     return { customer, activity };
   }
-
-  @Patch("businesses/:businessId/customers/:customerId")
   async updateCustomer(
-    @Headers() headers: RequestHeaders,
-    @Param("businessId") businessId: string,
-    @Param("customerId") customerId: string,
-    @Body() body: unknown
+    headers: RequestHeaders,
+    businessId: string,
+    customerId: string,
+    body: unknown
   ) {
-    const user = await this.requireBusinessAccess(headers, businessId);
+    const user = await this.access.requireBusinessAccess(headers, businessId);
     const command = UpdateCustomerSchema.parse(body);
     const customer = await this.customers.update({
       businessId,
@@ -1783,14 +1613,12 @@ class CoreController {
     });
     return { customer };
   }
-
-  @Delete("businesses/:businessId/customers/:customerId")
   async deleteCustomer(
-    @Headers() headers: RequestHeaders,
-    @Param("businessId") businessId: string,
-    @Param("customerId") customerId: string
+    headers: RequestHeaders,
+    businessId: string,
+    customerId: string
   ) {
-    const user = await this.requireBusinessAccess(headers, businessId);
+    const user = await this.access.requireBusinessAccess(headers, businessId);
     const deletion = await this.customers.softDelete({ businessId, customerId });
     if (!deletion) {
       throw new NotFoundException("Customer not found");
@@ -1808,15 +1636,13 @@ class CoreController {
     });
     return { customer: deletion.customer, deleted: deletion.deleted };
   }
-
-  @Post("businesses/:businessId/customers/:customerId/merge")
   async mergeCustomer(
-    @Headers() headers: RequestHeaders,
-    @Param("businessId") businessId: string,
-    @Param("customerId") customerId: string,
-    @Body() body: unknown
+    headers: RequestHeaders,
+    businessId: string,
+    customerId: string,
+    body: unknown
   ) {
-    const user = await this.requireBusinessAccess(headers, businessId);
+    const user = await this.access.requireBusinessAccess(headers, businessId);
     const command = MergeCustomerSchema.parse(body);
     const merge = await this.customers.merge({
       businessId,
@@ -1840,15 +1666,13 @@ class CoreController {
     });
     return { merge };
   }
-
-  @Post("businesses/:businessId/customers/:customerId/notes")
   async createNote(
-    @Headers() headers: RequestHeaders,
-    @Param("businessId") businessId: string,
-    @Param("customerId") customerId: string,
-    @Body() body: unknown
+    headers: RequestHeaders,
+    businessId: string,
+    customerId: string,
+    body: unknown
   ) {
-    const user = await this.requireBusinessAccess(headers, businessId);
+    const user = await this.access.requireBusinessAccess(headers, businessId);
     const command = CreateNoteSchema.parse(body);
     const note = await this.notes.create({
       businessId,
@@ -1872,16 +1696,14 @@ class CoreController {
     });
     return { note };
   }
-
-  @Patch("businesses/:businessId/customers/:customerId/notes/:noteId")
   async updateNote(
-    @Headers() headers: RequestHeaders,
-    @Param("businessId") businessId: string,
-    @Param("customerId") customerId: string,
-    @Param("noteId") noteId: string,
-    @Body() body: unknown
+    headers: RequestHeaders,
+    businessId: string,
+    customerId: string,
+    noteId: string,
+    body: unknown
   ) {
-    const user = await this.requireBusinessAccess(headers, businessId);
+    const user = await this.access.requireBusinessAccess(headers, businessId);
     const command = UpdateNoteSchema.parse(body);
     const note = await this.notes.update({
       businessId,
@@ -1907,15 +1729,13 @@ class CoreController {
     });
     return { note };
   }
-
-  @Delete("businesses/:businessId/customers/:customerId/notes/:noteId")
   async deleteNote(
-    @Headers() headers: RequestHeaders,
-    @Param("businessId") businessId: string,
-    @Param("customerId") customerId: string,
-    @Param("noteId") noteId: string
+    headers: RequestHeaders,
+    businessId: string,
+    customerId: string,
+    noteId: string
   ) {
-    const user = await this.requireBusinessAccess(headers, businessId);
+    const user = await this.access.requireBusinessAccess(headers, businessId);
     const note = await this.notes.softDelete(businessId, noteId, customerId);
     if (!note) {
       throw new NotFoundException("Customer note not found");
@@ -1933,10 +1753,8 @@ class CoreController {
     });
     return { note };
   }
-
-  @Get("businesses/:businessId/customers/:customerId/notes")
-  async listNotes(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Param("customerId") customerId: string) {
-    await this.requireBusinessAccess(headers, businessId);
+  async listNotes(headers: RequestHeaders, businessId: string, customerId: string) {
+    await this.access.requireBusinessAccess(headers, businessId);
     const notes = await this.notes.listByCustomer(businessId, customerId);
     if (!notes) {
       throw new NotFoundException("Customer not found");
@@ -1944,10 +1762,8 @@ class CoreController {
 
     return { notes };
   }
-
-  @Get("businesses/:businessId/calls")
-  async listIncomingCalls(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Query() query: unknown) {
-    await this.requireBusinessAccess(headers, businessId);
+  async listIncomingCalls(headers: RequestHeaders, businessId: string, query: unknown) {
+    await this.access.requireBusinessAccess(headers, businessId);
     const pagination = paginationFromQuery(query);
     const callsPage = paginatedResponse(await this.incomingCalls.listByBusiness(businessId, pagination), pagination.limit);
     return {
@@ -1977,18 +1793,14 @@ class CoreController {
       pageInfo: callsPage.pageInfo
     };
   }
-
-  @Get("businesses/:businessId/appointments")
-  async listAppointments(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Query() query: unknown) {
-    await this.requireBusinessAccess(headers, businessId);
+  async listAppointments(headers: RequestHeaders, businessId: string, query: unknown) {
+    await this.access.requireBusinessAccess(headers, businessId);
     const pagination = paginationFromQuery(query);
     const page = paginatedResponse(await this.appointments.listByBusiness(businessId, pagination), pagination.limit);
     return { appointments: page.items, pageInfo: page.pageInfo };
   }
-
-  @Post("businesses/:businessId/appointments")
-  async createAppointment(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Body() body: unknown) {
-    const user = await this.requireBusinessAccess(headers, businessId);
+  async createAppointment(headers: RequestHeaders, businessId: string, body: unknown) {
+    const user = await this.access.requireBusinessAccess(headers, businessId);
     const command = CreateAppointmentSchema.parse(body);
     const appointment = await this.appointments.create({
       businessId,
@@ -2012,15 +1824,13 @@ class CoreController {
     });
     return { appointment };
   }
-
-  @Patch("businesses/:businessId/appointments/:appointmentId")
   async updateAppointment(
-    @Headers() headers: RequestHeaders,
-    @Param("businessId") businessId: string,
-    @Param("appointmentId") appointmentId: string,
-    @Body() body: unknown
+    headers: RequestHeaders,
+    businessId: string,
+    appointmentId: string,
+    body: unknown
   ) {
-    const user = await this.requireBusinessAccess(headers, businessId);
+    const user = await this.access.requireBusinessAccess(headers, businessId);
     const command = UpdateAppointmentSchema.parse(body);
     const appointment = await this.appointments.update({
       businessId,
@@ -2048,10 +1858,8 @@ class CoreController {
     });
     return { appointment };
   }
-
-  @Delete("businesses/:businessId/appointments/:appointmentId")
-  async deleteAppointment(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Param("appointmentId") appointmentId: string) {
-    const user = await this.requireBusinessAccess(headers, businessId);
+  async deleteAppointment(headers: RequestHeaders, businessId: string, appointmentId: string) {
+    const user = await this.access.requireBusinessAccess(headers, businessId);
     const appointment = await this.appointments.softDelete(businessId, appointmentId);
     if (!appointment) {
       throw new NotFoundException("Appointment not found");
@@ -2068,18 +1876,14 @@ class CoreController {
     });
     return { appointment };
   }
-
-  @Get("businesses/:businessId/home-visits")
-  async listHomeVisits(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Query() query: unknown) {
-    await this.requireBusinessAccess(headers, businessId);
+  async listHomeVisits(headers: RequestHeaders, businessId: string, query: unknown) {
+    await this.access.requireBusinessAccess(headers, businessId);
     const pagination = paginationFromQuery(query);
     const page = paginatedResponse(await this.homeVisits.listByBusiness(businessId, pagination), pagination.limit);
     return { homeVisits: page.items.map((homeVisit) => this.publicHomeVisit(homeVisit)), pageInfo: page.pageInfo };
   }
-
-  @Post("businesses/:businessId/home-visits")
-  async createHomeVisit(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Body() body: unknown) {
-    const user = await this.requireBusinessAccess(headers, businessId);
+  async createHomeVisit(headers: RequestHeaders, businessId: string, body: unknown) {
+    const user = await this.access.requireBusinessAccess(headers, businessId);
     const command = CreateHomeVisitSchema.parse(body);
     const homeVisit = await this.homeVisits.create({
       businessId,
@@ -2103,15 +1907,13 @@ class CoreController {
     });
     return { homeVisit: this.publicHomeVisit(homeVisit) };
   }
-
-  @Patch("businesses/:businessId/home-visits/:homeVisitId")
   async updateHomeVisit(
-    @Headers() headers: RequestHeaders,
-    @Param("businessId") businessId: string,
-    @Param("homeVisitId") homeVisitId: string,
-    @Body() body: unknown
+    headers: RequestHeaders,
+    businessId: string,
+    homeVisitId: string,
+    body: unknown
   ) {
-    const user = await this.requireBusinessAccess(headers, businessId);
+    const user = await this.access.requireBusinessAccess(headers, businessId);
     const command = UpdateHomeVisitSchema.parse(body);
     const homeVisit = await this.homeVisits.update({
       businessId,
@@ -2139,10 +1941,8 @@ class CoreController {
     });
     return { homeVisit: this.publicHomeVisit(homeVisit) };
   }
-
-  @Post("businesses/:businessId/home-visits/:homeVisitId/complete")
-  async completeHomeVisit(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Param("homeVisitId") homeVisitId: string) {
-    const user = await this.requireBusinessAccess(headers, businessId);
+  async completeHomeVisit(headers: RequestHeaders, businessId: string, homeVisitId: string) {
+    const user = await this.access.requireBusinessAccess(headers, businessId);
     const homeVisit = await this.homeVisits.complete(businessId, homeVisitId);
     if (!homeVisit) {
       throw new NotFoundException("Home visit not found");
@@ -2159,10 +1959,8 @@ class CoreController {
     });
     return { homeVisit: this.publicHomeVisit(homeVisit) };
   }
-
-  @Delete("businesses/:businessId/home-visits/:homeVisitId")
-  async deleteHomeVisit(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Param("homeVisitId") homeVisitId: string) {
-    const user = await this.requireBusinessAccess(headers, businessId);
+  async deleteHomeVisit(headers: RequestHeaders, businessId: string, homeVisitId: string) {
+    const user = await this.access.requireBusinessAccess(headers, businessId);
     const homeVisit = await this.homeVisits.softDelete(businessId, homeVisitId);
     if (!homeVisit) {
       throw new NotFoundException("Home visit not found");
@@ -2179,18 +1977,14 @@ class CoreController {
     });
     return { homeVisit: this.publicHomeVisit(homeVisit) };
   }
-
-  @Get("businesses/:businessId/quotes")
-  async listQuotes(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Query() query: unknown) {
-    await this.requireBusinessAccess(headers, businessId);
+  async listQuotes(headers: RequestHeaders, businessId: string, query: unknown) {
+    await this.access.requireBusinessAccess(headers, businessId);
     const pagination = paginationFromQuery(query);
     const page = paginatedResponse(await this.quotes.listByBusiness(businessId, pagination), pagination.limit);
     return { quotes: page.items.map((quote) => this.publicQuote(quote)), pageInfo: page.pageInfo };
   }
-
-  @Post("businesses/:businessId/quotes")
-  async createQuote(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Body() body: unknown) {
-    const user = await this.requireBusinessAccess(headers, businessId);
+  async createQuote(headers: RequestHeaders, businessId: string, body: unknown) {
+    const user = await this.access.requireBusinessAccess(headers, businessId);
     const command = CreateQuoteSchema.parse(body);
     const quote = await this.quotes.create({
       businessId,
@@ -2214,15 +2008,13 @@ class CoreController {
     });
     return { quote: this.publicQuote(quote) };
   }
-
-  @Patch("businesses/:businessId/quotes/:quoteId")
   async updateQuote(
-    @Headers() headers: RequestHeaders,
-    @Param("businessId") businessId: string,
-    @Param("quoteId") quoteId: string,
-    @Body() body: unknown
+    headers: RequestHeaders,
+    businessId: string,
+    quoteId: string,
+    body: unknown
   ) {
-    const user = await this.requireBusinessAccess(headers, businessId);
+    const user = await this.access.requireBusinessAccess(headers, businessId);
     const command = UpdateQuoteSchema.parse(body);
     const quote = await this.quotes.update({
       businessId,
@@ -2249,10 +2041,8 @@ class CoreController {
     });
     return { quote: this.publicQuote(quote) };
   }
-
-  @Post("businesses/:businessId/quotes/:quoteId/mark-paid")
-  async markQuotePaid(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Param("quoteId") quoteId: string) {
-    const user = await this.requireBusinessAccess(headers, businessId);
+  async markQuotePaid(headers: RequestHeaders, businessId: string, quoteId: string) {
+    const user = await this.access.requireBusinessAccess(headers, businessId);
     const quote = await this.quotes.markPaid(businessId, quoteId);
     if (!quote) {
       throw new NotFoundException("Quote not found");
@@ -2269,10 +2059,8 @@ class CoreController {
     });
     return { quote: this.publicQuote(quote) };
   }
-
-  @Delete("businesses/:businessId/quotes/:quoteId")
-  async deleteQuote(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Param("quoteId") quoteId: string) {
-    const user = await this.requireBusinessAccess(headers, businessId);
+  async deleteQuote(headers: RequestHeaders, businessId: string, quoteId: string) {
+    const user = await this.access.requireBusinessAccess(headers, businessId);
     const quote = await this.quotes.softDelete(businessId, quoteId);
     if (!quote) {
       throw new NotFoundException("Quote not found");
@@ -2289,10 +2077,8 @@ class CoreController {
     });
     return { quote: this.publicQuote(quote) };
   }
-
-  @Post("businesses/:businessId/appointments/:appointmentId/cancel")
-  async cancelAppointment(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Param("appointmentId") appointmentId: string) {
-    const user = await this.requireBusinessAccess(headers, businessId);
+  async cancelAppointment(headers: RequestHeaders, businessId: string, appointmentId: string) {
+    const user = await this.access.requireBusinessAccess(headers, businessId);
     const appointment = await this.appointments.update({
       businessId,
       appointmentId,
@@ -2313,10 +2099,8 @@ class CoreController {
     });
     return { appointment };
   }
-
-  @Post("businesses/:businessId/appointments/:appointmentId/complete")
-  async completeAppointment(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Param("appointmentId") appointmentId: string) {
-    const user = await this.requireBusinessAccess(headers, businessId);
+  async completeAppointment(headers: RequestHeaders, businessId: string, appointmentId: string) {
+    const user = await this.access.requireBusinessAccess(headers, businessId);
     const appointment = await this.appointments.update({
       businessId,
       appointmentId,
@@ -2337,19 +2121,15 @@ class CoreController {
     });
     return { appointment };
   }
-
-  @Get("businesses/:businessId/notifications")
-  async listNotifications(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Query() query: unknown) {
-    await this.requireBusinessAccess(headers, businessId);
+  async listNotifications(headers: RequestHeaders, businessId: string, query: unknown) {
+    await this.access.requireBusinessAccess(headers, businessId);
     const command = NotificationListQuerySchema.parse(query);
     const pagination = paginationFromParsedQuery(command);
     const page = paginatedResponse(await this.notifications.listByBusinessAndStatus(businessId, command.status, pagination), pagination.limit);
     return { notifications: page.items, pageInfo: page.pageInfo };
   }
-
-  @Post("businesses/:businessId/device-tokens")
-  async registerDeviceToken(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Body() body: unknown) {
-    const user = await this.requireBusinessAccess(headers, businessId);
+  async registerDeviceToken(headers: RequestHeaders, businessId: string, body: unknown) {
+    const user = await this.access.requireBusinessAccess(headers, businessId);
     const command = RegisterDeviceTokenSchema.parse(body);
     const deviceToken = await this.deviceTokens.register({
       businessId,
@@ -2376,15 +2156,13 @@ class CoreController {
     });
     return { deviceToken: publicDeviceToken(deviceToken) };
   }
-
-  @Patch("businesses/:businessId/notifications/:notificationId")
   async updateNotification(
-    @Headers() headers: RequestHeaders,
-    @Param("businessId") businessId: string,
-    @Param("notificationId") notificationId: string,
-    @Body() body: unknown
+    headers: RequestHeaders,
+    businessId: string,
+    notificationId: string,
+    body: unknown
   ) {
-    const user = await this.requireBusinessAccess(headers, businessId);
+    const user = await this.access.requireBusinessAccess(headers, businessId);
     const command = UpdateNotificationSchema.parse(body);
     const notification = await this.notifications.updateStatus({
       businessId,
@@ -2407,10 +2185,8 @@ class CoreController {
     });
     return { notification };
   }
-
-  @Post("businesses/:businessId/notifications/:notificationId/read")
-  async markNotificationRead(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Param("notificationId") notificationId: string) {
-    const user = await this.requireBusinessAccess(headers, businessId);
+  async markNotificationRead(headers: RequestHeaders, businessId: string, notificationId: string) {
+    const user = await this.access.requireBusinessAccess(headers, businessId);
     const notification = await this.notifications.updateStatus({
       businessId,
       notificationId,
@@ -2431,10 +2207,8 @@ class CoreController {
     });
     return { notification };
   }
-
-  @Post("businesses/:businessId/notifications/read-all")
-  async markAllNotificationsRead(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string) {
-    const user = await this.requireBusinessAccess(headers, businessId);
+  async markAllNotificationsRead(headers: RequestHeaders, businessId: string) {
+    const user = await this.access.requireBusinessAccess(headers, businessId);
     const result = await this.notifications.markAllRead(businessId);
     await this.audit.record({
       businessId,
@@ -2447,15 +2221,13 @@ class CoreController {
     });
     return { updatedCount: result.count };
   }
-
-  @Post("businesses/:businessId/notifications/:notificationId/snooze")
   async snoozeNotification(
-    @Headers() headers: RequestHeaders,
-    @Param("businessId") businessId: string,
-    @Param("notificationId") notificationId: string,
-    @Body() body: unknown
+    headers: RequestHeaders,
+    businessId: string,
+    notificationId: string,
+    body: unknown
   ) {
-    const user = await this.requireBusinessAccess(headers, businessId);
+    const user = await this.access.requireBusinessAccess(headers, businessId);
     const command = SnoozeNotificationSchema.parse(body);
     const notification = await this.notifications.findByBusinessAndId(businessId, notificationId);
     if (!notification) {
@@ -2497,24 +2269,20 @@ class CoreController {
     });
     return { notification: readNotification, item, dueAt };
   }
-
-  @Get("businesses/:businessId/ai-pending-actions")
-  async listAiPendingActions(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Query() query: unknown) {
-    await this.requireBusinessAccess(headers, businessId);
+  async listAiPendingActions(headers: RequestHeaders, businessId: string, query: unknown) {
+    await this.access.requireBusinessAccess(headers, businessId);
     const command = AiPendingActionListQuerySchema.parse(query);
     const pagination = paginationFromParsedQuery(command);
     const page = paginatedResponse(await this.aiPendingActions.listByBusinessAndStatus(businessId, command.status, pagination), pagination.limit);
     return { aiPendingActions: page.items, pageInfo: page.pageInfo };
   }
-
-  @Patch("businesses/:businessId/ai-pending-actions/:aiPendingActionId")
   async updateAiPendingAction(
-    @Headers() headers: RequestHeaders,
-    @Param("businessId") businessId: string,
-    @Param("aiPendingActionId") aiPendingActionId: string,
-    @Body() body: unknown
+    headers: RequestHeaders,
+    businessId: string,
+    aiPendingActionId: string,
+    body: unknown
   ) {
-    const user = await this.requireBusinessAccess(headers, businessId);
+    const user = await this.access.requireBusinessAccess(headers, businessId);
     const command = UpdateAiPendingActionSchema.parse(body);
     const aiPendingAction = await this.aiPendingActions.update({
       businessId,
@@ -2538,14 +2306,12 @@ class CoreController {
     });
     return { aiPendingAction };
   }
-
-  @Post("businesses/:businessId/ai-pending-actions/:aiPendingActionId/reject")
   async rejectAiPendingAction(
-    @Headers() headers: RequestHeaders,
-    @Param("businessId") businessId: string,
-    @Param("aiPendingActionId") aiPendingActionId: string
+    headers: RequestHeaders,
+    businessId: string,
+    aiPendingActionId: string
   ) {
-    const user = await this.requireBusinessAccess(headers, businessId);
+    const user = await this.access.requireBusinessAccess(headers, businessId);
     const existing = await this.aiPendingActions.findByBusinessAndId(businessId, aiPendingActionId);
     if (!existing) {
       throw new NotFoundException("AI pending action not found");
@@ -2575,15 +2341,13 @@ class CoreController {
     });
     return { aiPendingAction };
   }
-
-  @Post("businesses/:businessId/ai-pending-actions/:aiPendingActionId/approve")
   async approveAiPendingAction(
-    @Headers() headers: RequestHeaders,
-    @Param("businessId") businessId: string,
-    @Param("aiPendingActionId") aiPendingActionId: string,
-    @Body() body: unknown
+    headers: RequestHeaders,
+    businessId: string,
+    aiPendingActionId: string,
+    body: unknown
   ) {
-    const user = await this.requireBusinessAccess(headers, businessId);
+    const user = await this.access.requireBusinessAccess(headers, businessId);
     const command = ApproveAiPendingActionSchema.parse(body);
     const claimed = await this.aiPendingActions.claimForExecution({
       businessId,
@@ -2647,10 +2411,8 @@ class CoreController {
       throw error;
     }
   }
-
-  @Get("businesses/:businessId/audit-events")
-  async listAuditEvents(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Query() query: unknown) {
-    await this.requireBusinessAccess(headers, businessId);
+  async listAuditEvents(headers: RequestHeaders, businessId: string, query: unknown) {
+    await this.access.requireBusinessAccess(headers, businessId);
     const pagination = paginationFromQuery(query);
     const page = paginatedResponse(await this.audit.listByBusiness(businessId, pagination), pagination.limit);
     return { auditEvents: page.items, pageInfo: page.pageInfo };
@@ -2686,7 +2448,7 @@ class CoreController {
     };
   }
 
-  private publicReminderWorkItem(rawReminder: Parameters<CoreController["publicReminder"]>[0]) {
+  private publicReminderWorkItem(rawReminder: Parameters<CoreService["publicReminder"]>[0]) {
     const reminder = this.publicReminder(rawReminder);
     return {
       id: reminder.id,
@@ -2731,7 +2493,7 @@ class CoreController {
     };
   }
 
-  private publicHomeVisitWorkItem(rawHomeVisit: Parameters<CoreController["publicHomeVisit"]>[0]) {
+  private publicHomeVisitWorkItem(rawHomeVisit: Parameters<CoreService["publicHomeVisit"]>[0]) {
     const homeVisit = this.publicHomeVisit(rawHomeVisit);
     return {
       id: homeVisit.id,
@@ -2750,7 +2512,7 @@ class CoreController {
     };
   }
 
-  private publicAppointmentWorkItem(appointment: Parameters<CoreController["publicHomeVisit"]>[0]) {
+  private publicAppointmentWorkItem(appointment: Parameters<CoreService["publicHomeVisit"]>[0]) {
     return {
       id: appointment.id,
       type: "appointment",
@@ -2799,7 +2561,7 @@ class CoreController {
     };
   }
 
-  private publicQuoteWorkItem(quote: Parameters<CoreController["publicQuote"]>[0]) {
+  private publicQuoteWorkItem(quote: Parameters<CoreService["publicQuote"]>[0]) {
     const publicQuote = this.publicQuote(quote);
     return {
       id: publicQuote.id,
@@ -3966,7 +3728,7 @@ class CoreController {
         priority: command.priority
       }
     });
-    const notificationDelivery = await this.sendNotification(notification);
+    const notificationDelivery = await this.notificationDelivery.sendNotification(notification);
 
     await this.audit.record({
       businessId: command.businessId,
@@ -3993,156 +3755,29 @@ class CoreController {
     return { duplicate: false, reminder, notification: notificationDelivery.notification, notificationDelivery };
   }
 
-  private async sendNotification(notification: {
-    id: string;
-    businessId: string;
-    title: string;
-    body: string;
-    payload: Prisma.JsonValue | null;
-  }) {
-    if (getEnv("MOCK_FCM_PROVIDER", "true") === "true") {
-      const sent = await this.notifications.updateStatus({
-        businessId: notification.businessId,
-        notificationId: notification.id,
-        status: "SENT"
-      });
-      return { provider: "mock-fcm", status: "SENT", notification: sent ?? notification };
-    }
-
-    const tokens = await this.deviceTokens.listActiveByBusiness(notification.businessId);
-    if (tokens.length === 0) {
-      log("warn", "notification delivery skipped without active device tokens", {
-        businessId: notification.businessId,
-        notificationId: notification.id
-      });
-      const failed = await this.notifications.updateStatus({
-        businessId: notification.businessId,
-        notificationId: notification.id,
-        status: "FAILED",
-        failureReason: "No active FCM device tokens"
-      });
-      return { provider: "firebase-fcm", status: "FAILED", notification: failed ?? notification };
-    }
-
-    const response = await sendFirebaseMulticast(tokens.map((deviceToken) => deviceToken.token), {
-      businessId: notification.businessId,
-      notificationId: notification.id,
-      title: notification.title,
-      body: notification.body,
-      payload: notification.payload
-    });
-
-    log("info", "firebase notification delivery finished", {
-      businessId: notification.businessId,
-      notificationId: notification.id,
-      tokenCount: tokens.length,
-      successCount: response.successCount,
-      failureCount: response.failureCount,
-      errors: response.responses
-        .filter((result) => !result.success)
-        .map((result) => result.error?.code ?? result.error?.message ?? "unknown")
-    });
-
-    await Promise.all(response.responses.map((result, index) =>
-      result.success
-        ? Promise.resolve()
-        : this.deviceTokens.deactivate(tokens[index].token)
-    ));
-
-    const failedCount = response.failureCount;
-    const sent = await this.notifications.updateStatus({
-      businessId: notification.businessId,
-      notificationId: notification.id,
-      status: response.successCount > 0 ? "SENT" : "FAILED",
-      failureReason: failedCount > 0 ? `${failedCount} FCM deliveries failed` : undefined
-    });
-
-    return {
-      provider: "firebase-fcm",
-      status: response.successCount > 0 ? "SENT" : "FAILED",
-      successCount: response.successCount,
-      failureCount: response.failureCount,
-      notification: sent ?? notification
-    };
-  }
-
-  private async requireAuthenticatedUser(headers: RequestHeaders): Promise<AuthenticatedUser> {
-    const { firebaseUid, phoneNumber } = await this.verifyAuth(headers);
-    const user = await this.auth.getMe(firebaseUid, phoneNumber);
-    if (!user) {
-      throw new UnauthorizedException("Authenticated user was not found");
-    }
-    return user;
-  }
-
-  private async requireBusinessAccess(headers: RequestHeaders, businessId: string): Promise<AuthenticatedUser> {
-    const user = await this.requireAuthenticatedUser(headers);
-    const hasMembership = user.memberships?.some((membership) => membership.businessId === businessId && membership.status === "ACTIVE");
-    if (user.businessId !== businessId && !hasMembership) {
-      throw new ForbiddenException("User is not allowed to access this business");
-    }
-    return user;
-  }
-
-  private requireInternalSecret(headers: RequestHeaders): void {
-    const expected = getInternalApiSecret();
-    const actual = headerValue(headers, "x-internal-secret");
-    if (actual !== expected) {
-      throw new UnauthorizedException("Missing or invalid internal secret");
-    }
-  }
-
-  private async requireInternalScheduler(headers: RequestHeaders): Promise<void> {
-    const token = parseOptionalBearerToken(headers);
-    const allowedServiceAccount = process.env.SCHEDULER_SERVICE_ACCOUNT_EMAIL ?? "";
-    const audience = process.env.SCHEDULER_OIDC_AUDIENCE ?? "";
-
-    if (!allowedServiceAccount || !audience) {
-      this.requireInternalSecret(headers);
-      return;
-    }
-
-    if (!token) {
-      throw new UnauthorizedException("Missing scheduler identity token");
-    }
-
-    try {
-      await verifyGoogleOidcToken({
-        token,
-        audiences: audience.split(",").map((value) => value.trim()).filter(Boolean),
-        allowedServiceAccounts: allowedServiceAccount.split(",").map((value) => value.trim()).filter(Boolean)
-      });
-    } catch {
-      throw new UnauthorizedException("Missing or invalid scheduler identity token");
-    }
-  }
-
-  private async verifyAuth(headers: RequestHeaders, options?: { mockFallback?: string }): Promise<VerifiedAuth> {
-    if (authProviderName() === "firebase") {
-      const token = parseBearerToken(headers);
-      try {
-        firebaseApp();
-        const decoded = await getAuth().verifyIdToken(token);
-        return {
-          firebaseUid: decoded.uid,
-          email: decoded.email,
-          phoneNumber: typeof decoded.phone_number === "string" ? decoded.phone_number : undefined,
-          displayName: displayNameFromToken(decoded)
-        };
-      } catch {
-        throw new UnauthorizedException("Missing or invalid Firebase ID token");
-      }
-    }
-
-    return {
-      firebaseUid: options?.mockFallback ?? parseMockFirebaseUid(headers),
-      phoneNumber: headerValue(headers, "x-mock-phone-number")
-    };
-  }
 }
 
+const {
+  AiActionsController,
+  CORE_SERVICE,
+  CustomersController,
+  InternalController,
+  NotificationsController,
+  SystemController,
+  VoiceCommandsController,
+  WorkItemsController
+} = await import("./core.controllers.js");
+
 @Module({
-  controllers: [CoreController],
+  controllers: [
+    SystemController,
+    InternalController,
+    VoiceCommandsController,
+    CustomersController,
+    WorkItemsController,
+    NotificationsController,
+    AiActionsController
+  ],
   providers: [
     PrismaService,
     AuditRepository,
@@ -4162,7 +3797,11 @@ class CoreController {
     NotificationsRepository,
     DeviceTokensRepository,
     OwnerVoiceCommandsRepository,
-    AiPendingActionsRepository
+    AiPendingActionsRepository,
+    CoreAccessService,
+    CoreNotificationsService,
+    CoreService,
+    { provide: CORE_SERVICE, useExisting: CoreService }
   ]
 })
 class CoreModule {}
