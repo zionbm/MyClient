@@ -2,7 +2,7 @@ import "reflect-metadata";
 import { BadGatewayException, Body, Controller, Get, Module, Post } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { FastifyAdapter, type NestFastifyApplication } from "@nestjs/platform-fastify";
-import { ApiExceptionFilter, cloudRunServiceAuthHeaders, getEnv, getPort, health, log, stableIdempotencyKey } from "@myclient/common";
+import { ApiExceptionFilter, cloudRunServiceAuthHeaders, getEnv, getInternalApiSecret, getPort, health, log, stableIdempotencyKey } from "@myclient/common";
 import type { CreateReminderFromCall } from "@myclient/contracts";
 
 type IvrDigit = "1" | "2" | "3";
@@ -78,7 +78,11 @@ class TelephonyController {
     const voiceBaseUrl = getEnv("VOICE_BASE_URL", "http://localhost:3002");
     const sttResponse = await fetch(`${voiceBaseUrl}/stt/mock`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        ...(await cloudRunServiceAuthHeaders(voiceBaseUrl)),
+        "content-type": "application/json",
+        "x-internal-secret": getInternalApiSecret()
+      },
       body: JSON.stringify({ recordingUrl: body.recordingUrl, transcript: body.transcript })
     });
 
@@ -137,7 +141,7 @@ class TelephonyController {
       headers: {
         ...(await cloudRunServiceAuthHeaders(coreBaseUrl)),
         "content-type": "application/json",
-        "x-internal-secret": getEnv("INTERNAL_API_SECRET", "dev-internal-secret")
+        "x-internal-secret": getInternalApiSecret()
       },
       body: JSON.stringify(command)
     });
@@ -166,7 +170,7 @@ class TelephonyController {
       headers: {
         ...(await cloudRunServiceAuthHeaders(coreBaseUrl)),
         "content-type": "application/json",
-        "x-internal-secret": getEnv("INTERNAL_API_SECRET", "dev-internal-secret")
+        "x-internal-secret": getInternalApiSecret()
       },
       body: JSON.stringify(command)
     });
@@ -188,7 +192,7 @@ class TelephonyController {
       headers: {
         ...(await cloudRunServiceAuthHeaders(coreBaseUrl)),
         "content-type": "application/json",
-        "x-internal-secret": getEnv("INTERNAL_API_SECRET", "dev-internal-secret")
+        "x-internal-secret": getInternalApiSecret()
       },
       body: JSON.stringify(command)
     });

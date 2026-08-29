@@ -23,7 +23,7 @@ import { Prisma, type Business, type User } from "@prisma/client";
 import { applicationDefault, getApps, initializeApp } from "firebase-admin/app";
 import { getAuth, type DecodedIdToken } from "firebase-admin/auth";
 import { getMessaging } from "firebase-admin/messaging";
-import { ApiExceptionFilter, cloudRunServiceAuthHeaders, getEnv, getPort, health, log, stableIdempotencyKey, verifyGoogleOidcToken } from "@myclient/common";
+import { ApiExceptionFilter, cloudRunServiceAuthHeaders, getEnv, getInternalApiSecret, getPort, health, log, stableIdempotencyKey, verifyGoogleOidcToken } from "@myclient/common";
 import {
   AiActionBatchSchema,
   AiActionSchema,
@@ -44,6 +44,7 @@ import {
   MergeCustomerSchema,
   OwnerVoiceCommandHeadersSchema,
   OwnerVoiceCommandTranscriptSchema,
+  PaginationQuerySchema,
   RegisterBusinessSchema,
   RegisterDeviceTokenSchema,
   SnoozeNotificationSchema,
@@ -548,6 +549,56 @@ function publicCustomer(customer: { id: string; name: string; phone?: string | n
     email: customer.email ?? null,
     address: customer.address ?? null,
     createdAt: customer.createdAt ?? null
+  };
+}
+
+function decodePageCursor(value: string | undefined): { createdAt: Date; id: string } | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  try {
+    const decoded = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as { createdAt?: unknown; id?: unknown };
+    if (typeof decoded.id !== "string" || typeof decoded.createdAt !== "string") {
+      throw new Error("Invalid cursor shape");
+    }
+    const createdAt = new Date(decoded.createdAt);
+    if (Number.isNaN(createdAt.getTime())) {
+      throw new Error("Invalid cursor date");
+    }
+    return { createdAt, id: decoded.id };
+  } catch {
+    throw new BadRequestException("Invalid pagination cursor");
+  }
+}
+
+function encodePageCursor(item: { id: string; createdAt: Date }): string {
+  return Buffer.from(JSON.stringify({
+    createdAt: item.createdAt.toISOString(),
+    id: item.id
+  })).toString("base64url");
+}
+
+function paginatedResponse<T extends { id: string; createdAt: Date }>(items: T[], limit: number) {
+  const hasMore = items.length > limit;
+  const pageItems = hasMore ? items.slice(0, limit) : items;
+  return {
+    items: pageItems,
+    pageInfo: {
+      hasMore,
+      nextCursor: hasMore && pageItems.length > 0 ? encodePageCursor(pageItems[pageItems.length - 1]) : null
+    }
+  };
+}
+
+function paginationFromQuery(query: unknown) {
+  return paginationFromParsedQuery(PaginationQuerySchema.parse(query));
+}
+
+function paginationFromParsedQuery(command: { limit: number; cursor?: string }) {
+  return {
+    limit: command.limit,
+    cursor: decodePageCursor(command.cursor)
   };
 }
 
@@ -1133,9 +1184,11 @@ class CoreController {
   }
 
   @Get("businesses/:businessId/voice-commands")
-  async listOwnerVoiceCommands(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string) {
+  async listOwnerVoiceCommands(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Query() query: unknown) {
     await this.requireBusinessAccess(headers, businessId);
-    return { voiceCommands: await this.ownerVoiceCommands.listByBusiness(businessId) };
+    const pagination = paginationFromQuery(query);
+    const page = paginatedResponse(await this.ownerVoiceCommands.listByBusiness(businessId, pagination), pagination.limit);
+    return { voiceCommands: page.items, pageInfo: page.pageInfo };
   }
 
   @Post("businesses/:businessId/voice-commands/realtime-session")
@@ -1652,9 +1705,11 @@ class CoreController {
   }
 
   @Get("businesses/:businessId/customers")
-  async listCustomers(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string) {
+  async listCustomers(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Query() query: unknown) {
     await this.requireBusinessAccess(headers, businessId);
-    return { customers: await this.customers.listByBusiness(businessId) };
+    const pagination = paginationFromQuery(query);
+    const page = paginatedResponse(await this.customers.listByBusiness(businessId, pagination), pagination.limit);
+    return { customers: page.items, pageInfo: page.pageInfo };
   }
 
   @Get("businesses/:businessId/customers/:customerId")
@@ -1863,11 +1918,12 @@ class CoreController {
   }
 
   @Get("businesses/:businessId/calls")
-  async listIncomingCalls(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string) {
+  async listIncomingCalls(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Query() query: unknown) {
     await this.requireBusinessAccess(headers, businessId);
-    const calls = await this.incomingCalls.listByBusiness(businessId);
+    const pagination = paginationFromQuery(query);
+    const callsPage = paginatedResponse(await this.incomingCalls.listByBusiness(businessId, pagination), pagination.limit);
     return {
-      calls: await Promise.all(calls.map(async (call) => {
+      calls: await Promise.all(callsPage.items.map(async (call) => {
         const transcript = call.transcripts.at(-1) ?? null;
         const relatedReminder = transcript?.reminderId ? await this.reminders.findByBusinessAndId(businessId, transcript.reminderId) : null;
         const customer = call.fromNumber ? await this.customers.findDuplicateByPhone(businessId, call.fromNumber) : null;
@@ -1889,7 +1945,8 @@ class CoreController {
           } : null,
           customer: publicCustomer(customer)
         };
-      }))
+      })),
+      pageInfo: callsPage.pageInfo
     };
   }
 
@@ -2233,7 +2290,9 @@ class CoreController {
   async listNotifications(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Query() query: unknown) {
     await this.requireBusinessAccess(headers, businessId);
     const command = ListByStatusQuerySchema.parse(query);
-    return { notifications: await this.notifications.listByBusinessAndStatus(businessId, command.status) };
+    const pagination = paginationFromParsedQuery(command);
+    const page = paginatedResponse(await this.notifications.listByBusinessAndStatus(businessId, command.status, pagination), pagination.limit);
+    return { notifications: page.items, pageInfo: page.pageInfo };
   }
 
   @Post("businesses/:businessId/device-tokens")
@@ -2391,7 +2450,9 @@ class CoreController {
   async listAiPendingActions(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Query() query: unknown) {
     await this.requireBusinessAccess(headers, businessId);
     const command = ListByStatusQuerySchema.parse(query);
-    return { aiPendingActions: await this.aiPendingActions.listByBusinessAndStatus(businessId, command.status) };
+    const pagination = paginationFromParsedQuery(command);
+    const page = paginatedResponse(await this.aiPendingActions.listByBusinessAndStatus(businessId, command.status, pagination), pagination.limit);
+    return { aiPendingActions: page.items, pageInfo: page.pageInfo };
   }
 
   @Patch("businesses/:businessId/ai-pending-actions/:aiPendingActionId")
@@ -2513,9 +2574,11 @@ class CoreController {
   }
 
   @Get("businesses/:businessId/audit-events")
-  async listAuditEvents(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string) {
+  async listAuditEvents(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Query() query: unknown) {
     await this.requireBusinessAccess(headers, businessId);
-    return { auditEvents: await this.audit.listByBusiness(businessId) };
+    const pagination = paginationFromQuery(query);
+    const page = paginatedResponse(await this.audit.listByBusiness(businessId, pagination), pagination.limit);
+    return { auditEvents: page.items, pageInfo: page.pageInfo };
   }
 
   private publicReminder(reminder: {
@@ -2685,7 +2748,7 @@ class CoreController {
     payload: Record<string, unknown>;
     idempotencyKey: string;
   }) {
-    if (input.actionType === "CREATE_REMINDER" || input.actionType === "CREATE_REMINDER") {
+    if (input.actionType === "CREATE_REMINDER") {
       const existing = await this.reminders.findByIdempotencyKey(input.businessId, input.idempotencyKey);
       if (existing) {
         return { type: input.actionType, duplicate: true, reminder: existing };
@@ -2718,10 +2781,8 @@ class CoreController {
       return { type: input.actionType, duplicate: false, reminder };
     }
 
-    if (input.actionType === "COMPLETE_REMINDER" || input.actionType === "COMPLETE_REMINDER") {
-      const reminderId = typeof input.payload.reminderId === "string" ? input.payload.reminderId
-        : typeof input.payload.reminderId === "string" ? input.payload.reminderId
-          : undefined;
+    if (input.actionType === "COMPLETE_REMINDER") {
+      const reminderId = typeof input.payload.reminderId === "string" ? input.payload.reminderId : undefined;
       if (!reminderId) {
         throw new BadRequestException("Action payload is missing reminderId");
       }
@@ -2742,10 +2803,8 @@ class CoreController {
       return { type: input.actionType, reminder };
     }
 
-    if (input.actionType === "UPDATE_REMINDER" || input.actionType === "UPDATE_REMINDER") {
-      const reminderId = typeof input.payload.reminderId === "string" ? input.payload.reminderId
-        : typeof input.payload.reminderId === "string" ? input.payload.reminderId
-          : undefined;
+    if (input.actionType === "UPDATE_REMINDER") {
+      const reminderId = typeof input.payload.reminderId === "string" ? input.payload.reminderId : undefined;
       if (!reminderId) {
         throw new BadRequestException("Action payload is missing reminderId");
       }
@@ -3038,6 +3097,7 @@ class CoreController {
       method: "POST",
       headers: {
         ...(await cloudRunServiceAuthHeaders(voiceBaseUrl)),
+        "x-internal-secret": getInternalApiSecret(),
         ...(useMockStt
           ? { "content-type": "application/json" }
           : {
@@ -3084,7 +3144,8 @@ class CoreController {
       method: "POST",
       headers: {
         ...(await cloudRunServiceAuthHeaders(aiBaseUrl)),
-        "content-type": "application/json"
+        "content-type": "application/json",
+        "x-internal-secret": getInternalApiSecret()
       },
       body: JSON.stringify({
         text: input.transcript,
@@ -3259,7 +3320,7 @@ class CoreController {
     if (actionType.includes("HOME_VISIT") || actionType.includes("APPOINTMENT")) return "home_visit";
     if (actionType.includes("QUOTE")) return "quote";
     if (actionType.includes("NOTE")) return "note";
-    if (actionType.includes("TASK") || actionType.includes("CALLBACK")) return "reminder";
+    if (actionType.includes("REMINDER")) return "reminder";
     return "action";
   }
 
@@ -3267,7 +3328,7 @@ class CoreController {
     const prefix = status === "pending" ? "" : status === "completed" ? "הושלם: " : "";
     if (status === "pending") {
       if (actionType === "CREATE_CUSTOMER") return "לקוח חדש";
-      if (actionType === "CREATE_REMINDER" || actionType === "CREATE_REMINDER") return "תזכורת חדשה";
+      if (actionType === "CREATE_REMINDER") return "תזכורת חדשה";
       if (actionType === "CREATE_HOME_VISIT" || actionType === "CREATE_APPOINTMENT") return "ביקור בית חדש";
       if (actionType === "CREATE_QUOTE") return "הצעת מחיר חדשה";
     }
@@ -3275,7 +3336,7 @@ class CoreController {
     if (actionType.includes("HOME_VISIT") || actionType.includes("APPOINTMENT")) return `${prefix}ביקור בית`;
     if (actionType.includes("QUOTE")) return `${prefix}הצעת מחיר`;
     if (actionType.includes("NOTE")) return `${prefix}הערת לקוח`;
-    if (actionType.includes("TASK") || actionType.includes("CALLBACK")) return `${prefix}תזכורת חזרה`;
+    if (actionType.includes("REMINDER")) return `${prefix}תזכורת`;
     return `${prefix}פעולה`;
   }
 
@@ -3293,8 +3354,7 @@ class CoreController {
   private voiceEntityFields(actionType: string, entity: Record<string, unknown>, timeZone: string): VoiceCommandResult["items"][number]["fields"] {
     const fields: VoiceCommandResult["items"][number]["fields"] = [];
     const isCustomerAction = actionType.includes("CUSTOMER") && !actionType.includes("NOTE");
-    const isWorkItemAction = actionType.includes("TASK") ||
-      actionType.includes("CALLBACK") ||
+    const isWorkItemAction = actionType.includes("REMINDER") ||
       actionType.includes("HOME_VISIT") ||
       actionType.includes("APPOINTMENT") ||
       actionType.includes("QUOTE");
@@ -3567,19 +3627,17 @@ class CoreController {
     return actionType === "UPDATE_CUSTOMER" ||
       actionType === "CREATE_NOTE" ||
       actionType === "CREATE_REMINDER" ||
-      actionType === "CREATE_REMINDER" ||
       actionType === "CREATE_HOME_VISIT" ||
       actionType === "CREATE_APPOINTMENT" ||
       actionType === "CREATE_QUOTE" ||
-      actionType === "COMPLETE_REMINDER" ||
       actionType === "COMPLETE_REMINDER";
   }
 
   private voiceActionNeedsReminder(actionType: string, payload: Record<string, unknown>) {
-    if (typeof payload.reminderId === "string" || typeof payload.reminderId === "string") {
+    if (typeof payload.reminderId === "string") {
       return false;
     }
-    return actionType === "COMPLETE_REMINDER" || actionType === "COMPLETE_REMINDER";
+    return actionType === "COMPLETE_REMINDER";
   }
 
   private async resolveVoiceCustomer(businessId: string, payload: Record<string, unknown>) {
@@ -3730,8 +3788,6 @@ class CoreController {
 
   private voiceActionUsesDueAt(actionType: string) {
     return actionType === "CREATE_REMINDER" ||
-      actionType === "CREATE_REMINDER" ||
-      actionType === "UPDATE_REMINDER" ||
       actionType === "UPDATE_REMINDER" ||
       actionType === "CREATE_QUOTE" ||
       actionType === "UPDATE_QUOTE";
@@ -3757,13 +3813,11 @@ class CoreController {
 
   private isOptionalVoiceField(actionType: string, field: string) {
     if (field === "dueAt") {
-      return actionType === "CREATE_REMINDER" || actionType === "CREATE_REMINDER";
+      return actionType === "CREATE_REMINDER";
     }
 
     if (field === "phone") {
-      return actionType === "CREATE_CUSTOMER" ||
-        actionType === "CREATE_REMINDER" ||
-        actionType === "CREATE_REMINDER";
+      return actionType === "CREATE_CUSTOMER" || actionType === "CREATE_REMINDER";
     }
 
     return false;
@@ -3829,7 +3883,7 @@ class CoreController {
       source: "telephony",
       entityType: "reminder",
       entityId: reminder.id,
-      action: "CREATE_REMINDER_TASK",
+      action: "CREATE_REMINDER_FROM_CALL",
       after: reminder as Prisma.InputJsonValue
     });
     await this.audit.record({
@@ -3940,7 +3994,7 @@ class CoreController {
   }
 
   private requireInternalSecret(headers: RequestHeaders): void {
-    const expected = getEnv("INTERNAL_API_SECRET", "dev-internal-secret");
+    const expected = getInternalApiSecret();
     const actual = headerValue(headers, "x-internal-secret");
     if (actual !== expected) {
       throw new UnauthorizedException("Missing or invalid internal secret");

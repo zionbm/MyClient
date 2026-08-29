@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const ActionTypeSchema = z.enum([
+export const ACTION_TYPES = [
   "CREATE_CUSTOMER",
   "UPDATE_CUSTOMER",
   "CREATE_REMINDER",
@@ -19,7 +19,9 @@ export const ActionTypeSchema = z.enum([
   "UPDATE_NOTE",
   "DELETE_WORK_ITEM",
   "MERGE_CUSTOMERS"
-]);
+] as const;
+
+export const ActionTypeSchema = z.enum(ACTION_TYPES);
 
 export type ActionType = z.infer<typeof ActionTypeSchema>;
 

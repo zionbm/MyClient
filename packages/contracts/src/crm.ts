@@ -6,6 +6,13 @@ const OptionalDateStringSchema = z.string().trim().min(1).optional();
 const RequiredDateStringSchema = z.string().trim().min(1);
 const OptionalAmountSchema = z.union([z.number(), z.string().trim().min(1)]).optional();
 
+export const PaginationQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  cursor: z.string().trim().min(1).optional()
+});
+
+export type PaginationQuery = z.infer<typeof PaginationQuerySchema>;
+
 export const WorkingHoursSchema = z.record(
   z.object({
     open: z.string().trim().min(1),
@@ -191,7 +198,7 @@ export const UpdateQuoteSchema = z.object({
 
 export type UpdateQuote = z.infer<typeof UpdateQuoteSchema>;
 
-export const ListByStatusQuerySchema = z.object({
+export const ListByStatusQuerySchema = PaginationQuerySchema.extend({
   status: z.string().trim().min(1).optional()
 });
 

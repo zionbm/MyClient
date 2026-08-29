@@ -1,8 +1,10 @@
 import "reflect-metadata";
-import { Body, Controller, Get, Module, Post } from "@nestjs/common";
+import { Body, Controller, Get, Headers, Module, Post, UnauthorizedException } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { FastifyAdapter, type NestFastifyApplication } from "@nestjs/platform-fastify";
-import { ApiExceptionFilter, cloudRunServiceAuthHeaders, getEnv, getPort, health, log } from "@myclient/common";
+import { ApiExceptionFilter, cloudRunServiceAuthHeaders, getEnv, getInternalApiSecret, getPort, health, log } from "@myclient/common";
+
+type RequestHeaders = Record<string, string | string[] | undefined>;
 
 type MockRun = {
   id: string;
@@ -13,6 +15,17 @@ type MockRun = {
 };
 
 const mockRuns: MockRun[] = [];
+
+function headerValue(headers: RequestHeaders, name: string): string | undefined {
+  const value = headers[name.toLowerCase()] ?? headers[name];
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function requireInternalSecret(headers: RequestHeaders): void {
+  if (headerValue(headers, "x-internal-secret") !== getInternalApiSecret()) {
+    throw new UnauthorizedException("Missing or invalid internal secret");
+  }
+}
 
 function positiveNumberEnv(name: string, fallback: number) {
   const value = Number(getEnv(name, String(fallback)));
@@ -52,7 +65,7 @@ async function pollDueReminders() {
       headers: {
         ...(await cloudRunServiceAuthHeaders(coreBaseUrl)),
         "content-type": "application/json",
-        "x-internal-secret": getEnv("INTERNAL_API_SECRET", "dev-internal-secret")
+        "x-internal-secret": getInternalApiSecret()
       },
       body: JSON.stringify({
         limit: positiveNumberEnv("WORKER_REMINDER_BATCH_SIZE", 20)
@@ -89,18 +102,21 @@ class WorkerController {
   }
 
   @Get("reminders/status")
-  reminderStatus() {
+  reminderStatus(@Headers() headers: RequestHeaders) {
+    requireInternalSecret(headers);
     return { reminders: reminderPollState };
   }
 
   @Post("reminders/run")
-  async runReminders() {
+  async runReminders(@Headers() headers: RequestHeaders) {
+    requireInternalSecret(headers);
     await pollDueReminders();
     return { reminders: reminderPollState };
   }
 
   @Post("mock-runs")
-  enqueue(@Body() body: { type?: string; payload?: unknown }) {
+  enqueue(@Headers() headers: RequestHeaders, @Body() body: { type?: string; payload?: unknown }) {
+    requireInternalSecret(headers);
     const run: MockRun = {
       id: `mock_run_${crypto.randomUUID()}`,
       type: body.type ?? "MOCK_RUN",
@@ -114,7 +130,8 @@ class WorkerController {
   }
 
   @Get("mock-runs")
-  list() {
+  list(@Headers() headers: RequestHeaders) {
+    requireInternalSecret(headers);
     return { runs: mockRuns };
   }
 }

@@ -1,7 +1,10 @@
 import { assert, request } from "./http.mjs";
 
 const core = process.env.CORE_BASE_URL ?? "http://localhost:3000";
+const ai = process.env.AI_BASE_URL ?? "http://localhost:3001";
+const voice = process.env.VOICE_BASE_URL ?? "http://localhost:3002";
 const telephony = process.env.TELEPHONY_BASE_URL ?? "http://localhost:3003";
+const worker = process.env.WORKER_BASE_URL ?? "http://localhost:3004";
 const suffix = Date.now().toString();
 const firebaseUid = `firebase_it_${suffix}`;
 const token = `Bearer mock:${firebaseUid}`;
@@ -11,6 +14,9 @@ function expectStatus(result, expected, label) {
 }
 
 expectStatus(request("GET", `${core}/health`), 200, "core health");
+expectStatus(request("POST", `${ai}/intent/parse`, { text: "בדיקה" }), 401, "AI internal auth rejected");
+expectStatus(request("POST", `${voice}/stt/mock`, { transcript: "בדיקה" }), 401, "Voice internal auth rejected");
+expectStatus(request("GET", `${worker}/reminders/status`), 401, "Worker internal auth rejected");
 
 const registration = request("POST", `${core}/auth/register-business`, {
   firebaseUid,
@@ -43,6 +49,27 @@ const customerResult = request("POST", `${core}/businesses/${businessId}/custome
 expectStatus(customerResult, 201, "create customer");
 const customerId = customerResult.body.customer.id;
 assert(customerResult.body.initialNote, "expected initial note");
+
+const secondCustomerResult = request("POST", `${core}/businesses/${businessId}/customers`, {
+  name: "לקוח אינטגרציה שני",
+  phone: "+972502222223"
+}, { authorization: token });
+expectStatus(secondCustomerResult, 201, "create second customer");
+
+const firstCustomersPage = request("GET", `${core}/businesses/${businessId}/customers?limit=1`, undefined, { authorization: token });
+expectStatus(firstCustomersPage, 200, "list customers first page");
+assert(firstCustomersPage.body.customers.length === 1, "expected one customer in first page", firstCustomersPage.body);
+assert(firstCustomersPage.body.pageInfo?.hasMore === true, "expected customer pageInfo.hasMore");
+assert(firstCustomersPage.body.pageInfo?.nextCursor, "expected customer nextCursor");
+const secondCustomersPage = request(
+  "GET",
+  `${core}/businesses/${businessId}/customers?limit=1&cursor=${encodeURIComponent(firstCustomersPage.body.pageInfo.nextCursor)}`,
+  undefined,
+  { authorization: token }
+);
+expectStatus(secondCustomersPage, 200, "list customers second page");
+assert(secondCustomersPage.body.customers.length === 1, "expected one customer in second page", secondCustomersPage.body);
+assert(secondCustomersPage.body.customers[0].id !== firstCustomersPage.body.customers[0].id, "expected no duplicate customer across pages");
 
 expectStatus(request("POST", `${core}/businesses/${businessId}/members`, {
   phoneNumber: `+972555${suffix.slice(-6).padStart(6, "0")}`
@@ -138,6 +165,7 @@ expectStatus(request("POST", `${telephony}/plivo/recording`, {
 const notifications = request("GET", `${core}/businesses/${businessId}/notifications`, undefined, { authorization: token });
 expectStatus(notifications, 200, "list notifications");
 assert(notifications.body.notifications.length > 0, "expected at least one notification");
+assert(notifications.body.pageInfo, "expected notifications pageInfo");
 const notificationId = notifications.body.notifications[0].id;
 
 expectStatus(request("POST", `${core}/businesses/${businessId}/notifications/${notificationId}/snooze`, {
@@ -153,9 +181,11 @@ const calls = request("GET", `${core}/businesses/${businessId}/calls`, undefined
 expectStatus(calls, 200, "list calls");
 assert(calls.body.calls.some((call) => call.transcriptPreview), "expected a call transcript preview");
 assert(calls.body.calls.some((call) => call.ivrSelection && call.displayStatus), "expected product-shaped call display state");
+assert(calls.body.pageInfo, "expected calls pageInfo");
 
 const audit = request("GET", `${core}/businesses/${businessId}/audit-events`, undefined, { authorization: token });
 expectStatus(audit, 200, "list audit");
 assert(audit.body.auditEvents.length > 0, "expected audit events");
+assert(audit.body.pageInfo, "expected audit pageInfo");
 
 console.log(JSON.stringify({ ok: true, businessId, firebaseUid, phoneNumber }, null, 2));

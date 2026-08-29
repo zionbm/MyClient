@@ -19,3 +19,11 @@ export function getPort(name: string, fallback: number): number {
   }
   return parsed;
 }
+
+export function isProduction(): boolean {
+  return process.env.NODE_ENV === "production";
+}
+
+export function getInternalApiSecret(): string {
+  return getEnv("INTERNAL_API_SECRET", isProduction() ? undefined : "dev-internal-secret");
+}

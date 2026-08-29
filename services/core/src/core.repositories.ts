@@ -326,6 +326,31 @@ type AuditEventInput = {
   result?: string;
 };
 
+type PaginationCursor = {
+  createdAt: Date;
+  id: string;
+};
+
+type PaginationInput = {
+  limit: number;
+  cursor?: PaginationCursor;
+};
+
+function createdAtCursorWhere(cursor: PaginationCursor | undefined) {
+  return cursor
+    ? {
+        OR: [
+          { createdAt: { lt: cursor.createdAt } },
+          { createdAt: cursor.createdAt, id: { lt: cursor.id } }
+        ]
+      }
+    : {};
+}
+
+function paginationTake(pagination: PaginationInput | undefined) {
+  return pagination ? pagination.limit + 1 : undefined;
+}
+
 @Injectable()
 export class BusinessesRepository {
   constructor(@Inject(PrismaService) private readonly prisma: PrismaService) {}
@@ -632,10 +657,14 @@ export class AuditRepository {
     });
   }
 
-  async listByBusiness(businessId: string) {
+  async listByBusiness(businessId: string, pagination?: PaginationInput) {
     return this.prisma.auditEvent.findMany({
-      where: { businessId },
-      orderBy: { createdAt: "desc" }
+      where: {
+        businessId,
+        ...createdAtCursorWhere(pagination?.cursor)
+      },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: paginationTake(pagination)
     });
   }
 }
@@ -843,12 +872,16 @@ export class IncomingCallsRepository {
     });
   }
 
-  async listByBusiness(businessId: string) {
+  async listByBusiness(businessId: string, pagination?: PaginationInput) {
     await this.businesses.requireBusiness(businessId);
     return this.prisma.incomingCall.findMany({
-      where: { businessId },
+      where: {
+        businessId,
+        ...createdAtCursorWhere(pagination?.cursor)
+      },
       include: { transcripts: true },
-      orderBy: { createdAt: "desc" }
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: paginationTake(pagination)
     });
   }
 }
@@ -900,11 +933,15 @@ export class OwnerVoiceCommandsRepository {
     });
   }
 
-  async listByBusiness(businessId: string) {
+  async listByBusiness(businessId: string, pagination?: PaginationInput) {
     await this.businesses.requireBusiness(businessId);
     return this.prisma.ownerVoiceCommand.findMany({
-      where: { businessId },
-      orderBy: { createdAt: "desc" }
+      where: {
+        businessId,
+        ...createdAtCursorWhere(pagination?.cursor)
+      },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: paginationTake(pagination)
     });
   }
 
@@ -1167,15 +1204,17 @@ export class CustomersRepository {
     });
   }
 
-  async listByBusiness(businessId: string) {
+  async listByBusiness(businessId: string, pagination?: PaginationInput) {
     await this.businesses.requireBusiness(businessId);
     return this.prisma.customer.findMany({
       where: {
         businessId,
         deletedAt: null,
-        mergedIntoCustomerId: null
+        mergedIntoCustomerId: null,
+        ...createdAtCursorWhere(pagination?.cursor)
       },
-      orderBy: { createdAt: "desc" }
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: paginationTake(pagination)
     });
   }
 
@@ -1453,22 +1492,28 @@ export class NotificationsRepository {
     });
   }
 
-  async listByBusiness(businessId: string) {
-    await this.businesses.requireBusiness(businessId);
-    return this.prisma.notification.findMany({
-      where: { businessId },
-      orderBy: { createdAt: "desc" }
-    });
-  }
-
-  async listByBusinessAndStatus(businessId: string, status?: string) {
+  async listByBusiness(businessId: string, pagination?: PaginationInput) {
     await this.businesses.requireBusiness(businessId);
     return this.prisma.notification.findMany({
       where: {
         businessId,
-        status: status as "PENDING" | "SENT" | "FAILED" | "READ" | undefined
+        ...createdAtCursorWhere(pagination?.cursor)
       },
-      orderBy: { createdAt: "desc" }
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: paginationTake(pagination)
+    });
+  }
+
+  async listByBusinessAndStatus(businessId: string, status?: string, pagination?: PaginationInput) {
+    await this.businesses.requireBusiness(businessId);
+    return this.prisma.notification.findMany({
+      where: {
+        businessId,
+        status: status as "PENDING" | "SENT" | "FAILED" | "READ" | undefined,
+        ...createdAtCursorWhere(pagination?.cursor)
+      },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: paginationTake(pagination)
     });
   }
 
@@ -1594,14 +1639,16 @@ export class AiPendingActionsRepository {
     });
   }
 
-  async listByBusinessAndStatus(businessId: string, status?: string) {
+  async listByBusinessAndStatus(businessId: string, status?: string, pagination?: PaginationInput) {
     await this.businesses.requireBusiness(businessId);
     return this.prisma.aiPendingAction.findMany({
       where: {
         businessId,
-        status
+        status,
+        ...createdAtCursorWhere(pagination?.cursor)
       },
-      orderBy: { createdAt: "desc" }
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: paginationTake(pagination)
     });
   }
 

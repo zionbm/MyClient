@@ -1,9 +1,11 @@
 import "reflect-metadata";
-import { BadGatewayException, Body, Controller, Get, Module, Post } from "@nestjs/common";
+import { BadGatewayException, Body, Controller, Get, Headers, Module, Post, UnauthorizedException } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { FastifyAdapter, type NestFastifyApplication } from "@nestjs/platform-fastify";
-import { ApiExceptionFilter, getEnv, getPort, health, log, stableIdempotencyKey } from "@myclient/common";
-import { AiActionBatchSchema, type AiAction } from "@myclient/contracts";
+import { ApiExceptionFilter, getEnv, getInternalApiSecret, getPort, health, log, stableIdempotencyKey } from "@myclient/common";
+import { ACTION_TYPES, AiActionBatchSchema, type AiAction } from "@myclient/contracts";
+
+type RequestHeaders = Record<string, string | string[] | undefined>;
 
 type AiIntent = {
   actions: AiAction[];
@@ -29,6 +31,17 @@ function parseMockCustomerPayload(text: string): Record<string, unknown> {
   };
 }
 
+function headerValue(headers: RequestHeaders, name: string): string | undefined {
+  const value = headers[name.toLowerCase()] ?? headers[name];
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function requireInternalSecret(headers: RequestHeaders): void {
+  if (headerValue(headers, "x-internal-secret") !== getInternalApiSecret()) {
+    throw new UnauthorizedException("Missing or invalid internal secret");
+  }
+}
+
 @Controller()
 class AiController {
   @Get("health")
@@ -37,7 +50,8 @@ class AiController {
   }
 
   @Post("intent/parse")
-  async parseIntent(@Body() body: { text?: string; businessId?: string; userId?: string; idempotencyKey?: string }) {
+  async parseIntent(@Headers() headers: RequestHeaders, @Body() body: { text?: string; businessId?: string; userId?: string; idempotencyKey?: string }) {
+    requireInternalSecret(headers);
     const text = (body.text ?? "").trim();
     const idempotencyKey = body.idempotencyKey ?? stableIdempotencyKey("ai", `${body.businessId}:${body.userId}:${text}`);
 
@@ -106,26 +120,7 @@ class AiController {
                     properties: {
                       type: {
                         type: "string",
-                        enum: [
-                          "CREATE_CUSTOMER",
-                          "UPDATE_CUSTOMER",
-                          "CREATE_REMINDER",
-                          "UPDATE_REMINDER",
-                          "COMPLETE_REMINDER",
-                          "CREATE_APPOINTMENT",
-                          "UPDATE_APPOINTMENT",
-                          "CANCEL_APPOINTMENT",
-                          "CREATE_NOTE",
-                          "UPDATE_NOTE",
-                          "CREATE_HOME_VISIT",
-                          "UPDATE_HOME_VISIT",
-                          "COMPLETE_HOME_VISIT",
-                          "CREATE_QUOTE",
-                          "UPDATE_QUOTE",
-                          "MARK_QUOTE_PAID",
-                          "DELETE_WORK_ITEM",
-                          "MERGE_CUSTOMERS"
-                        ]
+                        enum: ACTION_TYPES
                       },
                       idempotencyKey: { type: "string" },
                       confidence: { type: "number", minimum: 0, maximum: 1 },

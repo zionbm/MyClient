@@ -167,6 +167,7 @@ model Customer {
   notes        Note[]
 
   @@index([businessId])
+  @@index([businessId, createdAt])
   @@index([businessId, deletedAt])
   @@index([businessId, mergedIntoCustomerId])
 }
@@ -315,6 +316,7 @@ model IncomingCall {
   transcripts CallTranscript[]
 
   @@index([businessId])
+  @@index([businessId, createdAt])
   @@index([businessId, toNumber])
 }
 
@@ -367,6 +369,7 @@ model OwnerVoiceCommand {
   business Business @relation(fields: [businessId], references: [id])
 
   @@index([businessId])
+  @@index([businessId, createdAt])
   @@index([businessId, userId])
 }
 
@@ -387,6 +390,7 @@ model AiPendingAction {
   updatedAt     DateTime  @updatedAt
 
   @@index([businessId])
+  @@index([businessId, createdAt])
   @@index([businessId, status])
 }
 
@@ -408,6 +412,7 @@ model Notification {
   updatedAt     DateTime           @updatedAt
 
   @@index([businessId])
+  @@index([businessId, createdAt])
   @@index([businessId, status])
   @@index([businessId, itemType, itemId])
 }
@@ -447,6 +452,7 @@ model AuditEvent {
   createdAt  DateTime @default(now())
 
   @@index([businessId])
+  @@index([businessId, createdAt])
 }
 
 model UsageEvent {

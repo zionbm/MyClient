@@ -1,8 +1,8 @@
 import "reflect-metadata";
-import { BadGatewayException, BadRequestException, Body, Controller, Get, Headers, Module, Post } from "@nestjs/common";
+import { BadGatewayException, BadRequestException, Body, Controller, Get, Headers, Module, Post, UnauthorizedException } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { FastifyAdapter, type NestFastifyApplication } from "@nestjs/platform-fastify";
-import { ApiExceptionFilter, getEnv, getPort, health, log, stableIdempotencyKey } from "@myclient/common";
+import { ApiExceptionFilter, getEnv, getInternalApiSecret, getPort, health, log, stableIdempotencyKey } from "@myclient/common";
 
 type RequestHeaders = Record<string, string | string[] | undefined>;
 
@@ -21,6 +21,12 @@ function requireAudio(body: unknown): Buffer {
   return body;
 }
 
+function requireInternalSecret(headers: RequestHeaders): void {
+  if (headerValue(headers, "x-internal-secret") !== getInternalApiSecret()) {
+    throw new UnauthorizedException("Missing or invalid internal secret");
+  }
+}
+
 @Controller()
 class VoiceController {
   @Get("health")
@@ -29,7 +35,8 @@ class VoiceController {
   }
 
   @Post("stt/mock")
-  transcribe(@Body() body: { transcript?: string; recordingUrl?: string; languageCode?: string }) {
+  transcribe(@Headers() headers: RequestHeaders, @Body() body: { transcript?: string; recordingUrl?: string; languageCode?: string }) {
+    requireInternalSecret(headers);
     const transcript = body.transcript?.trim() || "תמלול לדוגמה: הלקוח ביקש שתחזור אליו.";
     const result = {
       provider: "mock-google-stt",
@@ -44,6 +51,7 @@ class VoiceController {
 
   @Post("stt/openai")
   async transcribeOpenAi(@Headers() headers: RequestHeaders, @Body() body: unknown) {
+    requireInternalSecret(headers);
     const audio = requireAudio(body);
     const apiKey = getEnv("OPENAI_API_KEY");
     const configuredModel = getEnv("OPENAI_STT_MODEL", "gpt-4o-mini-transcribe");
@@ -112,7 +120,8 @@ class VoiceController {
   }
 
   @Post("tts/mock")
-  synthesize(@Body() body: { text?: string; voice?: string }) {
+  synthesize(@Headers() headers: RequestHeaders, @Body() body: { text?: string; voice?: string }) {
+    requireInternalSecret(headers);
     const text = body.text ?? "שלום, הגעתם למזכירה הווירטואלית.";
     return {
       provider: "mock-google-tts",
