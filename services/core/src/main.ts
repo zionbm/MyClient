@@ -10,7 +10,7 @@ import {
 import { NestFactory } from "@nestjs/core";
 import { FastifyAdapter, type NestFastifyApplication } from "@nestjs/platform-fastify";
 import { Prisma } from "@prisma/client";
-import { ApiExceptionFilter, cloudRunServiceAuthHeaders, getEnv, getInternalApiSecret, getPort, health, log, stableIdempotencyKey } from "@myclient/common";
+import { ApiExceptionFilter, getEnv, getInternalApiSecret, getPort, health, log, stableIdempotencyKey } from "@myclient/common";
 import {
   AiPendingActionListQuerySchema,
   AiActionBatchSchema,
@@ -71,6 +71,7 @@ import {
 import { PrismaService } from "./prisma.service.js";
 import { CoreAccessService } from "./core-access.service.js";
 import { CoreNotificationsService } from "./core-notifications.service.js";
+import { CoreVoiceGatewayService } from "./core-voice-gateway.service.js";
 
 type RequestHeaders = Record<string, string | string[] | undefined>;
 
@@ -579,6 +580,7 @@ export class CoreService {
     @Inject(AuthRepository) private readonly auth: AuthRepository,
     @Inject(CoreAccessService) private readonly access: CoreAccessService,
     @Inject(CoreNotificationsService) private readonly notificationDelivery: CoreNotificationsService,
+    @Inject(CoreVoiceGatewayService) private readonly voiceGateway: CoreVoiceGatewayService,
     @Inject(AuditRepository) private readonly audit: AuditRepository,
     @Inject(BusinessMembersRepository) private readonly members: BusinessMembersRepository,
     @Inject(BusinessSettingsRepository) private readonly settings: BusinessSettingsRepository,
@@ -1132,7 +1134,7 @@ export class CoreService {
         executionStatus: "TRANSCRIBED"
       });
 
-      const intent = await this.parseOwnerCommandIntent({
+      const intent = await this.voiceGateway.parseOwnerCommandIntent({
         transcript: transcriptBody.transcript,
         businessId,
         userId: user.id,
@@ -1250,7 +1252,7 @@ export class CoreService {
     });
 
     try {
-      const stt = await this.transcribeOwnerCommandAudio({
+      const stt = await this.voiceGateway.transcribeOwnerCommandAudio({
         audio,
         contentType: headerValue(headers, "content-type") ?? "audio/mp4",
         filename: commandHeaders.filename,
@@ -1267,7 +1269,7 @@ export class CoreService {
         executionStatus: "TRANSCRIBED"
       });
 
-      const intent = await this.parseOwnerCommandIntent({
+      const intent = await this.voiceGateway.parseOwnerCommandIntent({
         transcript: stt.transcript,
         businessId,
         userId: user.id,
@@ -2937,93 +2939,6 @@ export class CoreService {
     };
   }
 
-  private async transcribeOwnerCommandAudio(input: {
-    audio: Buffer;
-    contentType: string;
-    filename: string;
-    languageCode: string;
-  }): Promise<{ provider: string; model?: string; languageCode: string; transcript: string; confidence: number }> {
-    const voiceBaseUrl = getEnv("VOICE_BASE_URL", "http://localhost:3002");
-    const useMockStt = getEnv("MOCK_STT_PROVIDER", "false") === "true";
-    const audioBody = input.audio.buffer.slice(input.audio.byteOffset, input.audio.byteOffset + input.audio.byteLength) as ArrayBuffer;
-    const response = await fetch(`${voiceBaseUrl}${useMockStt ? "/stt/mock" : "/stt/openai"}`, {
-      method: "POST",
-      headers: {
-        ...(await cloudRunServiceAuthHeaders(voiceBaseUrl)),
-        "x-internal-secret": getInternalApiSecret(),
-        ...(useMockStt
-          ? { "content-type": "application/json" }
-          : {
-              "content-type": input.contentType,
-              "x-audio-filename": input.filename,
-              "x-language-code": input.languageCode
-            })
-      },
-      body: useMockStt ? JSON.stringify({ languageCode: input.languageCode }) : audioBody
-    });
-    const result = (await response.json().catch(() => ({}))) as {
-      provider?: string;
-      model?: string;
-      languageCode?: string;
-      transcript?: string;
-      confidence?: number;
-    };
-    if (!response.ok) {
-      throw new BadRequestException({
-        message: `Voice STT failed with ${response.status}`,
-        details: result
-      });
-    }
-    if (!result.transcript) {
-      throw new BadRequestException("Voice STT returned empty transcript");
-    }
-    return {
-      provider: result.provider ?? "openai",
-      model: result.model,
-      languageCode: result.languageCode ?? input.languageCode,
-      transcript: result.transcript,
-      confidence: result.confidence ?? 1
-    };
-  }
-
-  private async parseOwnerCommandIntent(input: {
-    transcript: string;
-    businessId: string;
-    userId: string;
-    idempotencyKey: string;
-  }) {
-    const aiBaseUrl = getEnv("AI_BASE_URL", "http://localhost:3001");
-    const response = await fetch(`${aiBaseUrl}/intent/parse`, {
-      method: "POST",
-      headers: {
-        ...(await cloudRunServiceAuthHeaders(aiBaseUrl)),
-        "content-type": "application/json",
-        "x-internal-secret": getInternalApiSecret()
-      },
-      body: JSON.stringify({
-        text: input.transcript,
-        businessId: input.businessId,
-        userId: input.userId,
-        idempotencyKey: input.idempotencyKey
-      })
-    });
-    const result = (await response.json().catch(() => ({}))) as { provider?: string; action?: unknown; actions?: unknown };
-    if (!response.ok) {
-      throw new BadRequestException({
-        message: `AI intent parsing failed with ${response.status}`,
-        details: result
-      });
-    }
-    const actions = result.actions
-      ? AiActionBatchSchema.parse({ actions: result.actions }).actions
-      : [AiActionSchema.parse(result.action)];
-    return {
-      provider: result.provider ?? "openai",
-      action: actions[0],
-      actions
-    };
-  }
-
   private isInvalidOwnerVoiceTranscript(transcript: string): boolean {
     const normalized = transcript.replace(/\p{Cf}/gu, "").replace(/\s+/g, " ").trim();
     const visibleCharacters = normalized.replace(/\s+/g, "");
@@ -3800,6 +3715,7 @@ const {
     AiPendingActionsRepository,
     CoreAccessService,
     CoreNotificationsService,
+    CoreVoiceGatewayService,
     CoreService,
     { provide: CORE_SERVICE, useExisting: CoreService }
   ]
