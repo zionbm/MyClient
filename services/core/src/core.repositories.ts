@@ -107,6 +107,7 @@ type UpdateNoteInput = {
   businessId: string;
   customerId: string;
   noteId: string;
+  text?: string;
   status?: "OPEN" | "DONE" | "CANCELLED";
 };
 
@@ -157,6 +158,7 @@ type RegisterDeviceTokenInput = {
 type ResolveAiPendingActionInput = {
   businessId: string;
   aiPendingActionId: string;
+  expectedStatus?: string;
   status: "EXECUTED" | "REJECTED";
   resolution?: Prisma.InputJsonValue;
 };
@@ -1253,7 +1255,7 @@ export class CustomersRepository {
 
     const deletedAt = new Date();
     return this.prisma.$transaction(async (tx) => {
-      const [reminders, appointments, homeVisits, quotes] = await Promise.all([
+      const [reminders, appointments, homeVisits, quotes, notes] = await Promise.all([
         tx.reminder.updateMany({
           where: {
             businessId: input.businessId,
@@ -1285,6 +1287,14 @@ export class CustomersRepository {
             deletedAt: null
           },
           data: { deletedAt }
+        }),
+        tx.note.updateMany({
+          where: {
+            businessId: input.businessId,
+            customerId: existing.id,
+            deletedAt: null
+          },
+          data: { deletedAt }
         })
       ]);
 
@@ -1299,7 +1309,8 @@ export class CustomersRepository {
           reminders: reminders.count,
           homeVisits: homeVisits.count,
           appointments: appointments.count,
-          quotes: quotes.count
+          quotes: quotes.count,
+          notes: notes.count
         }
       };
     });
@@ -1436,13 +1447,14 @@ export class NotesRepository {
       return null;
     }
 
-    return this.prisma.note.findMany({
-      where: {
-        businessId,
-        customerId
-      },
-      orderBy: { createdAt: "desc" }
-    });
+      return this.prisma.note.findMany({
+        where: {
+          businessId,
+          customerId,
+          deletedAt: null
+        },
+        orderBy: { createdAt: "desc" }
+      });
   }
 
   async update(input: UpdateNoteInput) {
@@ -1451,6 +1463,7 @@ export class NotesRepository {
         businessId: input.businessId,
         customerId: input.customerId,
         id: input.noteId,
+        deletedAt: null,
         customer: {
           deletedAt: null
         }
@@ -1464,8 +1477,46 @@ export class NotesRepository {
     return this.prisma.note.update({
       where: { id: existing.id },
       data: {
+        text: input.text,
         status: input.status
       }
+    });
+  }
+
+  async findByBusinessAndId(businessId: string, noteId: string) {
+    return this.prisma.note.findFirst({
+      where: {
+        businessId,
+        id: noteId,
+        deletedAt: null,
+        customer: {
+          deletedAt: null
+        }
+      }
+    });
+  }
+
+  async softDelete(businessId: string, noteId: string, customerId?: string) {
+    const existing = customerId
+      ? await this.prisma.note.findFirst({
+          where: {
+            businessId,
+            customerId,
+            id: noteId,
+            deletedAt: null,
+            customer: {
+              deletedAt: null
+            }
+          }
+        })
+      : await this.findByBusinessAndId(businessId, noteId);
+    if (!existing) {
+      return null;
+    }
+
+    return this.prisma.note.update({
+      where: { id: existing.id },
+      data: { deletedAt: new Date() }
     });
   }
 }
@@ -1662,17 +1713,56 @@ export class AiPendingActionsRepository {
   }
 
   async resolve(input: ResolveAiPendingActionInput) {
-    const existing = await this.findByBusinessAndId(input.businessId, input.aiPendingActionId);
-    if (!existing) {
-      return null;
-    }
-
-    return this.prisma.aiPendingAction.update({
-      where: { id: existing.id },
+    const result = await this.prisma.aiPendingAction.updateMany({
+      where: {
+        businessId: input.businessId,
+        id: input.aiPendingActionId,
+        status: input.expectedStatus
+      },
       data: {
         status: input.status,
         resolution: input.resolution === undefined ? undefined : input.resolution,
         resolvedAt: new Date()
+      }
+    });
+
+    if (result.count !== 1) {
+      return null;
+    }
+
+    return this.findByBusinessAndId(input.businessId, input.aiPendingActionId);
+  }
+
+  async claimForExecution(input: { businessId: string; aiPendingActionId: string; userId: string }) {
+    const result = await this.prisma.aiPendingAction.updateMany({
+      where: {
+        businessId: input.businessId,
+        id: input.aiPendingActionId,
+        status: "PENDING"
+      },
+      data: {
+        status: "EXECUTING",
+        resolution: { executingBy: input.userId, startedAt: new Date().toISOString() }
+      }
+    });
+
+    if (result.count !== 1) {
+      return null;
+    }
+
+    return this.findByBusinessAndId(input.businessId, input.aiPendingActionId);
+  }
+
+  async releaseExecutionClaim(input: { businessId: string; aiPendingActionId: string; reason: string }) {
+    return this.prisma.aiPendingAction.updateMany({
+      where: {
+        businessId: input.businessId,
+        id: input.aiPendingActionId,
+        status: "EXECUTING"
+      },
+      data: {
+        status: "PENDING",
+        resolution: { failedExecutionAttemptAt: new Date().toISOString(), reason: input.reason }
       }
     });
   }

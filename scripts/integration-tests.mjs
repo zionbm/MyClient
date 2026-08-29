@@ -79,11 +79,13 @@ const members = request("GET", `${core}/businesses/${businessId}/members`, undef
 expectStatus(members, 200, "list members");
 assert(members.body.members.length > 0, "expected business members");
 
-expectStatus(request("POST", `${core}/businesses/${businessId}/appointments`, {
+const appointmentResult = request("POST", `${core}/businesses/${businessId}/appointments`, {
   customerId,
   title: "פגישת אינטגרציה",
   startsAt: "2026-08-21T09:00:00.000Z"
-}, { authorization: token }), 201, "create appointment");
+}, { authorization: token });
+expectStatus(appointmentResult, 201, "create appointment");
+const appointmentId = appointmentResult.body.appointment.id;
 
 const reminderResult = request("POST", `${core}/businesses/${businessId}/reminders`, {
   customerId,
@@ -124,6 +126,7 @@ assert(customerDetail.body.activity.some((item) => item.type === "reminder"), "e
 assert(customerDetail.body.activity.some((item) => item.type === "home_visit"), "expected customer home visit activity");
 assert(customerDetail.body.activity.some((item) => item.type === "quote"), "expected customer quote activity");
 assert(customerDetail.body.activity.some((item) => item.type === "note"), "expected customer note activity");
+const noteId = customerDetail.body.activity.find((item) => item.type === "note").id;
 
 const aiPending = request("POST", `${core}/owner-actions/execute`, {
   businessId,
@@ -146,6 +149,28 @@ expectStatus(request("PATCH", `${core}/businesses/${businessId}/ai-pending-actio
 expectStatus(request("POST", `${core}/businesses/${businessId}/ai-pending-actions/${aiPendingActionId}/approve`, {
   payload: { title: "משימה מפעולה ממתינה" }
 }, { authorization: token }), 201, "approve AI pending action");
+expectStatus(request("POST", `${core}/businesses/${businessId}/ai-pending-actions/${aiPendingActionId}/approve`, {
+  payload: { title: "לא אמור להתבצע שוב" }
+}, { authorization: token }), 400, "reject duplicate AI pending approval");
+
+const deleteNotePending = request("POST", `${core}/owner-actions/execute`, {
+  businessId,
+  action: {
+    type: "DELETE_WORK_ITEM",
+    idempotencyKey: `it_delete_note_${suffix}`,
+    confidence: 0.7,
+    requiresConfirmation: false,
+    missingFields: ["itemId"],
+    payload: { itemType: "note" }
+  }
+}, { authorization: token });
+expectStatus(deleteNotePending, 201, "create delete note pending action");
+
+expectStatus(request("POST", `${core}/businesses/${businessId}/ai-pending-actions/${deleteNotePending.body.aiPendingAction.id}/approve`, {
+  payload: { itemId: noteId }
+}, { authorization: token }), 201, "approve delete note work item");
+
+expectStatus(request("DELETE", `${core}/businesses/${businessId}/appointments/${appointmentId}`, undefined, { authorization: token }), 200, "delete appointment");
 
 expectStatus(request("POST", `${telephony}/plivo/incoming`, {
   callId: `it_call_${suffix}`,

@@ -82,6 +82,7 @@ model Business {
   homeVisits    HomeVisit[]
   reminders     Reminder[]
   quotes        Quote[]
+  notes         Note[]
   IncomingCall  IncomingCall[]
   voiceCommands OwnerVoiceCommand[]
   deviceTokens  DeviceToken[]
@@ -114,7 +115,7 @@ model User {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  business     Business?     @relation(fields: [businessId], references: [id])
+  business     Business?        @relation(fields: [businessId], references: [id])
   memberships  BusinessMember[]
   deviceTokens DeviceToken[]
 
@@ -146,20 +147,20 @@ model BusinessMember {
 }
 
 model Customer {
-  id         String   @id @default(uuid())
-  businessId String
-  name       String
-  phone      String?
-  email      String?
-  address    String?
-  deletedAt  DateTime?
+  id                   String    @id @default(uuid())
+  businessId           String
+  name                 String
+  phone                String?
+  email                String?
+  address              String?
+  deletedAt            DateTime?
   mergedIntoCustomerId String?
-  mergedAt   DateTime?
-  mergedByUserId String?
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  mergedAt             DateTime?
+  mergedByUserId       String?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
 
-  business     Business       @relation(fields: [businessId], references: [id])
+  business     Business      @relation(fields: [businessId], references: [id])
   appointments Appointment[]
   homeVisits   HomeVisit[]
   reminders    Reminder[]
@@ -226,16 +227,17 @@ model Reminder {
   priority       ReminderPriority @default(NORMAL)
   dueAt          DateTime?
   reminderSentAt DateTime?
-  source         String       @default("app")
+  source         String           @default("app")
   sourceRef      String?
-  idempotencyKey String?      @unique
+  idempotencyKey String?
   deletedAt      DateTime?
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
 
   business Business  @relation(fields: [businessId], references: [id])
   customer Customer? @relation(fields: [customerId], references: [id])
 
+  @@unique([businessId, idempotencyKey])
   @@index([businessId])
   @@index([businessId, sourceRef])
   @@index([businessId, dueAt])
@@ -255,7 +257,7 @@ model Quote {
   reminderSentAt  DateTime?
   source          String      @default("app")
   sourceRef       String?
-  idempotencyKey  String?     @unique
+  idempotencyKey  String?
   deletedAt       DateTime?
   createdAt       DateTime    @default(now())
   updatedAt       DateTime    @updatedAt
@@ -263,6 +265,7 @@ model Quote {
   business Business  @relation(fields: [businessId], references: [id])
   customer Customer? @relation(fields: [customerId], references: [id])
 
+  @@unique([businessId, idempotencyKey])
   @@index([businessId])
   @@index([businessId, customerId])
   @@index([businessId, dueAt])
@@ -271,18 +274,23 @@ model Quote {
 }
 
 model Note {
-  id         String   @id @default(uuid())
+  id         String     @id @default(uuid())
   businessId String
   customerId String
   text       String
   status     NoteStatus @default(OPEN)
-  createdAt  DateTime @default(now())
+  deletedAt  DateTime?
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
 
+  business Business @relation(fields: [businessId], references: [id])
   customer Customer @relation(fields: [customerId], references: [id])
 
   @@index([businessId])
   @@index([businessId, customerId])
   @@index([businessId, status])
+  @@index([businessId, deletedAt])
+  @@index([businessId, createdAt])
 }
 
 model BusinessPhoneNumber {
@@ -343,10 +351,11 @@ model AiAction {
   actionType     String
   payload        Json
   status         ActionStatus @default(PENDING)
-  idempotencyKey String       @unique
+  idempotencyKey String
   createdAt      DateTime     @default(now())
   updatedAt      DateTime     @updatedAt
 
+  @@unique([businessId, idempotencyKey])
   @@index([businessId])
 }
 
@@ -362,12 +371,13 @@ model OwnerVoiceCommand {
   llmAction       Json?
   executionStatus String   @default("RECEIVED")
   executionResult Json?
-  idempotencyKey  String   @unique
+  idempotencyKey  String
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
   business Business @relation(fields: [businessId], references: [id])
 
+  @@unique([businessId, idempotencyKey])
   @@index([businessId])
   @@index([businessId, createdAt])
   @@index([businessId, userId])

@@ -123,6 +123,7 @@ export const CreateNoteSchema = z.object({
 export type CreateNote = z.infer<typeof CreateNoteSchema>;
 
 export const UpdateNoteSchema = z.object({
+  text: z.string().trim().min(1).optional(),
   status: WorkItemStatusSchema.optional()
 }).refine((value) => Object.keys(value).length > 0, "At least one note field is required");
 

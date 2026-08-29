@@ -1886,6 +1886,7 @@ class CoreController {
       businessId,
       customerId,
       noteId,
+      text: command.text,
       status: command.status
     });
 
@@ -1901,6 +1902,32 @@ class CoreController {
       entityType: "customer_note",
       entityId: note.id,
       action: "UPDATE_CUSTOMER_NOTE",
+      after: note as Prisma.InputJsonValue
+    });
+    return { note };
+  }
+
+  @Delete("businesses/:businessId/customers/:customerId/notes/:noteId")
+  async deleteNote(
+    @Headers() headers: RequestHeaders,
+    @Param("businessId") businessId: string,
+    @Param("customerId") customerId: string,
+    @Param("noteId") noteId: string
+  ) {
+    const user = await this.requireBusinessAccess(headers, businessId);
+    const note = await this.notes.softDelete(businessId, noteId, customerId);
+    if (!note) {
+      throw new NotFoundException("Customer note not found");
+    }
+
+    await this.audit.record({
+      businessId,
+      actorType: "user",
+      actorId: user.id,
+      source: "core",
+      entityType: "customer_note",
+      entityId: note.id,
+      action: "DELETE_CUSTOMER_NOTE",
       after: note as Prisma.InputJsonValue
     });
     return { note };
@@ -2014,6 +2041,26 @@ class CoreController {
       entityType: "appointment",
       entityId: appointment.id,
       action: "UPDATE_APPOINTMENT",
+      after: appointment as Prisma.InputJsonValue
+    });
+    return { appointment };
+  }
+
+  @Delete("businesses/:businessId/appointments/:appointmentId")
+  async deleteAppointment(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Param("appointmentId") appointmentId: string) {
+    const user = await this.requireBusinessAccess(headers, businessId);
+    const appointment = await this.appointments.softDelete(businessId, appointmentId);
+    if (!appointment) {
+      throw new NotFoundException("Appointment not found");
+    }
+    await this.audit.record({
+      businessId,
+      actorType: "user",
+      actorId: user.id,
+      source: "core",
+      entityType: "appointment",
+      entityId: appointment.id,
+      action: "DELETE_APPOINTMENT",
       after: appointment as Prisma.InputJsonValue
     });
     return { appointment };
@@ -2494,14 +2541,22 @@ class CoreController {
     @Param("aiPendingActionId") aiPendingActionId: string
   ) {
     const user = await this.requireBusinessAccess(headers, businessId);
+    const existing = await this.aiPendingActions.findByBusinessAndId(businessId, aiPendingActionId);
+    if (!existing) {
+      throw new NotFoundException("AI pending action not found");
+    }
+    if (existing.status !== "PENDING") {
+      throw new BadRequestException("AI pending action is already resolved");
+    }
     const aiPendingAction = await this.aiPendingActions.resolve({
       businessId,
       aiPendingActionId,
+      expectedStatus: "PENDING",
       status: "REJECTED",
       resolution: { rejectedBy: user.id }
     });
     if (!aiPendingAction) {
-      throw new NotFoundException("AI pending action not found");
+      throw new BadRequestException("AI pending action is already resolved");
     }
     await this.audit.record({
       businessId,
@@ -2525,52 +2580,67 @@ class CoreController {
   ) {
     const user = await this.requireBusinessAccess(headers, businessId);
     const command = ApproveAiPendingActionSchema.parse(body);
-    const existing = await this.aiPendingActions.findByBusinessAndId(businessId, aiPendingActionId);
-    if (!existing) {
-      throw new NotFoundException("AI pending action not found");
-    }
-    if (existing.status !== "PENDING") {
+    const claimed = await this.aiPendingActions.claimForExecution({
+      businessId,
+      aiPendingActionId,
+      userId: user.id
+    });
+    if (!claimed) {
+      const existing = await this.aiPendingActions.findByBusinessAndId(businessId, aiPendingActionId);
+      if (!existing) {
+        throw new NotFoundException("AI pending action not found");
+      }
       throw new BadRequestException("AI pending action is already resolved");
     }
 
-    let payload = {
-      ...(existing.payload as Record<string, unknown>),
-      ...(command.payload ?? {})
-    };
-    payload = this.normalizeVoiceActionPayload(existing.actionType, payload);
-    payload = await this.resolveVoiceActionReferences({
-      businessId,
-      actionType: existing.actionType,
-      payload,
-      transcript: ""
-    });
-    const execution = await this.executeStructuredAction({
-      businessId,
-      userId: user.id,
-      actionType: existing.actionType,
-      payload,
-      idempotencyKey: stableIdempotencyKey("ai_pending_action", existing.id)
-    });
-    const aiPendingAction = await this.aiPendingActions.resolve({
-      businessId,
-      aiPendingActionId,
-      status: "EXECUTED",
-      resolution: {
-        executedBy: user.id,
-        execution
-      } as Prisma.InputJsonValue
-    });
-    await this.audit.record({
-      businessId,
-      actorType: "user",
-      actorId: user.id,
-      source: "core",
-      entityType: "ai_pending_action",
-      entityId: aiPendingAction?.id,
-      action: "APPROVE_AI_PENDING_ACTION",
-      after: aiPendingAction as Prisma.InputJsonValue
-    });
-    return { aiPendingAction, execution };
+    try {
+      let payload = {
+        ...(claimed.payload as Record<string, unknown>),
+        ...(command.payload ?? {})
+      };
+      payload = this.normalizeVoiceActionPayload(claimed.actionType, payload);
+      payload = await this.resolveVoiceActionReferences({
+        businessId,
+        actionType: claimed.actionType,
+        payload,
+        transcript: ""
+      });
+      const execution = await this.executeStructuredAction({
+        businessId,
+        userId: user.id,
+        actionType: claimed.actionType,
+        payload,
+        idempotencyKey: stableIdempotencyKey("ai_pending_action", claimed.id)
+      });
+      const aiPendingAction = await this.aiPendingActions.resolve({
+        businessId,
+        aiPendingActionId,
+        expectedStatus: "EXECUTING",
+        status: "EXECUTED",
+        resolution: {
+          executedBy: user.id,
+          execution
+        } as Prisma.InputJsonValue
+      });
+      await this.audit.record({
+        businessId,
+        actorType: "user",
+        actorId: user.id,
+        source: "core",
+        entityType: "ai_pending_action",
+        entityId: aiPendingAction?.id,
+        action: "APPROVE_AI_PENDING_ACTION",
+        after: aiPendingAction as Prisma.InputJsonValue
+      });
+      return { aiPendingAction, execution };
+    } catch (error) {
+      await this.aiPendingActions.releaseExecutionClaim({
+        businessId,
+        aiPendingActionId,
+        reason: error instanceof Error ? error.message : "Unknown approval error"
+      });
+      throw error;
+    }
   }
 
   @Get("businesses/:businessId/audit-events")
@@ -3039,15 +3109,31 @@ class CoreController {
         throw new BadRequestException("Action payload is missing itemType or itemId");
       }
       if (itemType === "reminder") {
-        return { type: input.actionType, item: await this.reminders.softDelete(input.businessId, itemId) };
+        const item = await this.reminders.softDelete(input.businessId, itemId);
+        if (!item) throw new NotFoundException("Reminder not found");
+        return { type: input.actionType, item };
       }
       if (itemType === "home_visit") {
-        return { type: input.actionType, item: await this.homeVisits.softDelete(input.businessId, itemId) };
+        const item = await this.homeVisits.softDelete(input.businessId, itemId);
+        if (!item) throw new NotFoundException("Home visit not found");
+        return { type: input.actionType, item };
+      }
+      if (itemType === "appointment") {
+        const item = await this.appointments.softDelete(input.businessId, itemId);
+        if (!item) throw new NotFoundException("Appointment not found");
+        return { type: input.actionType, item };
       }
       if (itemType === "quote") {
-        return { type: input.actionType, item: await this.quotes.softDelete(input.businessId, itemId) };
+        const item = await this.quotes.softDelete(input.businessId, itemId);
+        if (!item) throw new NotFoundException("Quote not found");
+        return { type: input.actionType, item };
       }
-      throw new BadRequestException("Unsupported treatment item type");
+      if (itemType === "note") {
+        const item = await this.notes.softDelete(input.businessId, itemId);
+        if (!item) throw new NotFoundException("Customer note not found");
+        return { type: input.actionType, item };
+      }
+      throw new BadRequestException("Unsupported work item type");
     }
 
     if (input.actionType === "CREATE_NOTE") {
