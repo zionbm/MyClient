@@ -1,20 +1,22 @@
 import { Controller, Delete, Get, Inject, Patch, Post, Req, type Type } from "@nestjs/common";
 import type { FastifyRequest } from "fastify";
 import type { CoreService } from "./main.js";
+import { CoreCustomersService } from "./core-customers.service.js";
+import { CoreWorkItemsService } from "./core-work-items.service.js";
 
 export const CORE_SERVICE = Symbol("CORE_SERVICE");
 
 type RouteMethod = "get" | "post" | "patch" | "delete";
-type Delegate = (core: CoreService, request: FastifyRequest) => unknown;
+type Delegate<T> = (core: T, request: FastifyRequest) => unknown;
 
-type RouteDefinition = {
+type RouteDefinition<T> = {
   name: string;
   method: RouteMethod;
   path: string;
-  delegate: Delegate;
+  delegate: Delegate<T>;
 };
 
-type CoreControllerType = Type<{ core: CoreService }>;
+type CoreControllerType<T> = Type<{ core: T }>;
 
 function headers(request: FastifyRequest) {
   return request.headers;
@@ -28,11 +30,11 @@ function routeDecorator(method: RouteMethod) {
   return { get: Get, post: Post, patch: Patch, delete: Delete }[method];
 }
 
-function defineRoutes(controller: CoreControllerType, routes: RouteDefinition[]) {
+function defineRoutes<T>(controller: CoreControllerType<T>, routes: RouteDefinition<T>[]) {
   for (const route of routes) {
     Object.defineProperty(controller.prototype, route.name, {
       configurable: true,
-      value(this: { core: CoreService }, request: FastifyRequest) {
+      value(this: { core: T }, request: FastifyRequest) {
         return route.delegate(this.core, request);
       }
     });
@@ -91,7 +93,7 @@ defineRoutes(VoiceCommandsController, [
 
 @Controller()
 export class CustomersController {
-  constructor(@Inject(CORE_SERVICE) readonly core: CoreService) {}
+  constructor(@Inject(CoreCustomersService) readonly core: CoreCustomersService) {}
 }
 
 defineRoutes(CustomersController, [
@@ -110,7 +112,7 @@ defineRoutes(CustomersController, [
 
 @Controller()
 export class WorkItemsController {
-  constructor(@Inject(CORE_SERVICE) readonly core: CoreService) {}
+  constructor(@Inject(CoreWorkItemsService) readonly core: CoreWorkItemsService) {}
 }
 
 defineRoutes(WorkItemsController, [
