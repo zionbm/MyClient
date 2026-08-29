@@ -3,6 +3,7 @@ import type { FastifyRequest } from "fastify";
 import type { CoreService } from "./main.js";
 import { CoreCustomersService } from "./core-customers.service.js";
 import { CoreWorkItemsService } from "./core-work-items.service.js";
+import { CoreNotificationsApplicationService } from "./core-notifications-application.service.js";
 
 export const CORE_SERVICE = Symbol("CORE_SERVICE");
 
@@ -142,7 +143,7 @@ defineRoutes(WorkItemsController, [
 
 @Controller()
 export class NotificationsController {
-  constructor(@Inject(CORE_SERVICE) readonly core: CoreService) {}
+  constructor(@Inject(CoreNotificationsApplicationService) readonly core: CoreNotificationsApplicationService) {}
 }
 
 defineRoutes(NotificationsController, [
