@@ -13,6 +13,14 @@ export const PaginationQuerySchema = z.object({
 
 export type PaginationQuery = z.infer<typeof PaginationQuerySchema>;
 
+export const SearchQuerySchema = PaginationQuerySchema.extend({
+  query: z.string().trim().min(1),
+  target: z.enum(["customers", "work_items"]).default("customers"),
+  status: z.enum(["all", "open", "done"]).default("all")
+});
+
+export type SearchQuery = z.infer<typeof SearchQuerySchema>;
+
 export const WorkingHoursSchema = z.record(
   z.object({
     open: z.string().trim().min(1),

@@ -45,6 +45,7 @@ import { CoreActionExecutionService } from "./core-action-execution.service.js";
 import { CoreVoiceResultPresenter } from "./core-voice-result.presenter.js";
 import { CoreCustomersService } from "./core-customers.service.js";
 import { CoreWorkItemsService } from "./core-work-items.service.js";
+import { CoreSearchService } from "./core-search.service.js";
 import { CoreNotificationsApplicationService } from "./core-notifications-application.service.js";
 import { CoreAiInternalClient, CoreVoiceInternalClient } from "./core-internal-clients.service.js";
 import { CoreAiPendingActionsApplicationService } from "./core-ai-pending-actions-application.service.js";
@@ -388,6 +389,7 @@ const {
   CustomersController,
   InternalController,
   NotificationsController,
+  SearchController,
   SystemController,
   VoiceCommandsController,
   WorkItemsController
@@ -399,6 +401,7 @@ const {
     InternalController,
     VoiceCommandsController,
     CustomersController,
+    SearchController,
     WorkItemsController,
     NotificationsController,
     AiActionsController
@@ -438,6 +441,7 @@ const {
     CoreCustomersService,
     CoreVoiceCommandsApplicationService,
     CoreWorkItemsService,
+    CoreSearchService,
     CoreNotificationsApplicationService,
     CoreService,
     { provide: CORE_SERVICE, useExisting: CoreService }

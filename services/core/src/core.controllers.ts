@@ -7,6 +7,7 @@ import { CoreNotificationsApplicationService } from "./core-notifications-applic
 import { CoreAiPendingActionsApplicationService } from "./core-ai-pending-actions-application.service.js";
 import { CoreBusinessApplicationService } from "./core-business-application.service.js";
 import { CoreVoiceCommandsApplicationService } from "./core-voice-commands-application.service.js";
+import { CoreSearchService } from "./core-search.service.js";
 
 export const CORE_SERVICE = Symbol("CORE_SERVICE");
 
@@ -99,6 +100,15 @@ defineRoutes(VoiceCommandsController, [
 export class CustomersController {
   constructor(@Inject(CoreCustomersService) readonly core: CoreCustomersService) {}
 }
+
+@Controller()
+export class SearchController {
+  constructor(@Inject(CoreSearchService) readonly core: CoreSearchService) {}
+}
+
+defineRoutes(SearchController, [
+  { name: "searchBusiness", method: "get", path: "businesses/:businessId/search", delegate: (core, request) => core.search(headers(request), params(request).businessId, request.query) }
+]);
 
 defineRoutes(CustomersController, [
   { name: "createCustomer", method: "post", path: "businesses/:businessId/customers", delegate: (core, request) => core.createCustomer(headers(request), params(request).businessId, request.body) },
