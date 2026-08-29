@@ -25,6 +25,7 @@ import { getAuth, type DecodedIdToken } from "firebase-admin/auth";
 import { getMessaging } from "firebase-admin/messaging";
 import { ApiExceptionFilter, cloudRunServiceAuthHeaders, getEnv, getInternalApiSecret, getPort, health, log, stableIdempotencyKey, verifyGoogleOidcToken } from "@myclient/common";
 import {
+  AiPendingActionListQuerySchema,
   AiActionBatchSchema,
   AiActionSchema,
   CreateBusinessMemberSchema,
@@ -40,8 +41,8 @@ import {
   CreateReminderSchema,
   ApproveAiPendingActionSchema,
   HomeQuerySchema,
-  ListByStatusQuerySchema,
   MergeCustomerSchema,
+  NotificationListQuerySchema,
   OwnerVoiceCommandHeadersSchema,
   OwnerVoiceCommandTranscriptSchema,
   PaginationQuerySchema,
@@ -1070,7 +1071,7 @@ class CoreController {
     await this.requireInternalScheduler(headers);
     const requestedLimit = Number((body as { limit?: unknown })?.limit ?? 20);
     const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 100)) : 20;
-    const dueReminders = await this.reminders.listDueReminders(limit);
+    const dueReminders = await this.reminders.claimDueReminders(limit);
     const processedReminders = [];
 
     log("info", "due reminder poll started", { limit, dueReminderCount: dueReminders.length });
@@ -1091,7 +1092,6 @@ class CoreController {
         }
       });
       const notificationDelivery = await this.sendNotification(notification);
-      const updatedReminder = await this.reminders.markReminderSent(reminder.id);
       await this.audit.record({
         businessId: reminder.businessId,
         actorType: "system",
@@ -1099,11 +1099,11 @@ class CoreController {
         entityType: "reminder",
         entityId: reminder.id,
         action: "SEND_REMINDER_NOTIFICATION",
-        after: updatedReminder as Prisma.InputJsonValue,
+        after: reminder as Prisma.InputJsonValue,
         result: notificationDelivery.status
       });
       processedReminders.push({
-        reminder: updatedReminder,
+        reminder,
         notification: notificationDelivery.notification,
         notificationDelivery
       });
@@ -1568,10 +1568,11 @@ class CoreController {
   }
 
   @Get("businesses/:businessId/reminders")
-  async listReminders(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string) {
+  async listReminders(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Query() query: unknown) {
     await this.requireBusinessAccess(headers, businessId);
-    const reminders = await this.reminders.listRemindersByBusiness(businessId);
-    return { reminders: reminders.map((reminder) => this.publicReminder(reminder)) };
+    const pagination = paginationFromQuery(query);
+    const page = paginatedResponse(await this.reminders.listRemindersByBusiness(businessId, pagination), pagination.limit);
+    return { reminders: page.items.map((reminder) => this.publicReminder(reminder)), pageInfo: page.pageInfo };
   }
 
   @Post("businesses/:businessId/reminders")
@@ -1978,9 +1979,11 @@ class CoreController {
   }
 
   @Get("businesses/:businessId/appointments")
-  async listAppointments(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string) {
+  async listAppointments(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Query() query: unknown) {
     await this.requireBusinessAccess(headers, businessId);
-    return { appointments: await this.appointments.listByBusiness(businessId) };
+    const pagination = paginationFromQuery(query);
+    const page = paginatedResponse(await this.appointments.listByBusiness(businessId, pagination), pagination.limit);
+    return { appointments: page.items, pageInfo: page.pageInfo };
   }
 
   @Post("businesses/:businessId/appointments")
@@ -2067,10 +2070,11 @@ class CoreController {
   }
 
   @Get("businesses/:businessId/home-visits")
-  async listHomeVisits(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string) {
+  async listHomeVisits(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Query() query: unknown) {
     await this.requireBusinessAccess(headers, businessId);
-    const homeVisits = await this.homeVisits.listByBusiness(businessId);
-    return { homeVisits: homeVisits.map((homeVisit) => this.publicHomeVisit(homeVisit)) };
+    const pagination = paginationFromQuery(query);
+    const page = paginatedResponse(await this.homeVisits.listByBusiness(businessId, pagination), pagination.limit);
+    return { homeVisits: page.items.map((homeVisit) => this.publicHomeVisit(homeVisit)), pageInfo: page.pageInfo };
   }
 
   @Post("businesses/:businessId/home-visits")
@@ -2177,10 +2181,11 @@ class CoreController {
   }
 
   @Get("businesses/:businessId/quotes")
-  async listQuotes(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string) {
+  async listQuotes(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Query() query: unknown) {
     await this.requireBusinessAccess(headers, businessId);
-    const quotes = await this.quotes.listByBusiness(businessId);
-    return { quotes: quotes.map((quote) => this.publicQuote(quote)) };
+    const pagination = paginationFromQuery(query);
+    const page = paginatedResponse(await this.quotes.listByBusiness(businessId, pagination), pagination.limit);
+    return { quotes: page.items.map((quote) => this.publicQuote(quote)), pageInfo: page.pageInfo };
   }
 
   @Post("businesses/:businessId/quotes")
@@ -2336,7 +2341,7 @@ class CoreController {
   @Get("businesses/:businessId/notifications")
   async listNotifications(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Query() query: unknown) {
     await this.requireBusinessAccess(headers, businessId);
-    const command = ListByStatusQuerySchema.parse(query);
+    const command = NotificationListQuerySchema.parse(query);
     const pagination = paginationFromParsedQuery(command);
     const page = paginatedResponse(await this.notifications.listByBusinessAndStatus(businessId, command.status, pagination), pagination.limit);
     return { notifications: page.items, pageInfo: page.pageInfo };
@@ -2496,7 +2501,7 @@ class CoreController {
   @Get("businesses/:businessId/ai-pending-actions")
   async listAiPendingActions(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Query() query: unknown) {
     await this.requireBusinessAccess(headers, businessId);
-    const command = ListByStatusQuerySchema.parse(query);
+    const command = AiPendingActionListQuerySchema.parse(query);
     const pagination = paginationFromParsedQuery(command);
     const page = paginatedResponse(await this.aiPendingActions.listByBusinessAndStatus(businessId, command.status, pagination), pagination.limit);
     return { aiPendingActions: page.items, pageInfo: page.pageInfo };
@@ -4089,8 +4094,8 @@ class CoreController {
 
   private async requireInternalScheduler(headers: RequestHeaders): Promise<void> {
     const token = parseOptionalBearerToken(headers);
-    const allowedServiceAccount = getEnv("SCHEDULER_SERVICE_ACCOUNT_EMAIL", "");
-    const audience = getEnv("SCHEDULER_OIDC_AUDIENCE", "");
+    const allowedServiceAccount = process.env.SCHEDULER_SERVICE_ACCOUNT_EMAIL ?? "";
+    const audience = process.env.SCHEDULER_OIDC_AUDIENCE ?? "";
 
     if (!allowedServiceAccount || !audience) {
       this.requireInternalSecret(headers);

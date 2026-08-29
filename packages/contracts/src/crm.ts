@@ -205,6 +205,18 @@ export const ListByStatusQuerySchema = PaginationQuerySchema.extend({
 
 export type ListByStatusQuery = z.infer<typeof ListByStatusQuerySchema>;
 
+export const NotificationListQuerySchema = PaginationQuerySchema.extend({
+  status: z.enum(["PENDING", "SENT", "FAILED", "READ"]).optional()
+});
+
+export type NotificationListQuery = z.infer<typeof NotificationListQuerySchema>;
+
+export const AiPendingActionListQuerySchema = PaginationQuerySchema.extend({
+  status: z.enum(["PENDING", "EXECUTING", "EXECUTED", "REJECTED"]).optional()
+});
+
+export type AiPendingActionListQuery = z.infer<typeof AiPendingActionListQuerySchema>;
+
 export const HomeQuerySchema = z.object({
   date: OptionalDateStringSchema,
   search: OptionalNonEmptyStringSchema,

@@ -1010,15 +1010,17 @@ export class RemindersRepository {
     });
   }
 
-  async listRemindersByBusiness(businessId: string) {
+  async listRemindersByBusiness(businessId: string, pagination?: PaginationInput) {
     await this.businesses.requireBusiness(businessId);
     return this.prisma.reminder.findMany({
       where: {
         businessId,
-        deletedAt: null
+        deletedAt: null,
+        ...createdAtCursorWhere(pagination?.cursor)
       },
       include: { customer: true },
-      orderBy: [{ dueAt: "asc" }, { createdAt: "desc" }]
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: paginationTake(pagination)
     });
   }
 
@@ -1070,8 +1072,8 @@ export class RemindersRepository {
     });
   }
 
-  async listDueReminders(limit: number) {
-    return this.prisma.reminder.findMany({
+  async claimDueReminders(limit: number) {
+    const candidates = await this.prisma.reminder.findMany({
       where: {
         status: "OPEN",
         deletedAt: null,
@@ -1083,6 +1085,25 @@ export class RemindersRepository {
       orderBy: { dueAt: "asc" },
       take: limit
     });
+    const claimed = [];
+
+    for (const candidate of candidates) {
+      const reminderSentAt = new Date();
+      const result = await this.prisma.reminder.updateMany({
+        where: {
+          id: candidate.id,
+          status: "OPEN",
+          deletedAt: null,
+          reminderSentAt: null
+        },
+        data: { reminderSentAt }
+      });
+      if (result.count === 1) {
+        claimed.push({ ...candidate, reminderSentAt });
+      }
+    }
+
+    return claimed;
   }
 
   async findByBusinessAndId(businessId: string, reminderId: string) {
@@ -1160,13 +1181,6 @@ export class RemindersRepository {
         reminderSentAt: null,
         status: "OPEN"
       }
-    });
-  }
-
-  async markReminderSent(reminderId: string) {
-    return this.prisma.reminder.update({
-      where: { id: reminderId },
-      data: { reminderSentAt: new Date() }
     });
   }
 
@@ -1813,12 +1827,17 @@ export class AppointmentsRepository {
     });
   }
 
-  async listByBusiness(businessId: string) {
+  async listByBusiness(businessId: string, pagination?: PaginationInput) {
     await this.businesses.requireBusiness(businessId);
     return this.prisma.appointment.findMany({
-      where: { businessId, deletedAt: null },
+      where: {
+        businessId,
+        deletedAt: null,
+        ...createdAtCursorWhere(pagination?.cursor)
+      },
       include: { customer: true },
-      orderBy: { startsAt: "asc" }
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: paginationTake(pagination)
     });
   }
 
@@ -1960,12 +1979,17 @@ export class HomeVisitsRepository {
     });
   }
 
-  async listByBusiness(businessId: string) {
+  async listByBusiness(businessId: string, pagination?: PaginationInput) {
     await this.businesses.requireBusiness(businessId);
     return this.prisma.homeVisit.findMany({
-      where: { businessId, deletedAt: null },
+      where: {
+        businessId,
+        deletedAt: null,
+        ...createdAtCursorWhere(pagination?.cursor)
+      },
       include: { customer: true },
-      orderBy: { startsAt: "asc" }
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: paginationTake(pagination)
     });
   }
 
@@ -2121,12 +2145,17 @@ export class QuotesRepository {
     });
   }
 
-  async listByBusiness(businessId: string) {
+  async listByBusiness(businessId: string, pagination?: PaginationInput) {
     await this.businesses.requireBusiness(businessId);
     return this.prisma.quote.findMany({
-      where: { businessId, deletedAt: null },
+      where: {
+        businessId,
+        deletedAt: null,
+        ...createdAtCursorWhere(pagination?.cursor)
+      },
       include: { customer: true },
-      orderBy: [{ dueAt: "asc" }, { createdAt: "desc" }]
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: paginationTake(pagination)
     });
   }
 

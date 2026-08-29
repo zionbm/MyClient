@@ -29,6 +29,17 @@ const businessId = registration.body.business.id;
 
 expectStatus(request("GET", `${core}/businesses/${businessId}/customers`), 401, "missing auth rejected");
 
+const otherFirebaseUid = `firebase_it_other_${suffix}`;
+const otherRegistration = request("POST", `${core}/auth/register-business`, {
+  firebaseUid: otherFirebaseUid,
+  email: `integration-other-${suffix}@example.com`,
+  displayName: "בודק אינטגרציה אחר",
+  businessName: "עסק אינטגרציה אחר"
+});
+expectStatus(otherRegistration, 201, "register other business");
+const otherBusinessId = otherRegistration.body.business.id;
+expectStatus(request("GET", `${core}/businesses/${otherBusinessId}/customers`, undefined, { authorization: token }), 403, "cross-business customer list rejected");
+
 const settings = request("PATCH", `${core}/businesses/${businessId}/settings`, {
   notificationPhone: "+972501234567",
   greetingText: "שלום, הגעתם לעסק אינטגרציה. לחזרה 1, הודעה 2, דחוף 3."
@@ -95,6 +106,14 @@ const reminderResult = request("POST", `${core}/businesses/${businessId}/reminde
 expectStatus(reminderResult, 201, "create reminder");
 const reminderId = reminderResult.body.reminder.id;
 
+const dueReminderResult = request("POST", `${core}/businesses/${businessId}/reminders`, {
+  customerId,
+  title: `תזכורת due יחידה ${suffix}`,
+  dueAt: "2026-08-21T10:30:00.000Z"
+}, { authorization: token });
+expectStatus(dueReminderResult, 201, "create due reminder");
+const dueReminderId = dueReminderResult.body.reminder.id;
+
 expectStatus(request("POST", `${core}/businesses/${businessId}/home-visits`, {
   customerId,
   title: "ביקור בית אינטגרציה",
@@ -112,6 +131,21 @@ expectStatus(quoteResult, 201, "create quote");
 const quoteId = quoteResult.body.quote.id;
 
 expectStatus(request("POST", `${core}/businesses/${businessId}/quotes/${quoteId}/mark-paid`, undefined, { authorization: token }), 201, "mark quote paid");
+
+for (const [label, path, collection] of [
+  ["reminders", "reminders", "reminders"],
+  ["appointments", "appointments", "appointments"],
+  ["home visits", "home-visits", "homeVisits"],
+  ["quotes", "quotes", "quotes"]
+]) {
+  const result = request("GET", `${core}/businesses/${businessId}/${path}?limit=1`, undefined, { authorization: token });
+  expectStatus(result, 200, `list ${label} with pagination`);
+  assert(Array.isArray(result.body[collection]), `expected ${label} collection`);
+  assert(result.body.pageInfo, `expected ${label} pageInfo`);
+}
+
+expectStatus(request("GET", `${core}/businesses/${businessId}/notifications?status=NOPE`, undefined, { authorization: token }), 400, "invalid notification status rejected");
+expectStatus(request("GET", `${core}/businesses/${businessId}/ai-pending-actions?status=NOPE`, undefined, { authorization: token }), 400, "invalid AI pending action status rejected");
 
 const home = request("GET", `${core}/businesses/${businessId}/home?date=2026-08-21`, undefined, { authorization: token });
 expectStatus(home, 200, "home work items");
@@ -202,6 +236,9 @@ expectStatus(reminderNotification, 201, "mark notification read");
 
 expectStatus(request("POST", `${core}/businesses/${businessId}/reminders/${reminderId}/complete`, undefined, { authorization: token }), 201, "complete reminder");
 
+expectStatus(request("POST", `${core}/internal/reminders/due`, { limit: 100 }, { "x-internal-secret": "dev-internal-secret" }), 201, "process due reminders first run");
+expectStatus(request("POST", `${core}/internal/reminders/due`, { limit: 100 }, { "x-internal-secret": "dev-internal-secret" }), 201, "process due reminders second run");
+
 const calls = request("GET", `${core}/businesses/${businessId}/calls`, undefined, { authorization: token });
 expectStatus(calls, 200, "list calls");
 assert(calls.body.calls.some((call) => call.transcriptPreview), "expected a call transcript preview");
@@ -212,5 +249,10 @@ const audit = request("GET", `${core}/businesses/${businessId}/audit-events`, un
 expectStatus(audit, 200, "list audit");
 assert(audit.body.auditEvents.length > 0, "expected audit events");
 assert(audit.body.pageInfo, "expected audit pageInfo");
+
+const dueNotifications = request("GET", `${core}/businesses/${businessId}/notifications`, undefined, { authorization: token });
+expectStatus(dueNotifications, 200, "list notifications after due processing");
+const matchingDueNotifications = dueNotifications.body.notifications.filter((notification) => notification.reminderId === dueReminderId);
+assert(matchingDueNotifications.length === 1, "expected exactly one notification for claimed due reminder", matchingDueNotifications);
 
 console.log(JSON.stringify({ ok: true, businessId, firebaseUid, phoneNumber }, null, 2));
