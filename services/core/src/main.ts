@@ -10,7 +10,7 @@ import {
 import { NestFactory } from "@nestjs/core";
 import { FastifyAdapter, type NestFastifyApplication } from "@nestjs/platform-fastify";
 import { Prisma } from "@prisma/client";
-import { ApiExceptionFilter, getEnv, getInternalApiSecret, getPort, health, log, stableIdempotencyKey } from "@myclient/common";
+import { ApiExceptionFilter, configureHttpObservability, getEnv, getInternalApiSecret, getPort, health, log, stableIdempotencyKey } from "@myclient/common";
 import {
   AiPendingActionListQuerySchema,
   AiActionBatchSchema,
@@ -1684,6 +1684,7 @@ class CoreModule {}
 async function bootstrap() {
   const adapter = new FastifyAdapter();
   const app = await NestFactory.create<NestFastifyApplication>(CoreModule, adapter);
+  configureHttpObservability(adapter.getInstance(), "core");
   adapter.getInstance().addContentTypeParser(
     ["audio/mp4", "audio/m4a", "audio/aac", "application/octet-stream"],
     { parseAs: "buffer" },

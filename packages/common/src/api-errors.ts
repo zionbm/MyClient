@@ -17,6 +17,7 @@ export type ApiErrorResponse = {
     code: ApiErrorCode;
     message: string;
     details?: unknown;
+    requestId?: string;
   };
 };
 
@@ -73,7 +74,7 @@ export class ApiExceptionFilter implements ExceptionFilter {
 
   catch(exception: unknown, host: ArgumentsHost): void {
     const http = host.switchToHttp();
-    const request = http.getRequest<{ method?: string; url?: string }>();
+    const request = http.getRequest<{ method?: string; url?: string; requestId?: string }>();
     const response = http.getResponse<{ status: (status: number) => { send: (body: ApiErrorResponse) => void } }>();
 
     if (exception instanceof ZodError) {
@@ -84,7 +85,8 @@ export class ApiExceptionFilter implements ExceptionFilter {
           details: exception.issues.map((issue) => ({
             path: issue.path.join("."),
             message: issue.message
-          }))
+          })),
+          requestId: request.requestId
         }
       });
       return;
@@ -96,7 +98,8 @@ export class ApiExceptionFilter implements ExceptionFilter {
         error: {
           code: codeFromStatus(status),
           message: messageFromHttpException(exception),
-          details: detailsFromHttpException(exception)
+          details: detailsFromHttpException(exception),
+          requestId: request.requestId
         }
       });
       return;
@@ -106,13 +109,15 @@ export class ApiExceptionFilter implements ExceptionFilter {
       service: this.service,
       method: request.method,
       url: request.url,
+      requestId: request.requestId,
       error: exception instanceof Error ? exception.message : String(exception)
     });
 
     response.status(HttpStatus.INTERNAL_SERVER_ERROR).send({
       error: {
         code: "INTERNAL_ERROR",
-        message: "Internal server error"
+        message: "Internal server error",
+        requestId: request.requestId
       }
     });
   }
