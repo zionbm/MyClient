@@ -136,8 +136,7 @@ export class CoreService {
     @Inject(NotificationsRepository) private readonly notifications: NotificationsRepository,
     @Inject(DeviceTokensRepository) private readonly deviceTokens: DeviceTokensRepository,
     @Inject(OwnerVoiceCommandsRepository) private readonly ownerVoiceCommands: OwnerVoiceCommandsRepository,
-    @Inject(AiPendingActionsRepository) private readonly aiPendingActions: AiPendingActionsRepository,
-    @Inject(PrismaService) private readonly prisma: PrismaService
+    @Inject(AiPendingActionsRepository) private readonly aiPendingActions: AiPendingActionsRepository
   ) {}
   health() {
     return health("core", {
@@ -1411,18 +1410,7 @@ export class CoreService {
     businessId: string,
     criteria: { phone?: string; email?: string; name?: string }
   ) {
-    const customers = await this.prisma.customer.findMany({
-      where: {
-        businessId,
-        deletedAt: null,
-        mergedIntoCustomerId: null,
-        ...(criteria.phone ? { phone: criteria.phone } : {}),
-        ...(criteria.email ? { email: { equals: criteria.email, mode: "insensitive" as const } } : {}),
-        ...(criteria.name ? { name: criteria.name } : {})
-      },
-      take: 2
-    });
-    return customers.length === 1 ? customers[0] : null;
+    return this.customers.findUniqueForVoiceMatch(businessId, criteria);
   }
 
   private async resolveVoiceReminder(businessId: string, payload: Record<string, unknown>, transcript: string) {
@@ -1431,17 +1419,7 @@ export class CoreService {
     const text = this.normalizedVoiceText(payload.text);
     const lookupText = this.normalizedVoiceText([title, text, transcript].filter(Boolean).join(" "));
 
-    const reminders = await this.prisma.reminder.findMany({
-      where: {
-        businessId,
-        deletedAt: null,
-        status: "OPEN",
-        customerId
-      },
-      include: { customer: true },
-      orderBy: [{ dueAt: "asc" }, { createdAt: "desc" }],
-      take: 20
-    });
+    const reminders = await this.reminders.listOpenForVoiceMatch(businessId, customerId);
 
     if (reminders.length === 1) {
       return reminders[0];

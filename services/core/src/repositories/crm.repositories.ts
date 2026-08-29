@@ -65,6 +65,20 @@ export class RemindersRepository {
     });
   }
 
+  async listOpenForVoiceMatch(businessId: string, customerId?: string) {
+    return this.prisma.reminder.findMany({
+      where: {
+        businessId,
+        deletedAt: null,
+        status: "OPEN",
+        customerId
+      },
+      include: { customer: true },
+      orderBy: [{ dueAt: "asc" }, { createdAt: "desc" }],
+      take: 20
+    });
+  }
+
   async listRemindersForDate(input: { businessId: string; start: Date; end: Date; search?: string; urgentOnly?: boolean; includeOpenBeforeStart?: boolean }) {
     await this.businesses.requireBusiness(input.businessId);
     return this.prisma.reminder.findMany({
@@ -426,6 +440,24 @@ export class CustomersRepository {
         mergedIntoCustomerId: null
       }
     });
+  }
+
+  async findUniqueForVoiceMatch(
+    businessId: string,
+    criteria: { phone?: string; email?: string; name?: string }
+  ) {
+    const customers = await this.prisma.customer.findMany({
+      where: {
+        businessId,
+        deletedAt: null,
+        mergedIntoCustomerId: null,
+        ...(criteria.phone ? { phone: criteria.phone } : {}),
+        ...(criteria.email ? { email: { equals: criteria.email, mode: "insensitive" as const } } : {}),
+        ...(criteria.name ? { name: criteria.name } : {})
+      },
+      take: 2
+    });
+    return customers.length === 1 ? customers[0] : null;
   }
 
   async merge(input: {
