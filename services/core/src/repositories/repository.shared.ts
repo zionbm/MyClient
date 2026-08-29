@@ -1,62 +1,6 @@
-import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
-import { PrismaService } from "./prisma.service.js";
-import { BusinessesRepository } from "./repositories/business.repositories.js";
-import {
-  CallTranscriptsRepository,
-  IncomingCallsRepository,
-  OwnerVoiceCommandsRepository
-} from "./repositories/communications.repositories.js";
-import {
-  CustomersRepository,
-  NotesRepository,
-  RemindersRepository
-} from "./repositories/crm.repositories.js";
-import {
-  AiPendingActionsRepository,
-  DeviceTokensRepository,
-  NotificationsRepository
-} from "./repositories/automation.repositories.js";
-import {
-  AppointmentsRepository,
-  HomeVisitsRepository,
-  QuotesRepository
-} from "./repositories/scheduling.repositories.js";
 
-export {
-  AuditRepository,
-  AuthRepository,
-  BusinessMembersRepository,
-  BusinessesRepository,
-  BusinessPhoneNumbersRepository,
-  BusinessSettingsRepository
-} from "./repositories/business.repositories.js";
-
-export {
-  CallTranscriptsRepository,
-  IncomingCallsRepository,
-  OwnerVoiceCommandsRepository
-} from "./repositories/communications.repositories.js";
-
-export {
-  CustomersRepository,
-  NotesRepository,
-  RemindersRepository
-} from "./repositories/crm.repositories.js";
-
-export {
-  AiPendingActionsRepository,
-  DeviceTokensRepository,
-  NotificationsRepository
-} from "./repositories/automation.repositories.js";
-
-export {
-  AppointmentsRepository,
-  HomeVisitsRepository,
-  QuotesRepository
-} from "./repositories/scheduling.repositories.js";
-
-type CreateReminderInput = {
+export type CreateReminderInput = {
   businessId: string;
   customerId?: string;
   title: string;
@@ -69,7 +13,7 @@ type CreateReminderInput = {
   idempotencyKey?: string;
 };
 
-type UpdateReminderInput = {
+export type UpdateReminderInput = {
   businessId: string;
   reminderId: string;
   customerId?: string | null;
@@ -80,7 +24,7 @@ type UpdateReminderInput = {
   status?: "OPEN" | "DONE" | "CANCELLED";
 };
 
-type CreateBusinessMemberInput = {
+export type CreateBusinessMemberInput = {
   businessId: string;
   phoneNumber: string;
   displayName?: string;
@@ -88,10 +32,10 @@ type CreateBusinessMemberInput = {
   addedByUserId?: string;
 };
 
-type CustomerMergeField = "name" | "phone" | "email" | "address";
-type CustomerMergeChoice = "source" | "target";
+export type CustomerMergeField = "name" | "phone" | "email" | "address";
+export type CustomerMergeChoice = "source" | "target";
 
-function mergeCustomerFields(
+export function mergeCustomerFields(
   source: Record<CustomerMergeField, string | null>,
   target: Record<CustomerMergeField, string | null>,
   choices?: Partial<Record<CustomerMergeField, CustomerMergeChoice>>
@@ -129,12 +73,12 @@ function mergeCustomerFields(
   return data;
 }
 
-type DisableBusinessMemberInput = {
+export type DisableBusinessMemberInput = {
   businessId: string;
   memberId: string;
 };
 
-type CreateCustomerInput = {
+export type CreateCustomerInput = {
   businessId: string;
   name: string;
   phone?: string;
@@ -142,7 +86,7 @@ type CreateCustomerInput = {
   address?: string;
 };
 
-type UpdateCustomerInput = {
+export type UpdateCustomerInput = {
   businessId: string;
   customerId: string;
   name?: string;
@@ -151,13 +95,13 @@ type UpdateCustomerInput = {
   address?: string | null;
 };
 
-type CreateNoteInput = {
+export type CreateNoteInput = {
   businessId: string;
   customerId: string;
   text: string;
 };
 
-type UpdateNoteInput = {
+export type UpdateNoteInput = {
   businessId: string;
   customerId: string;
   noteId: string;
@@ -165,7 +109,7 @@ type UpdateNoteInput = {
   status?: "OPEN" | "DONE" | "CANCELLED";
 };
 
-type CreateNotificationInput = {
+export type CreateNotificationInput = {
   businessId: string;
   reminderId?: string;
   itemType?: string;
@@ -175,7 +119,7 @@ type CreateNotificationInput = {
   payload?: Prisma.InputJsonValue;
 };
 
-type CreateAiPendingActionInput = {
+export type CreateAiPendingActionInput = {
   businessId: string;
   userId?: string;
   actionType: string;
@@ -186,7 +130,7 @@ type CreateAiPendingActionInput = {
   missingFields: string[];
 };
 
-type UpdateAiPendingActionInput = {
+export type UpdateAiPendingActionInput = {
   businessId: string;
   aiPendingActionId: string;
   payload?: Prisma.InputJsonValue;
@@ -194,14 +138,14 @@ type UpdateAiPendingActionInput = {
   reviewReason?: string | null;
 };
 
-type UpdateNotificationInput = {
+export type UpdateNotificationInput = {
   businessId: string;
   notificationId: string;
   status: "PENDING" | "SENT" | "FAILED" | "READ";
   failureReason?: string;
 };
 
-type RegisterDeviceTokenInput = {
+export type RegisterDeviceTokenInput = {
   businessId: string;
   userId: string;
   token: string;
@@ -209,7 +153,7 @@ type RegisterDeviceTokenInput = {
   appVersion?: string;
 };
 
-type ResolveAiPendingActionInput = {
+export type ResolveAiPendingActionInput = {
   businessId: string;
   aiPendingActionId: string;
   expectedStatus?: string;
@@ -217,14 +161,14 @@ type ResolveAiPendingActionInput = {
   resolution?: Prisma.InputJsonValue;
 };
 
-type CreateOwnerVoiceCommandInput = {
+export type CreateOwnerVoiceCommandInput = {
   businessId: string;
   userId: string;
   languageCode: string;
   idempotencyKey: string;
 };
 
-type UpdateOwnerVoiceCommandInput = {
+export type UpdateOwnerVoiceCommandInput = {
   id: string;
   transcript?: string;
   sttProvider?: string;
@@ -235,7 +179,7 @@ type UpdateOwnerVoiceCommandInput = {
   executionResult?: Prisma.InputJsonValue;
 };
 
-type RegisterBusinessInput = {
+export type RegisterBusinessInput = {
   firebaseUid: string;
   email?: string;
   phoneNumber?: string;
@@ -243,7 +187,7 @@ type RegisterBusinessInput = {
   businessName: string;
 };
 
-type UpdateBusinessSettingsInput = {
+export type UpdateBusinessSettingsInput = {
   businessId: string;
   actorUserId?: string;
   businessName?: string;
@@ -258,21 +202,21 @@ type UpdateBusinessSettingsInput = {
   allowUrgentCalls?: boolean;
 };
 
-type CreateBusinessPhoneNumberInput = {
+export type CreateBusinessPhoneNumberInput = {
   businessId: string;
   plivoNumber: string;
   displayName?: string;
   status?: string;
 };
 
-type UpdateBusinessPhoneNumberInput = {
+export type UpdateBusinessPhoneNumberInput = {
   businessId: string;
   phoneNumberId: string;
   displayName?: string | null;
   status?: string;
 };
 
-type CreateIncomingCallInput = {
+export type CreateIncomingCallInput = {
   businessId: string;
   plivoCallId: string;
   fromNumber?: string;
@@ -282,7 +226,7 @@ type CreateIncomingCallInput = {
   status: string;
 };
 
-type UpdateIncomingCallInput = {
+export type UpdateIncomingCallInput = {
   plivoCallId: string;
   status?: string;
   selectedDigit?: string;
@@ -290,7 +234,7 @@ type UpdateIncomingCallInput = {
   recordingUrl?: string;
 };
 
-type CreateCallTranscriptInput = {
+export type CreateCallTranscriptInput = {
   businessId: string;
   incomingCallId: string;
   transcript: string;
@@ -299,7 +243,7 @@ type CreateCallTranscriptInput = {
   confidence?: number;
 };
 
-type CreateAppointmentInput = {
+export type CreateAppointmentInput = {
   businessId: string;
   customerId?: string;
   title: string;
@@ -310,7 +254,7 @@ type CreateAppointmentInput = {
   status?: "OPEN" | "DONE" | "CANCELLED";
 };
 
-type UpdateAppointmentInput = {
+export type UpdateAppointmentInput = {
   businessId: string;
   appointmentId: string;
   customerId?: string | null;
@@ -322,7 +266,7 @@ type UpdateAppointmentInput = {
   status?: "OPEN" | "DONE" | "CANCELLED";
 };
 
-type CreateHomeVisitInput = {
+export type CreateHomeVisitInput = {
   businessId: string;
   customerId?: string;
   title: string;
@@ -333,7 +277,7 @@ type CreateHomeVisitInput = {
   status?: "OPEN" | "DONE" | "CANCELLED";
 };
 
-type UpdateHomeVisitInput = {
+export type UpdateHomeVisitInput = {
   businessId: string;
   homeVisitId: string;
   customerId?: string | null;
@@ -345,7 +289,7 @@ type UpdateHomeVisitInput = {
   status?: "OPEN" | "DONE" | "CANCELLED";
 };
 
-type CreateQuoteInput = {
+export type CreateQuoteInput = {
   businessId: string;
   customerId?: string;
   title: string;
@@ -358,7 +302,7 @@ type CreateQuoteInput = {
   idempotencyKey?: string;
 };
 
-type UpdateQuoteInput = {
+export type UpdateQuoteInput = {
   businessId: string;
   quoteId: string;
   customerId?: string | null;
@@ -369,7 +313,7 @@ type UpdateQuoteInput = {
   status?: "OPEN" | "PAID" | "CANCELLED";
 };
 
-type AuditEventInput = {
+export type AuditEventInput = {
   businessId: string;
   actorType: string;
   actorId?: string;
@@ -382,17 +326,17 @@ type AuditEventInput = {
   result?: string;
 };
 
-type PaginationCursor = {
+export type PaginationCursor = {
   createdAt: Date;
   id: string;
 };
 
-type PaginationInput = {
+export type PaginationInput = {
   limit: number;
   cursor?: PaginationCursor;
 };
 
-function createdAtCursorWhere(cursor: PaginationCursor | undefined) {
+export function createdAtCursorWhere(cursor: PaginationCursor | undefined) {
   return cursor
     ? {
         OR: [
@@ -403,6 +347,7 @@ function createdAtCursorWhere(cursor: PaginationCursor | undefined) {
     : {};
 }
 
-function paginationTake(pagination: PaginationInput | undefined) {
+export function paginationTake(pagination: PaginationInput | undefined) {
   return pagination ? pagination.limit + 1 : undefined;
 }
+
