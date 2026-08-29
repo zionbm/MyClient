@@ -891,9 +891,12 @@ export class OwnerVoiceCommandsRepository {
     });
   }
 
-  async findByIdempotencyKey(idempotencyKey: string) {
-    return this.prisma.ownerVoiceCommand.findUnique({
-      where: { idempotencyKey }
+  async findByBusinessAndIdempotencyKey(businessId: string, idempotencyKey: string) {
+    return this.prisma.ownerVoiceCommand.findFirst({
+      where: {
+        businessId,
+        idempotencyKey
+      }
     });
   }
 
@@ -1047,7 +1050,8 @@ export class RemindersRepository {
     return this.prisma.reminder.findFirst({
       where: {
         businessId,
-        id: reminderId
+        id: reminderId,
+        deletedAt: null
       }
     });
   }
@@ -1131,7 +1135,8 @@ export class RemindersRepository {
     const customer = await this.prisma.customer.findFirst({
       where: {
         businessId,
-        id: customerId
+        id: customerId,
+        deletedAt: null
       },
       select: { id: true }
     });
@@ -1359,7 +1364,8 @@ export class NotesRepository {
     const customer = await this.prisma.customer.findFirst({
       where: {
         businessId: input.businessId,
-        id: input.customerId
+        id: input.customerId,
+        deletedAt: null
       },
       select: { id: true }
     });
@@ -1381,7 +1387,8 @@ export class NotesRepository {
     const customer = await this.prisma.customer.findFirst({
       where: {
         businessId,
-        id: customerId
+        id: customerId,
+        deletedAt: null
       },
       select: { id: true }
     });
@@ -1404,7 +1411,10 @@ export class NotesRepository {
       where: {
         businessId: input.businessId,
         customerId: input.customerId,
-        id: input.noteId
+        id: input.noteId,
+        customer: {
+          deletedAt: null
+        }
       }
     });
 
@@ -1727,7 +1737,8 @@ export class AppointmentsRepository {
     const existing = await this.prisma.appointment.findFirst({
       where: {
         businessId: input.businessId,
-        id: input.appointmentId
+        id: input.appointmentId,
+        deletedAt: null
       }
     });
     if (!existing) {
@@ -1756,7 +1767,8 @@ export class AppointmentsRepository {
     const existing = await this.prisma.appointment.findFirst({
       where: {
         businessId,
-        id: appointmentId
+        id: appointmentId,
+        deletedAt: null
       }
     });
     if (!existing) {
@@ -1772,7 +1784,8 @@ export class AppointmentsRepository {
     const customer = await this.prisma.customer.findFirst({
       where: {
         businessId,
-        id: customerId
+        id: customerId,
+        deletedAt: null
       },
       select: { id: true }
     });
@@ -1871,7 +1884,8 @@ export class HomeVisitsRepository {
     const existing = await this.prisma.homeVisit.findFirst({
       where: {
         businessId: input.businessId,
-        id: input.homeVisitId
+        id: input.homeVisitId,
+        deletedAt: null
       }
     });
     if (!existing) {
@@ -1904,7 +1918,8 @@ export class HomeVisitsRepository {
     const existing = await this.prisma.homeVisit.findFirst({
       where: {
         businessId,
-        id: homeVisitId
+        id: homeVisitId,
+        deletedAt: null
       }
     });
     if (!existing) {
@@ -1920,7 +1935,8 @@ export class HomeVisitsRepository {
     const customer = await this.prisma.customer.findFirst({
       where: {
         businessId,
-        id: customerId
+        id: customerId,
+        deletedAt: null
       },
       select: { id: true }
     });
@@ -2028,7 +2044,8 @@ export class QuotesRepository {
     return this.prisma.quote.findFirst({
       where: {
         businessId,
-        id: quoteId
+        id: quoteId,
+        deletedAt: null
       }
     });
   }

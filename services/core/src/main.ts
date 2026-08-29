@@ -1198,7 +1198,7 @@ class CoreController {
       languageCode: headerValue(headers, "x-language-code") ?? "he-IL"
     });
     const transcriptBody = OwnerVoiceCommandTranscriptSchema.parse(body);
-    const existing = await this.ownerVoiceCommands.findByIdempotencyKey(commandHeaders.idempotencyKey);
+    const existing = await this.ownerVoiceCommands.findByBusinessAndIdempotencyKey(businessId, commandHeaders.idempotencyKey);
     if (existing) {
       return {
         duplicate: true,
@@ -1329,7 +1329,7 @@ class CoreController {
       languageCode: headerValue(headers, "x-language-code") ?? "he-IL",
       filename: headerValue(headers, "x-audio-filename") ?? "owner-command.m4a"
     });
-    const existing = await this.ownerVoiceCommands.findByIdempotencyKey(commandHeaders.idempotencyKey);
+    const existing = await this.ownerVoiceCommands.findByBusinessAndIdempotencyKey(businessId, commandHeaders.idempotencyKey);
     if (existing) {
       return {
         duplicate: true,
@@ -1560,9 +1560,9 @@ class CoreController {
     const reminder = await this.reminders.update({
       businessId,
       reminderId: reminderId,
-      customerId: command.customerId === null ? undefined : command.customerId,
+      customerId: command.customerId,
       title: command.title,
-      description: command.description === null ? undefined : command.description,
+      description: command.description,
       priority: command.priority,
       dueAt: parseOptionalDate(command.dueAt),
       status: command.status
@@ -2983,7 +2983,7 @@ class CoreController {
         return { type: input.actionType, item: await this.reminders.softDelete(input.businessId, itemId) };
       }
       if (itemType === "home_visit") {
-        return { type: input.actionType, item: await this.appointments.softDelete(input.businessId, itemId) };
+        return { type: input.actionType, item: await this.homeVisits.softDelete(input.businessId, itemId) };
       }
       if (itemType === "quote") {
         return { type: input.actionType, item: await this.quotes.softDelete(input.businessId, itemId) };
