@@ -72,6 +72,7 @@ import { PrismaService } from "./prisma.service.js";
 import { CoreAccessService } from "./core-access.service.js";
 import { CoreNotificationsService } from "./core-notifications.service.js";
 import { CoreVoiceGatewayService } from "./core-voice-gateway.service.js";
+import { CoreWorkItemPresenter } from "./core-work-item.presenter.js";
 
 type RequestHeaders = Record<string, string | string[] | undefined>;
 
@@ -581,6 +582,7 @@ export class CoreService {
     @Inject(CoreAccessService) private readonly access: CoreAccessService,
     @Inject(CoreNotificationsService) private readonly notificationDelivery: CoreNotificationsService,
     @Inject(CoreVoiceGatewayService) private readonly voiceGateway: CoreVoiceGatewayService,
+    @Inject(CoreWorkItemPresenter) private readonly workItemPresenter: CoreWorkItemPresenter,
     @Inject(AuditRepository) private readonly audit: AuditRepository,
     @Inject(BusinessMembersRepository) private readonly members: BusinessMembersRepository,
     @Inject(BusinessSettingsRepository) private readonly settings: BusinessSettingsRepository,
@@ -1399,10 +1401,10 @@ export class CoreService {
       }));
 
     const items = [
-      ...reminders.map((reminder) => this.publicReminderWorkItem(reminder)),
-      ...homeVisits.map((homeVisit) => this.publicHomeVisitWorkItem(homeVisit)),
-      ...appointments.map((appointment) => this.publicAppointmentWorkItem(appointment)),
-      ...quotes.map((quote) => this.publicQuoteWorkItem(quote)),
+      ...reminders.map((reminder) => this.workItemPresenter.reminderWorkItem(reminder)),
+      ...homeVisits.map((homeVisit) => this.workItemPresenter.homeVisitWorkItem(homeVisit)),
+      ...appointments.map((appointment) => this.workItemPresenter.appointmentWorkItem(appointment)),
+      ...quotes.map((quote) => this.workItemPresenter.quoteWorkItem(quote)),
       ...notificationItems
     ].sort((a, b) => {
       const priority = Number(b.priority === "URGENT") - Number(a.priority === "URGENT");
@@ -1420,7 +1422,7 @@ export class CoreService {
     await this.access.requireBusinessAccess(headers, businessId);
     const pagination = paginationFromQuery(query);
     const page = paginatedResponse(await this.reminders.listRemindersByBusiness(businessId, pagination), pagination.limit);
-    return { reminders: page.items.map((reminder) => this.publicReminder(reminder)), pageInfo: page.pageInfo };
+    return { reminders: page.items.map((reminder) => this.workItemPresenter.reminder(reminder)), pageInfo: page.pageInfo };
   }
   async createReminder(headers: RequestHeaders, businessId: string, body: unknown) {
     const user = await this.access.requireBusinessAccess(headers, businessId);
@@ -1445,7 +1447,7 @@ export class CoreService {
       action: "CREATE_REMINDER",
       after: reminder as Prisma.InputJsonValue
     });
-    return { reminder: this.publicReminder(reminder) };
+    return { reminder: this.workItemPresenter.reminder(reminder) };
   }
   async updateReminder(
     headers: RequestHeaders,
@@ -1478,7 +1480,7 @@ export class CoreService {
       action: "UPDATE_REMINDER",
       after: reminder as Prisma.InputJsonValue
     });
-    return { reminder: this.publicReminder(reminder) };
+    return { reminder: this.workItemPresenter.reminder(reminder) };
   }
   async completeReminder(headers: RequestHeaders, businessId: string, reminderId: string) {
     const user = await this.access.requireBusinessAccess(headers, businessId);
@@ -1496,7 +1498,7 @@ export class CoreService {
       action: "COMPLETE_REMINDER",
       after: reminder as Prisma.InputJsonValue
     });
-    return { reminder: this.publicReminder(reminder) };
+    return { reminder: this.workItemPresenter.reminder(reminder) };
   }
   async deleteReminder(headers: RequestHeaders, businessId: string, reminderId: string) {
     const user = await this.access.requireBusinessAccess(headers, businessId);
@@ -1514,7 +1516,7 @@ export class CoreService {
       action: "DELETE_REMINDER",
       after: reminder as Prisma.InputJsonValue
     });
-    return { reminder: this.publicReminder(reminder) };
+    return { reminder: this.workItemPresenter.reminder(reminder) };
   }
   async createCustomer(headers: RequestHeaders, businessId: string, body: unknown) {
     const user = await this.access.requireBusinessAccess(headers, businessId);
@@ -1562,9 +1564,9 @@ export class CoreService {
       this.notes.listByCustomer(businessId, customerId)
     ]);
     const activity = [
-      ...reminders.map((reminder) => this.publicReminderWorkItem(reminder)),
-      ...homeVisits.map((homeVisit) => this.publicHomeVisitWorkItem(homeVisit)),
-      ...quotes.map((quote) => this.publicQuoteWorkItem(quote)),
+      ...reminders.map((reminder) => this.workItemPresenter.reminderWorkItem(reminder)),
+      ...homeVisits.map((homeVisit) => this.workItemPresenter.homeVisitWorkItem(homeVisit)),
+      ...quotes.map((quote) => this.workItemPresenter.quoteWorkItem(quote)),
       ...(notes ?? []).map((note) => ({
         id: note.id,
         type: "note",
@@ -1882,7 +1884,7 @@ export class CoreService {
     await this.access.requireBusinessAccess(headers, businessId);
     const pagination = paginationFromQuery(query);
     const page = paginatedResponse(await this.homeVisits.listByBusiness(businessId, pagination), pagination.limit);
-    return { homeVisits: page.items.map((homeVisit) => this.publicHomeVisit(homeVisit)), pageInfo: page.pageInfo };
+    return { homeVisits: page.items.map((homeVisit) => this.workItemPresenter.homeVisit(homeVisit)), pageInfo: page.pageInfo };
   }
   async createHomeVisit(headers: RequestHeaders, businessId: string, body: unknown) {
     const user = await this.access.requireBusinessAccess(headers, businessId);
@@ -1907,7 +1909,7 @@ export class CoreService {
       action: "CREATE_HOME_VISIT",
       after: homeVisit as Prisma.InputJsonValue
     });
-    return { homeVisit: this.publicHomeVisit(homeVisit) };
+    return { homeVisit: this.workItemPresenter.homeVisit(homeVisit) };
   }
   async updateHomeVisit(
     headers: RequestHeaders,
@@ -1941,7 +1943,7 @@ export class CoreService {
       action: "UPDATE_HOME_VISIT",
       after: homeVisit as Prisma.InputJsonValue
     });
-    return { homeVisit: this.publicHomeVisit(homeVisit) };
+    return { homeVisit: this.workItemPresenter.homeVisit(homeVisit) };
   }
   async completeHomeVisit(headers: RequestHeaders, businessId: string, homeVisitId: string) {
     const user = await this.access.requireBusinessAccess(headers, businessId);
@@ -1959,7 +1961,7 @@ export class CoreService {
       action: "COMPLETE_HOME_VISIT",
       after: homeVisit as Prisma.InputJsonValue
     });
-    return { homeVisit: this.publicHomeVisit(homeVisit) };
+    return { homeVisit: this.workItemPresenter.homeVisit(homeVisit) };
   }
   async deleteHomeVisit(headers: RequestHeaders, businessId: string, homeVisitId: string) {
     const user = await this.access.requireBusinessAccess(headers, businessId);
@@ -1977,13 +1979,13 @@ export class CoreService {
       action: "DELETE_HOME_VISIT",
       after: homeVisit as Prisma.InputJsonValue
     });
-    return { homeVisit: this.publicHomeVisit(homeVisit) };
+    return { homeVisit: this.workItemPresenter.homeVisit(homeVisit) };
   }
   async listQuotes(headers: RequestHeaders, businessId: string, query: unknown) {
     await this.access.requireBusinessAccess(headers, businessId);
     const pagination = paginationFromQuery(query);
     const page = paginatedResponse(await this.quotes.listByBusiness(businessId, pagination), pagination.limit);
-    return { quotes: page.items.map((quote) => this.publicQuote(quote)), pageInfo: page.pageInfo };
+    return { quotes: page.items.map((quote) => this.workItemPresenter.quote(quote)), pageInfo: page.pageInfo };
   }
   async createQuote(headers: RequestHeaders, businessId: string, body: unknown) {
     const user = await this.access.requireBusinessAccess(headers, businessId);
@@ -2008,7 +2010,7 @@ export class CoreService {
       action: "CREATE_QUOTE",
       after: quote as Prisma.InputJsonValue
     });
-    return { quote: this.publicQuote(quote) };
+    return { quote: this.workItemPresenter.quote(quote) };
   }
   async updateQuote(
     headers: RequestHeaders,
@@ -2041,7 +2043,7 @@ export class CoreService {
       action: "UPDATE_QUOTE",
       after: quote as Prisma.InputJsonValue
     });
-    return { quote: this.publicQuote(quote) };
+    return { quote: this.workItemPresenter.quote(quote) };
   }
   async markQuotePaid(headers: RequestHeaders, businessId: string, quoteId: string) {
     const user = await this.access.requireBusinessAccess(headers, businessId);
@@ -2059,7 +2061,7 @@ export class CoreService {
       action: "MARK_QUOTE_PAID",
       after: quote as Prisma.InputJsonValue
     });
-    return { quote: this.publicQuote(quote) };
+    return { quote: this.workItemPresenter.quote(quote) };
   }
   async deleteQuote(headers: RequestHeaders, businessId: string, quoteId: string) {
     const user = await this.access.requireBusinessAccess(headers, businessId);
@@ -2077,7 +2079,7 @@ export class CoreService {
       action: "DELETE_QUOTE",
       after: quote as Prisma.InputJsonValue
     });
-    return { quote: this.publicQuote(quote) };
+    return { quote: this.workItemPresenter.quote(quote) };
   }
   async cancelAppointment(headers: RequestHeaders, businessId: string, appointmentId: string) {
     const user = await this.access.requireBusinessAccess(headers, businessId);
@@ -2418,166 +2420,6 @@ export class CoreService {
     const pagination = paginationFromQuery(query);
     const page = paginatedResponse(await this.audit.listByBusiness(businessId, pagination), pagination.limit);
     return { auditEvents: page.items, pageInfo: page.pageInfo };
-  }
-
-  private publicReminder(reminder: {
-    id: string;
-    customerId?: string | null;
-    title: string;
-    description?: string | null;
-    priority: string;
-    dueAt?: Date | null;
-    status: string;
-    source: string;
-    sourceRef?: string | null;
-    createdAt: Date;
-    updatedAt: Date;
-    customer?: { id: string; name: string; phone?: string | null; email?: string | null; address?: string | null } | null;
-  }) {
-    return {
-      id: reminder.id,
-      customerId: reminder.customerId ?? null,
-      title: reminder.title,
-      description: reminder.description ?? null,
-      priority: reminder.priority,
-      dueAt: reminder.dueAt ?? null,
-      status: reminderStatus(reminder.status),
-      source: reminder.source,
-      sourceRef: reminder.sourceRef ?? null,
-      customer: publicCustomer(reminder.customer),
-      createdAt: reminder.createdAt,
-      updatedAt: reminder.updatedAt
-    };
-  }
-
-  private publicReminderWorkItem(rawReminder: Parameters<CoreService["publicReminder"]>[0]) {
-    const reminder = this.publicReminder(rawReminder);
-    return {
-      id: reminder.id,
-      type: "reminder",
-      title: reminder.title,
-      description: reminder.description,
-      customer: reminder.customer,
-      dueAt: reminder.dueAt ?? reminder.createdAt,
-      priority: reminder.priority,
-      status: reminder.status,
-      source: reminder.source,
-      linkedEntity: { type: "reminder", id: reminder.id },
-      actions: reminder.status === "DONE" ? ["open"] : ["call", "complete", "open"]
-    };
-  }
-
-  private publicHomeVisit(homeVisit: {
-    id: string;
-    customerId?: string | null;
-    title: string;
-    location?: string | null;
-    notes?: string | null;
-    startsAt: Date;
-    endsAt?: Date | null;
-    status: string;
-    createdAt: Date;
-    updatedAt: Date;
-    customer?: { id: string; name: string; phone?: string | null; email?: string | null; address?: string | null } | null;
-  }) {
-    return {
-      id: homeVisit.id,
-      customerId: homeVisit.customerId ?? null,
-      title: homeVisit.title,
-      location: homeVisit.location ?? null,
-      notes: homeVisit.notes ?? null,
-      startsAt: homeVisit.startsAt,
-      endsAt: homeVisit.endsAt ?? null,
-      status: homeVisitStatus(homeVisit.status),
-      customer: publicCustomer(homeVisit.customer),
-      createdAt: homeVisit.createdAt,
-      updatedAt: homeVisit.updatedAt
-    };
-  }
-
-  private publicHomeVisitWorkItem(rawHomeVisit: Parameters<CoreService["publicHomeVisit"]>[0]) {
-    const homeVisit = this.publicHomeVisit(rawHomeVisit);
-    return {
-      id: homeVisit.id,
-      type: "home_visit",
-      title: homeVisit.title,
-      description: homeVisit.notes ?? homeVisit.location,
-      location: homeVisit.location,
-      notes: homeVisit.notes,
-      customer: homeVisit.customer,
-      dueAt: homeVisit.startsAt,
-      priority: "NORMAL",
-      status: homeVisit.status,
-      source: "app",
-      linkedEntity: { type: "home_visit", id: homeVisit.id },
-      actions: homeVisit.status === "DONE" ? ["open"] : ["navigate", "complete", "open"]
-    };
-  }
-
-  private publicAppointmentWorkItem(appointment: Parameters<CoreService["publicHomeVisit"]>[0]) {
-    return {
-      id: appointment.id,
-      type: "appointment",
-      title: appointment.title,
-      description: appointment.notes ?? appointment.location,
-      location: appointment.location ?? null,
-      notes: appointment.notes ?? null,
-      customer: publicCustomer(appointment.customer),
-      startsAt: appointment.startsAt,
-      endsAt: appointment.endsAt ?? null,
-      priority: "NORMAL",
-      status: appointment.status,
-      source: "app",
-      linkedEntity: { type: "appointment", id: appointment.id },
-      actions: appointment.status === "DONE" ? ["open"] : ["complete", "open"]
-    };
-  }
-
-  private publicQuote(quote: {
-    id: string;
-    customerId?: string | null;
-    title: string;
-    description?: string | null;
-    estimatedAmount?: Prisma.Decimal | null;
-    dueAt: Date;
-    status: string;
-    source: string;
-    sourceRef?: string | null;
-    createdAt: Date;
-    updatedAt: Date;
-    customer?: { id: string; name: string; phone?: string | null; email?: string | null; address?: string | null } | null;
-  }) {
-    return {
-      id: quote.id,
-      customerId: quote.customerId ?? null,
-      title: quote.title,
-      description: quote.description ?? null,
-      estimatedAmount: quote.estimatedAmount?.toString() ?? null,
-      dueAt: quote.dueAt,
-      status: quote.status,
-      source: quote.source,
-      sourceRef: quote.sourceRef ?? null,
-      customer: publicCustomer(quote.customer),
-      createdAt: quote.createdAt,
-      updatedAt: quote.updatedAt
-    };
-  }
-
-  private publicQuoteWorkItem(quote: Parameters<CoreService["publicQuote"]>[0]) {
-    const publicQuote = this.publicQuote(quote);
-    return {
-      id: publicQuote.id,
-      type: "quote",
-      title: publicQuote.title,
-      description: publicQuote.description,
-      customer: publicQuote.customer,
-      dueAt: publicQuote.dueAt,
-      priority: "NORMAL",
-      status: publicQuote.status,
-      source: publicQuote.source,
-      linkedEntity: { type: "quote", id: publicQuote.id },
-      actions: publicQuote.status === "PAID" ? ["open"] : ["open", "edit", "mark_paid"]
-    };
   }
 
   private async executeStructuredAction(input: {
@@ -3716,6 +3558,7 @@ const {
     CoreAccessService,
     CoreNotificationsService,
     CoreVoiceGatewayService,
+    CoreWorkItemPresenter,
     CoreService,
     { provide: CORE_SERVICE, useExisting: CoreService }
   ]
