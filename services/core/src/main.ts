@@ -38,7 +38,7 @@ import {
   CreateIncomingCallSchema,
   CreateQuoteSchema,
   CreateReminderSchema,
-  CompletePendingActionSchema,
+  ApproveAiPendingActionSchema,
   HomeQuerySchema,
   ListByStatusQuerySchema,
   MergeCustomerSchema,
@@ -54,7 +54,7 @@ import {
   UpdateCustomerSchema,
   UpdateHomeVisitSchema,
   UpdateNotificationSchema,
-  UpdatePendingActionSchema,
+  UpdateAiPendingActionSchema,
   UpdateQuoteSchema,
   UpdateReminderSchema
 } from "@myclient/contracts";
@@ -75,7 +75,7 @@ import {
   IncomingCallsRepository,
   NotificationsRepository,
   OwnerVoiceCommandsRepository,
-  PendingActionsRepository,
+  AiPendingActionsRepository,
   QuotesRepository,
   RemindersRepository
 } from "./core.repositories.js";
@@ -652,7 +652,7 @@ class CoreController {
     @Inject(NotificationsRepository) private readonly notifications: NotificationsRepository,
     @Inject(DeviceTokensRepository) private readonly deviceTokens: DeviceTokensRepository,
     @Inject(OwnerVoiceCommandsRepository) private readonly ownerVoiceCommands: OwnerVoiceCommandsRepository,
-    @Inject(PendingActionsRepository) private readonly pendingActions: PendingActionsRepository,
+    @Inject(AiPendingActionsRepository) private readonly aiPendingActions: AiPendingActionsRepository,
     @Inject(PrismaService) private readonly prisma: PrismaService
   ) {}
 
@@ -1076,7 +1076,7 @@ class CoreController {
     const user = await this.requireBusinessAccess(headers, request.businessId);
     const action = AiActionSchema.parse(request.action);
     if (action.missingFields.length > 0) {
-      const pending = await this.pendingActions.create({
+      const aiPendingAction = await this.aiPendingActions.create({
         businessId: request.businessId,
         userId: user.id,
         actionType: action.type,
@@ -1088,12 +1088,12 @@ class CoreController {
         actorType: "user",
         actorId: user.id,
         source: "ai_owner_command",
-        entityType: "pending_action",
-        entityId: pending.id,
-        action: "CREATE_PENDING_ACTION",
-        after: pending as Prisma.InputJsonValue
+        entityType: "ai_pending_action",
+        entityId: aiPendingAction.id,
+        action: "CREATE_AI_PENDING_ACTION",
+        after: aiPendingAction as Prisma.InputJsonValue
       });
-      return { status: "PENDING_MISSING_INFORMATION", pending };
+      return { status: "PENDING_MISSING_INFORMATION", aiPendingAction };
     }
 
     if (action.type === "CREATE_REMINDER") {
@@ -2387,103 +2387,89 @@ class CoreController {
     return { notification: readNotification, item, dueAt };
   }
 
-  @Get("businesses/:businessId/pending-actions")
-  async listPendingActions(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Query() query: unknown) {
-    await this.requireBusinessAccess(headers, businessId);
-    const command = ListByStatusQuerySchema.parse(query);
-    return { pendingActions: await this.pendingActions.listByBusinessAndStatus(businessId, command.status) };
-  }
-
   @Get("businesses/:businessId/ai-pending-actions")
   async listAiPendingActions(@Headers() headers: RequestHeaders, @Param("businessId") businessId: string, @Query() query: unknown) {
-    return this.listPendingActions(headers, businessId, query);
+    await this.requireBusinessAccess(headers, businessId);
+    const command = ListByStatusQuerySchema.parse(query);
+    return { aiPendingActions: await this.aiPendingActions.listByBusinessAndStatus(businessId, command.status) };
   }
 
-  @Patch("businesses/:businessId/ai-pending-actions/:pendingActionId")
+  @Patch("businesses/:businessId/ai-pending-actions/:aiPendingActionId")
   async updateAiPendingAction(
     @Headers() headers: RequestHeaders,
     @Param("businessId") businessId: string,
-    @Param("pendingActionId") pendingActionId: string,
+    @Param("aiPendingActionId") aiPendingActionId: string,
     @Body() body: unknown
   ) {
     const user = await this.requireBusinessAccess(headers, businessId);
-    const command = UpdatePendingActionSchema.parse(body);
-    const pendingAction = await this.pendingActions.update({
+    const command = UpdateAiPendingActionSchema.parse(body);
+    const aiPendingAction = await this.aiPendingActions.update({
       businessId,
-      pendingActionId,
+      aiPendingActionId,
       payload: command.payload as Prisma.InputJsonValue | undefined,
       missingFields: command.missingFields,
       reviewReason: command.reviewReason
     });
-    if (!pendingAction) {
-      throw new NotFoundException("Pending action not found");
+    if (!aiPendingAction) {
+      throw new NotFoundException("AI pending action not found");
     }
     await this.audit.record({
       businessId,
       actorType: "user",
       actorId: user.id,
       source: "core",
-      entityType: "pending_action",
-      entityId: pendingAction.id,
-      action: "UPDATE_PENDING_ACTION",
-      after: pendingAction as Prisma.InputJsonValue
+      entityType: "ai_pending_action",
+      entityId: aiPendingAction.id,
+      action: "UPDATE_AI_PENDING_ACTION",
+      after: aiPendingAction as Prisma.InputJsonValue
     });
-    return { pendingAction };
+    return { aiPendingAction };
   }
 
-  @Post("businesses/:businessId/pending-actions/:pendingActionId/reject")
-  async rejectPendingAction(
-    @Headers() headers: RequestHeaders,
-    @Param("businessId") businessId: string,
-    @Param("pendingActionId") pendingActionId: string
-  ) {
-    const user = await this.requireBusinessAccess(headers, businessId);
-    const pending = await this.pendingActions.resolve({
-      businessId,
-      pendingActionId,
-      status: "REJECTED",
-      resolution: { rejectedBy: user.id }
-    });
-    if (!pending) {
-      throw new NotFoundException("Pending action not found");
-    }
-    await this.audit.record({
-      businessId,
-      actorType: "user",
-      actorId: user.id,
-      source: "core",
-      entityType: "pending_action",
-      entityId: pending.id,
-      action: "REJECT_PENDING_ACTION",
-      after: pending as Prisma.InputJsonValue
-    });
-    return { pendingAction: pending };
-  }
-
-  @Post("businesses/:businessId/ai-pending-actions/:pendingActionId/reject")
+  @Post("businesses/:businessId/ai-pending-actions/:aiPendingActionId/reject")
   async rejectAiPendingAction(
     @Headers() headers: RequestHeaders,
     @Param("businessId") businessId: string,
-    @Param("pendingActionId") pendingActionId: string
+    @Param("aiPendingActionId") aiPendingActionId: string
   ) {
-    return this.rejectPendingAction(headers, businessId, pendingActionId);
+    const user = await this.requireBusinessAccess(headers, businessId);
+    const aiPendingAction = await this.aiPendingActions.resolve({
+      businessId,
+      aiPendingActionId,
+      status: "REJECTED",
+      resolution: { rejectedBy: user.id }
+    });
+    if (!aiPendingAction) {
+      throw new NotFoundException("AI pending action not found");
+    }
+    await this.audit.record({
+      businessId,
+      actorType: "user",
+      actorId: user.id,
+      source: "core",
+      entityType: "ai_pending_action",
+      entityId: aiPendingAction.id,
+      action: "REJECT_AI_PENDING_ACTION",
+      after: aiPendingAction as Prisma.InputJsonValue
+    });
+    return { aiPendingAction };
   }
 
-  @Post("businesses/:businessId/pending-actions/:pendingActionId/complete")
-  async completePendingAction(
+  @Post("businesses/:businessId/ai-pending-actions/:aiPendingActionId/approve")
+  async approveAiPendingAction(
     @Headers() headers: RequestHeaders,
     @Param("businessId") businessId: string,
-    @Param("pendingActionId") pendingActionId: string,
+    @Param("aiPendingActionId") aiPendingActionId: string,
     @Body() body: unknown
   ) {
     const user = await this.requireBusinessAccess(headers, businessId);
-    const command = CompletePendingActionSchema.parse(body);
-    const existing = await this.pendingActions.findByBusinessAndId(businessId, pendingActionId);
+    const command = ApproveAiPendingActionSchema.parse(body);
+    const existing = await this.aiPendingActions.findByBusinessAndId(businessId, aiPendingActionId);
     if (!existing) {
-      throw new NotFoundException("Pending action not found");
+      throw new NotFoundException("AI pending action not found");
     }
     if (existing.status !== "PENDING") {
-      throw new BadRequestException("Pending action is already resolved");
+      throw new BadRequestException("AI pending action is already resolved");
     }
 
     let payload = {
@@ -2502,11 +2488,11 @@ class CoreController {
       userId: user.id,
       actionType: existing.actionType,
       payload,
-      idempotencyKey: stableIdempotencyKey("pending_action", existing.id)
+      idempotencyKey: stableIdempotencyKey("ai_pending_action", existing.id)
     });
-    const pending = await this.pendingActions.resolve({
+    const aiPendingAction = await this.aiPendingActions.resolve({
       businessId,
-      pendingActionId,
+      aiPendingActionId,
       status: "EXECUTED",
       resolution: {
         executedBy: user.id,
@@ -2518,22 +2504,12 @@ class CoreController {
       actorType: "user",
       actorId: user.id,
       source: "core",
-      entityType: "pending_action",
-      entityId: pending?.id,
-      action: "COMPLETE_PENDING_ACTION",
-      after: pending as Prisma.InputJsonValue
+      entityType: "ai_pending_action",
+      entityId: aiPendingAction?.id,
+      action: "APPROVE_AI_PENDING_ACTION",
+      after: aiPendingAction as Prisma.InputJsonValue
     });
-    return { pendingAction: pending, execution };
-  }
-
-  @Post("businesses/:businessId/ai-pending-actions/:pendingActionId/approve")
-  async approveAiPendingAction(
-    @Headers() headers: RequestHeaders,
-    @Param("businessId") businessId: string,
-    @Param("pendingActionId") pendingActionId: string,
-    @Body() body: unknown
-  ) {
-    return this.completePendingAction(headers, businessId, pendingActionId, body);
+    return { aiPendingAction, execution };
   }
 
   @Get("businesses/:businessId/audit-events")
@@ -2716,7 +2692,7 @@ class CoreController {
       }
       const title = typeof input.payload.title === "string" ? input.payload.title : undefined;
       if (!title) {
-        throw new BadRequestException("Pending action payload is missing reminder title");
+        throw new BadRequestException("AI pending action payload is missing reminder title");
       }
       const reminder = await this.reminders.create({
         businessId: input.businessId,
@@ -2725,7 +2701,7 @@ class CoreController {
         description: typeof input.payload.description === "string" ? input.payload.description : undefined,
         priority: input.payload.priority === "URGENT" ? "URGENT" : "NORMAL",
         dueAt: await this.resolveAiReminderDueAt(input.businessId, input.payload),
-        source: "pending_action",
+        source: "ai_pending_action",
         sourceRef: input.idempotencyKey,
         idempotencyKey: input.idempotencyKey
       });
@@ -2733,7 +2709,7 @@ class CoreController {
         businessId: input.businessId,
         actorType: "user",
         actorId: input.userId,
-        source: "pending_action",
+        source: "ai_pending_action",
         entityType: "reminder",
         entityId: reminder.id,
         action: "CREATE_REMINDER_FROM_PENDING_ACTION",
@@ -2794,7 +2770,7 @@ class CoreController {
     if (input.actionType === "CREATE_CUSTOMER") {
       const name = typeof input.payload.name === "string" ? input.payload.name : undefined;
       if (!name) {
-        throw new BadRequestException("Pending action payload is missing customer name");
+        throw new BadRequestException("AI pending action payload is missing customer name");
       }
       const customer = await this.customers.create({
         businessId: input.businessId,
@@ -2807,7 +2783,7 @@ class CoreController {
         businessId: input.businessId,
         actorType: "user",
         actorId: input.userId,
-        source: "pending_action",
+        source: "ai_pending_action",
         entityType: "customer",
         entityId: customer.id,
         action: "CREATE_CUSTOMER_FROM_PENDING_ACTION",
@@ -2839,7 +2815,7 @@ class CoreController {
       const title = typeof input.payload.title === "string" ? input.payload.title : undefined;
       const startsAt = typeof input.payload.startsAt === "string" ? input.payload.startsAt : undefined;
       if (!title || !startsAt) {
-        throw new BadRequestException("Pending action payload is missing title or startsAt");
+        throw new BadRequestException("AI pending action payload is missing title or startsAt");
       }
       const repository = input.actionType === "CREATE_HOME_VISIT" ? this.homeVisits : this.appointments;
       const result = await repository.create({
@@ -2856,7 +2832,7 @@ class CoreController {
         businessId: input.businessId,
         actorType: "user",
         actorId: input.userId,
-        source: "pending_action",
+        source: "ai_pending_action",
         entityType,
         entityId: result.id,
         action: `${input.actionType}_FROM_PENDING_ACTION`,
@@ -3019,7 +2995,7 @@ class CoreController {
       const customerId = typeof input.payload.customerId === "string" ? input.payload.customerId : undefined;
       const text = typeof input.payload.text === "string" ? input.payload.text : undefined;
       if (!customerId || !text) {
-        throw new BadRequestException("Pending action payload is missing note customerId or text");
+        throw new BadRequestException("AI pending action payload is missing note customerId or text");
       }
       const note = await this.notes.create({
         businessId: input.businessId,
@@ -3033,7 +3009,7 @@ class CoreController {
         businessId: input.businessId,
         actorType: "user",
         actorId: input.userId,
-        source: "pending_action",
+        source: "ai_pending_action",
         entityType: "customer_note",
         entityId: note.id,
         action: "CREATE_CUSTOMER_NOTE_FROM_PENDING_ACTION",
@@ -3248,11 +3224,11 @@ class CoreController {
     const actionType = typeof result.actionType === "string" ? result.actionType : "ACTION";
     const status = result.status === "PENDING" ? "pending" : result.status === "EXECUTED" ? "created" : "failed";
     const executionPayload = this.asRecord(result.result);
-    const pendingAction = this.asRecord(result.pendingAction);
-    const payload = this.asRecord(pendingAction.payload);
+    const aiPendingAction = this.asRecord(result.aiPendingAction);
+    const payload = this.asRecord(aiPendingAction.payload);
     const entity = this.voiceResultEntity(executionPayload);
     const fields = status === "pending"
-      ? this.voicePendingFields(actionType, payload, pendingAction, timeZone)
+      ? this.voicePendingFields(actionType, payload, aiPendingAction, timeZone)
       : this.voiceEntityFields(actionType, entity, timeZone);
 
     return {
@@ -3261,12 +3237,12 @@ class CoreController {
       kind: this.voiceResultKind(actionType),
       status,
       title: this.voiceResultTitle(actionType, status),
-      subtitle: status === "pending" ? this.pendingReason(pendingAction) : undefined,
+      subtitle: status === "pending" ? this.pendingReason(aiPendingAction) : undefined,
       payload: status === "pending" ? payload : entity,
       fields,
       entityId: typeof entity.id === "string" ? entity.id : undefined,
-      pendingActionId: typeof pendingAction.id === "string" ? pendingAction.id : undefined,
-      missingFields: this.stringList(pendingAction.missingFields)
+      aiPendingActionId: typeof aiPendingAction.id === "string" ? aiPendingAction.id : undefined,
+      missingFields: this.stringList(aiPendingAction.missingFields)
     };
   }
 
@@ -3303,8 +3279,8 @@ class CoreController {
     return `${prefix}פעולה`;
   }
 
-  private voicePendingFields(actionType: string, payload: Record<string, unknown>, pendingAction: Record<string, unknown>, timeZone: string) {
-    const missingFields = new Set(this.stringList(pendingAction.missingFields));
+  private voicePendingFields(actionType: string, payload: Record<string, unknown>, aiPendingAction: Record<string, unknown>, timeZone: string) {
+    const missingFields = new Set(this.stringList(aiPendingAction.missingFields));
     const fields = this.voiceEntityFields(actionType, payload, timeZone);
     for (const field of missingFields) {
       if (!fields.some((item) => item.label === this.voiceFieldLabel(field))) {
@@ -3341,8 +3317,8 @@ class CoreController {
     return fields;
   }
 
-  private pendingReason(pendingAction: Record<string, unknown>) {
-    const missingFields = this.stringList(pendingAction.missingFields).map((field) => this.voiceFieldLabel(field));
+  private pendingReason(aiPendingAction: Record<string, unknown>) {
+    const missingFields = this.stringList(aiPendingAction.missingFields).map((field) => this.voiceFieldLabel(field));
     return missingFields.length > 0 ? `חסר: ${missingFields.join(", ")}` : "ממתין לאישור";
   }
 
@@ -3432,7 +3408,7 @@ class CoreController {
         transcript: input.transcript
       });
       const missingFields = this.requiredVoiceMissingFields(action, payload);
-      const pending = await this.pendingActions.create({
+      const aiPendingAction = await this.aiPendingActions.create({
         businessId: input.businessId,
         userId: input.userId,
         actionType: action.type,
@@ -3444,12 +3420,12 @@ class CoreController {
         actorType: "user",
         actorId: input.userId,
         source: "owner_voice_command",
-        entityType: "pending_action",
-        entityId: pending.id,
-        action: "CREATE_PENDING_ACTION_FROM_VOICE_COMMAND",
-        after: pending as Prisma.InputJsonValue
+        entityType: "ai_pending_action",
+        entityId: aiPendingAction.id,
+        action: "CREATE_AI_PENDING_ACTION_FROM_VOICE_COMMAND",
+        after: aiPendingAction as Prisma.InputJsonValue
       });
-      results.push({ status: "PENDING", actionType: action.type, idempotencyKey: action.idempotencyKey, pendingAction: pending });
+      results.push({ status: "PENDING", actionType: action.type, idempotencyKey: action.idempotencyKey, aiPendingAction });
     }
 
     const hasPending = results.some((result) => result.status === "PENDING");
@@ -4041,7 +4017,7 @@ class CoreController {
     NotificationsRepository,
     DeviceTokensRepository,
     OwnerVoiceCommandsRepository,
-    PendingActionsRepository
+    AiPendingActionsRepository
   ]
 })
 class CoreModule {}

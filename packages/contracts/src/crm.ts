@@ -218,19 +218,19 @@ export const SnoozeNotificationSchema = z.object({
 
 export type SnoozeNotification = z.infer<typeof SnoozeNotificationSchema>;
 
-export const CompletePendingActionSchema = z.object({
+export const ApproveAiPendingActionSchema = z.object({
   payload: z.record(z.unknown()).optional()
 });
 
-export type CompletePendingAction = z.infer<typeof CompletePendingActionSchema>;
+export type ApproveAiPendingAction = z.infer<typeof ApproveAiPendingActionSchema>;
 
-export const UpdatePendingActionSchema = z.object({
+export const UpdateAiPendingActionSchema = z.object({
   payload: z.record(z.unknown()).optional(),
   missingFields: z.array(z.string()).optional(),
   reviewReason: z.string().trim().min(1).nullable().optional()
-}).refine((value) => Object.keys(value).length > 0, "At least one pending action field is required");
+}).refine((value) => Object.keys(value).length > 0, "At least one AI pending action field is required");
 
-export type UpdatePendingAction = z.infer<typeof UpdatePendingActionSchema>;
+export type UpdateAiPendingAction = z.infer<typeof UpdateAiPendingActionSchema>;
 
 export const CreateBusinessMemberSchema = z.object({
   phoneNumber: z.string().trim().min(1),
@@ -281,7 +281,7 @@ export const VoiceCommandResultItemSchema = z.object({
   payload: z.record(z.unknown()).default({}),
   fields: z.array(VoiceCommandResultFieldSchema).default([]),
   entityId: z.string().optional(),
-  pendingActionId: z.string().optional(),
+  aiPendingActionId: z.string().optional(),
   missingFields: z.array(z.string()).default([])
 });
 

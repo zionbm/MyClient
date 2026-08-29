@@ -109,16 +109,16 @@ const aiPending = request("POST", `${core}/owner-actions/execute`, {
     payload: {}
   }
 }, { authorization: token });
-expectStatus(aiPending, 201, "create pending action");
-const pendingActionId = aiPending.body.pending.id;
+expectStatus(aiPending, 201, "create AI pending action");
+const aiPendingActionId = aiPending.body.aiPendingAction.id;
 
-expectStatus(request("PATCH", `${core}/businesses/${businessId}/ai-pending-actions/${pendingActionId}`, {
+expectStatus(request("PATCH", `${core}/businesses/${businessId}/ai-pending-actions/${aiPendingActionId}`, {
   reviewReason: "בדיקת עריכה"
-}, { authorization: token }), 200, "edit ai pending action");
+}, { authorization: token }), 200, "edit AI pending action");
 
-expectStatus(request("POST", `${core}/businesses/${businessId}/ai-pending-actions/${pendingActionId}/approve`, {
+expectStatus(request("POST", `${core}/businesses/${businessId}/ai-pending-actions/${aiPendingActionId}/approve`, {
   payload: { title: "משימה מפעולה ממתינה" }
-}, { authorization: token }), 201, "approve ai pending action");
+}, { authorization: token }), 201, "approve AI pending action");
 
 expectStatus(request("POST", `${telephony}/plivo/incoming`, {
   callId: `it_call_${suffix}`,

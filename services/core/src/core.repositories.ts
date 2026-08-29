@@ -120,7 +120,7 @@ type CreateNotificationInput = {
   payload?: Prisma.InputJsonValue;
 };
 
-type CreatePendingActionInput = {
+type CreateAiPendingActionInput = {
   businessId: string;
   userId?: string;
   actionType: string;
@@ -131,9 +131,9 @@ type CreatePendingActionInput = {
   missingFields: string[];
 };
 
-type UpdatePendingActionInput = {
+type UpdateAiPendingActionInput = {
   businessId: string;
-  pendingActionId: string;
+  aiPendingActionId: string;
   payload?: Prisma.InputJsonValue;
   missingFields?: string[];
   reviewReason?: string | null;
@@ -154,9 +154,9 @@ type RegisterDeviceTokenInput = {
   appVersion?: string;
 };
 
-type ResolvePendingActionInput = {
+type ResolveAiPendingActionInput = {
   businessId: string;
-  pendingActionId: string;
+  aiPendingActionId: string;
   status: "EXECUTED" | "REJECTED";
   resolution?: Prisma.InputJsonValue;
 };
@@ -1561,15 +1561,15 @@ export class DeviceTokensRepository {
 }
 
 @Injectable()
-export class PendingActionsRepository {
+export class AiPendingActionsRepository {
   constructor(
     @Inject(PrismaService) private readonly prisma: PrismaService,
     @Inject(BusinessesRepository) private readonly businesses: BusinessesRepository
   ) {}
 
-  async create(input: CreatePendingActionInput) {
+  async create(input: CreateAiPendingActionInput) {
     await this.businesses.requireBusiness(input.businessId);
-    return this.prisma.pendingAction.create({
+    return this.prisma.aiPendingAction.create({
       data: {
         businessId: input.businessId,
         userId: input.userId,
@@ -1586,7 +1586,7 @@ export class PendingActionsRepository {
 
   async listByBusinessAndStatus(businessId: string, status?: string) {
     await this.businesses.requireBusiness(businessId);
-    return this.prisma.pendingAction.findMany({
+    return this.prisma.aiPendingAction.findMany({
       where: {
         businessId,
         status
@@ -1595,22 +1595,22 @@ export class PendingActionsRepository {
     });
   }
 
-  async findByBusinessAndId(businessId: string, pendingActionId: string) {
-    return this.prisma.pendingAction.findFirst({
+  async findByBusinessAndId(businessId: string, aiPendingActionId: string) {
+    return this.prisma.aiPendingAction.findFirst({
       where: {
         businessId,
-        id: pendingActionId
+        id: aiPendingActionId
       }
     });
   }
 
-  async resolve(input: ResolvePendingActionInput) {
-    const existing = await this.findByBusinessAndId(input.businessId, input.pendingActionId);
+  async resolve(input: ResolveAiPendingActionInput) {
+    const existing = await this.findByBusinessAndId(input.businessId, input.aiPendingActionId);
     if (!existing) {
       return null;
     }
 
-    return this.prisma.pendingAction.update({
+    return this.prisma.aiPendingAction.update({
       where: { id: existing.id },
       data: {
         status: input.status,
@@ -1620,15 +1620,15 @@ export class PendingActionsRepository {
     });
   }
 
-  async update(input: UpdatePendingActionInput) {
-    const existing = await this.findByBusinessAndId(input.businessId, input.pendingActionId);
+  async update(input: UpdateAiPendingActionInput) {
+    const existing = await this.findByBusinessAndId(input.businessId, input.aiPendingActionId);
     if (!existing) {
       return null;
     }
     if (existing.status !== "PENDING") {
-      throw new BadRequestException("Pending action is already resolved");
+      throw new BadRequestException("AI pending action is already resolved");
     }
-    return this.prisma.pendingAction.update({
+    return this.prisma.aiPendingAction.update({
       where: { id: existing.id },
       data: {
         payload: input.payload,

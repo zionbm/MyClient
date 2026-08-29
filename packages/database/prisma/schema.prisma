@@ -370,7 +370,7 @@ model OwnerVoiceCommand {
   @@index([businessId, userId])
 }
 
-model PendingAction {
+model AiPendingAction {
   id            String    @id @default(uuid())
   businessId    String
   userId        String?
