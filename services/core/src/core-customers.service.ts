@@ -1,7 +1,7 @@
 import { Inject, Injectable, NotFoundException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { CreateCustomerSchema, CreateNoteSchema, MergeCustomerSchema, UpdateCustomerSchema, UpdateNoteSchema } from "@myclient/contracts";
-import { AuditRepository, CustomersRepository, HomeVisitsRepository, IncomingCallsRepository, NotesRepository, QuotesRepository, RemindersRepository } from "./core.repositories.js";
+import { AppointmentsRepository, AuditRepository, CustomersRepository, HomeVisitsRepository, IncomingCallsRepository, NotesRepository, QuotesRepository, RemindersRepository } from "./core.repositories.js";
 import { CoreAccessService } from "./core-access.service.js";
 import { CoreWorkItemPresenter } from "./core-work-item.presenter.js";
 import { callDisplayStatus, callIvrSelection, paginatedResponse, paginationFromQuery, publicCustomer, reminderStatus, scheduledTimeOrZero, type RequestHeaders } from "./core-utils.js";
@@ -15,6 +15,7 @@ export class CoreCustomersService {
     @Inject(NotesRepository) private readonly notes: NotesRepository,
     @Inject(RemindersRepository) private readonly reminders: RemindersRepository,
     @Inject(HomeVisitsRepository) private readonly homeVisits: HomeVisitsRepository,
+    @Inject(AppointmentsRepository) private readonly appointments: AppointmentsRepository,
     @Inject(QuotesRepository) private readonly quotes: QuotesRepository,
     @Inject(IncomingCallsRepository) private readonly incomingCalls: IncomingCallsRepository,
     @Inject(CoreWorkItemPresenter) private readonly workItemPresenter: CoreWorkItemPresenter
@@ -47,15 +48,17 @@ export class CoreCustomersService {
       throw new NotFoundException("Customer not found");
     }
 
-    const [reminders, homeVisits, quotes, notes] = await Promise.all([
+    const [reminders, homeVisits, appointments, quotes, notes] = await Promise.all([
       this.reminders.listByCustomer(businessId, customerId),
       this.homeVisits.listByCustomer(businessId, customerId),
+      this.appointments.listByCustomer(businessId, customerId),
       this.quotes.listByCustomer(businessId, customerId),
       this.notes.listByCustomer(businessId, customerId)
     ]);
     const activity = [
       ...reminders.map((reminder) => this.workItemPresenter.reminderWorkItem(reminder)),
       ...homeVisits.map((homeVisit) => this.workItemPresenter.homeVisitWorkItem(homeVisit)),
+      ...appointments.map((appointment) => this.workItemPresenter.appointmentWorkItem(appointment)),
       ...quotes.map((quote) => this.workItemPresenter.quoteWorkItem(quote)),
       ...(notes ?? []).map((note) => ({
         id: note.id,
