@@ -25,10 +25,19 @@ on:
         required: true
         default: true
         type: boolean
+      reset_database:
+        description: Reset Cloud SQL and reapply all migrations (deletes all data; all/core only)
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
   id-token: write
+
+concurrency:
+  group: deploy-gcp-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
@@ -42,13 +51,45 @@ jobs:
   deploy:
     name: Build and deploy
     runs-on: ubuntu-latest
+    timeout-minutes: 60
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
+
+      - name: Validate workflow configuration
+        shell: bash
+        env:
+          WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          DEPLOY_SERVICE_ACCOUNT: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+        run: |
+          set -euo pipefail
+          required=(
+            PROJECT_ID
+            REGION
+            ARTIFACT_REPOSITORY
+            RUNTIME_SERVICE_ACCOUNT
+            CLOUD_SQL_INSTANCE_CONNECTION_NAME
+            WORKLOAD_IDENTITY_PROVIDER
+            DEPLOY_SERVICE_ACCOUNT
+          )
+          missing=()
+          for name in "${required[@]}"; do
+            if [[ -z "${!name:-}" ]]; then
+              missing+=("$name")
+            fi
+          done
+          if (( ${#missing[@]} > 0 )); then
+            echo "Missing required GitHub Actions variables: ${missing[*]}" >&2
+            exit 1
+          fi
+          if [[ "${{ inputs.reset_database }}" == "true" && "${{ inputs.service }}" != "all" && "${{ inputs.service }}" != "core" ]]; then
+            echo "Database reset requires service=all or service=core." >&2
+            exit 1
+          fi
 
       - name: Use Node.js 24
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "24"
           cache: npm
@@ -66,13 +107,16 @@ jobs:
         run: npm run build
 
       - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
+        uses: google-github-actions/auth@v3
         with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
           workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
 
       - name: Set up gcloud
-        uses: google-github-actions/setup-gcloud@v2
+        uses: google-github-actions/setup-gcloud@v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
 
       - name: Configure Docker for Artifact Registry
         run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
@@ -153,7 +197,7 @@ jobs:
               --service-account="$RUNTIME_SERVICE_ACCOUNT" \
               --no-allow-unauthenticated \
               --set-env-vars=NODE_ENV=production,DEFAULT_LOCALE=he-IL,MOCK_LLM_PROVIDER=false,OPENAI_LLM_MODEL=gpt-5-mini \
-              --set-secrets=OPENAI_API_KEY=OPENAI_API_KEY:latest \
+              --set-secrets=INTERNAL_API_SECRET=INTERNAL_API_SECRET:latest,OPENAI_API_KEY=OPENAI_API_KEY:latest \
               --quiet
             gcloud run services add-iam-policy-binding myclient-ai \
               --project="$PROJECT_ID" \
@@ -171,7 +215,7 @@ jobs:
               --service-account="$RUNTIME_SERVICE_ACCOUNT" \
               --no-allow-unauthenticated \
               --set-env-vars=NODE_ENV=production,DEFAULT_LOCALE=he-IL,MOCK_STT_PROVIDER=false,MOCK_TTS_PROVIDER=true,OPENAI_STT_MODEL=gpt-4o-mini-transcribe \
-              --set-secrets=OPENAI_API_KEY=OPENAI_API_KEY:latest \
+              --set-secrets=INTERNAL_API_SECRET=INTERNAL_API_SECRET:latest,OPENAI_API_KEY=OPENAI_API_KEY:latest \
               --quiet
             gcloud run services add-iam-policy-binding myclient-voice \
               --project="$PROJECT_ID" \
@@ -196,7 +240,7 @@ jobs:
               --service-account="$RUNTIME_SERVICE_ACCOUNT" \
               --allow-unauthenticated \
               --add-cloudsql-instances="$CLOUD_SQL_INSTANCE_CONNECTION_NAME" \
-              --set-env-vars=NODE_ENV=production,DEFAULT_LOCALE=he-IL,AUTH_PROVIDER=firebase,AI_BASE_URL="$ai_url",VOICE_BASE_URL="$voice_url",MOCK_FCM_PROVIDER=false,MOCK_STT_PROVIDER=false,CLOUD_RUN_SERVICE_AUTH=google,SCHEDULER_SERVICE_ACCOUNT_EMAIL="$(scheduler_service_account_email)",SCHEDULER_OIDC_AUDIENCE="$core_url" \
+              --set-env-vars=NODE_ENV=production,DEFAULT_LOCALE=he-IL,AUTH_PROVIDER=firebase,AI_BASE_URL="$ai_url",VOICE_BASE_URL="$voice_url",MOCK_FCM_PROVIDER=false,MOCK_STT_PROVIDER=false,OPENAI_REALTIME_TRANSCRIPTION_MODEL=gpt-live-transcribe,CLOUD_RUN_SERVICE_AUTH=google,SCHEDULER_SERVICE_ACCOUNT_EMAIL="$(scheduler_service_account_email)",SCHEDULER_OIDC_AUDIENCE="$core_url" \
               --set-secrets=DATABASE_URL=DATABASE_URL:latest,INTERNAL_API_SECRET=INTERNAL_API_SECRET:latest,OPENAI_API_KEY=OPENAI_API_KEY:latest \
               --quiet
             core_url="$(service_url core)"
@@ -246,7 +290,7 @@ jobs:
           }
 
           deploy_scheduler() {
-            local core_url scheduler_sa job_name
+            local core_url scheduler_sa job_name scheduler_state
             core_url="$(service_url core)"
             scheduler_sa="$(scheduler_service_account_email)"
             job_name="myclient-due-reminders"
@@ -288,9 +332,38 @@ jobs:
                 --attempt-deadline=60s \
                 --quiet
             fi
+            scheduler_state="$(gcloud scheduler jobs describe "$job_name" \
+              --project="$PROJECT_ID" \
+              --location="$REGION" \
+              --format='value(state)')"
+            if [[ "$scheduler_state" == "PAUSED" ]]; then
+              gcloud scheduler jobs resume "$job_name" \
+                --project="$PROJECT_ID" \
+                --location="$REGION" \
+                --quiet
+            fi
           }
 
-          run_migrations() {
+          pause_scheduler_for_reset() {
+            local job_name="myclient-due-reminders" scheduler_state
+            if gcloud scheduler jobs describe "$job_name" \
+              --project="$PROJECT_ID" \
+              --location="$REGION" >/dev/null 2>&1; then
+              scheduler_state="$(gcloud scheduler jobs describe "$job_name" \
+                --project="$PROJECT_ID" \
+                --location="$REGION" \
+                --format='value(state)')"
+              if [[ "$scheduler_state" != "PAUSED" ]]; then
+                gcloud scheduler jobs pause "$job_name" \
+                  --project="$PROJECT_ID" \
+                  --location="$REGION" \
+                  --quiet
+              fi
+            fi
+          }
+
+          run_database_job() {
+            local prisma_args="$1"
             gcloud run jobs deploy myclient-prisma-migrate \
               --project="$PROJECT_ID" \
               --region="$REGION" \
@@ -298,8 +371,11 @@ jobs:
               --service-account="$RUNTIME_SERVICE_ACCOUNT" \
               --set-cloudsql-instances="$CLOUD_SQL_INSTANCE_CONNECTION_NAME" \
               --set-secrets=DATABASE_URL=DATABASE_URL:latest \
+              --tasks=1 \
+              --max-retries=0 \
+              --task-timeout=10m \
               --command=npx \
-              --args=prisma,migrate,deploy,--schema,packages/database/prisma/schema.prisma \
+              --args="$prisma_args" \
               --quiet
             gcloud run jobs execute myclient-prisma-migrate \
               --project="$PROJECT_ID" \
@@ -308,8 +384,18 @@ jobs:
               --quiet
           }
 
-          if [[ "${{ inputs.run_migrations }}" == "true" && ( "$selected" == "all" || "$selected" == "core" ) ]]; then
-            run_migrations
+          if [[ "${{ inputs.reset_database }}" == "true" ]]; then
+            if [[ "$selected" != "all" && "$selected" != "core" ]]; then
+              echo "Database reset requires service=all or service=core." >&2
+              exit 1
+            fi
+            echo "Resetting Cloud SQL schema and deleting all application data before deployment."
+            pause_scheduler_for_reset
+            run_database_job "prisma,migrate,reset,--force,--skip-seed,--skip-generate,--schema,packages/database/prisma/schema.prisma"
+          elif [[ "${{ inputs.run_migrations }}" == "true" && ( "$selected" == "all" || "$selected" == "core" ) ]]; then
+            run_database_job "prisma,migrate,deploy,--schema,packages/database/prisma/schema.prisma"
+          elif [[ "${{ inputs.run_migrations }}" == "true" ]]; then
+            echo "Prisma migrations are skipped because service=${selected}; migrations run only for all or core."
           fi
 
           for service in "${services[@]}"; do
@@ -336,10 +422,24 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for service in core telephony; do
+          selected="${{ inputs.service }}"
+          if [[ "$selected" == "all" ]]; then
+            services=(core telephony)
+          elif [[ "$selected" == "core" || "$selected" == "telephony" ]]; then
+            services=("$selected")
+          else
+            services=()
+          fi
+
+          for service in "${services[@]}"; do
             if gcloud run services describe "myclient-${service}" --project="$PROJECT_ID" --region="$REGION" >/dev/null 2>&1; then
               url="$(gcloud run services describe "myclient-${service}" --project="$PROJECT_ID" --region="$REGION" --format='value(status.url)')"
-              curl --fail --silent --show-error "$url/health"
+              curl --fail --silent --show-error \
+                --retry 5 \
+                --retry-all-errors \
+                --retry-delay 3 \
+                --max-time 20 \
+                "$url/health"
               echo
             fi
           done
