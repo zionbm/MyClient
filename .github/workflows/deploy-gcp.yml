@@ -25,11 +25,6 @@ on:
         required: true
         default: true
         type: boolean
-      reset_database:
-        description: Reset Cloud SQL and reapply all migrations (deletes all data; all/core only)
-        required: true
-        default: false
-        type: boolean
 
 permissions:
   contents: read
@@ -81,10 +76,6 @@ jobs:
           done
           if (( ${#missing[@]} > 0 )); then
             echo "Missing required GitHub Actions variables: ${missing[*]}" >&2
-            exit 1
-          fi
-          if [[ "${{ inputs.reset_database }}" == "true" && "${{ inputs.service }}" != "all" && "${{ inputs.service }}" != "core" ]]; then
-            echo "Database reset requires service=all or service=core." >&2
             exit 1
           fi
 
@@ -290,7 +281,7 @@ jobs:
           }
 
           deploy_scheduler() {
-            local core_url scheduler_sa job_name scheduler_state
+            local core_url scheduler_sa job_name
             core_url="$(service_url core)"
             scheduler_sa="$(scheduler_service_account_email)"
             job_name="myclient-due-reminders"
@@ -332,38 +323,9 @@ jobs:
                 --attempt-deadline=60s \
                 --quiet
             fi
-            scheduler_state="$(gcloud scheduler jobs describe "$job_name" \
-              --project="$PROJECT_ID" \
-              --location="$REGION" \
-              --format='value(state)')"
-            if [[ "$scheduler_state" == "PAUSED" ]]; then
-              gcloud scheduler jobs resume "$job_name" \
-                --project="$PROJECT_ID" \
-                --location="$REGION" \
-                --quiet
-            fi
           }
 
-          pause_scheduler_for_reset() {
-            local job_name="myclient-due-reminders" scheduler_state
-            if gcloud scheduler jobs describe "$job_name" \
-              --project="$PROJECT_ID" \
-              --location="$REGION" >/dev/null 2>&1; then
-              scheduler_state="$(gcloud scheduler jobs describe "$job_name" \
-                --project="$PROJECT_ID" \
-                --location="$REGION" \
-                --format='value(state)')"
-              if [[ "$scheduler_state" != "PAUSED" ]]; then
-                gcloud scheduler jobs pause "$job_name" \
-                  --project="$PROJECT_ID" \
-                  --location="$REGION" \
-                  --quiet
-              fi
-            fi
-          }
-
-          run_database_job() {
-            local prisma_args="$1"
+          run_migrations() {
             gcloud run jobs deploy myclient-prisma-migrate \
               --project="$PROJECT_ID" \
               --region="$REGION" \
@@ -375,7 +337,7 @@ jobs:
               --max-retries=0 \
               --task-timeout=10m \
               --command=npx \
-              --args="$prisma_args" \
+              --args=prisma,migrate,deploy,--schema,packages/database/prisma/schema.prisma \
               --quiet
             gcloud run jobs execute myclient-prisma-migrate \
               --project="$PROJECT_ID" \
@@ -384,16 +346,8 @@ jobs:
               --quiet
           }
 
-          if [[ "${{ inputs.reset_database }}" == "true" ]]; then
-            if [[ "$selected" != "all" && "$selected" != "core" ]]; then
-              echo "Database reset requires service=all or service=core." >&2
-              exit 1
-            fi
-            echo "Resetting Cloud SQL schema and deleting all application data before deployment."
-            pause_scheduler_for_reset
-            run_database_job "prisma,migrate,reset,--force,--skip-seed,--skip-generate,--schema,packages/database/prisma/schema.prisma"
-          elif [[ "${{ inputs.run_migrations }}" == "true" && ( "$selected" == "all" || "$selected" == "core" ) ]]; then
-            run_database_job "prisma,migrate,deploy,--schema,packages/database/prisma/schema.prisma"
+          if [[ "${{ inputs.run_migrations }}" == "true" && ( "$selected" == "all" || "$selected" == "core" ) ]]; then
+            run_migrations
           elif [[ "${{ inputs.run_migrations }}" == "true" ]]; then
             echo "Prisma migrations are skipped because service=${selected}; migrations run only for all or core."
           fi
