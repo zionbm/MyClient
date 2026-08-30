@@ -186,6 +186,16 @@ export class AiPendingActionsRepository {
     });
   }
 
+  async countByBusinessAndStatus(businessId: string, status?: string) {
+    await this.businesses.requireBusiness(businessId);
+    return this.prisma.aiPendingAction.count({
+      where: {
+        businessId,
+        status
+      }
+    });
+  }
+
   async findByBusinessAndId(businessId: string, aiPendingActionId: string) {
     return this.prisma.aiPendingAction.findFirst({
       where: {
@@ -268,4 +278,3 @@ export class AiPendingActionsRepository {
     });
   }
 }
-

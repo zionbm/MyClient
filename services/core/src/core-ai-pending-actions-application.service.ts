@@ -34,8 +34,12 @@ export class CoreAiPendingActionsApplicationService {
     await this.access.requireBusinessAccess(headers, businessId);
     const command = AiPendingActionListQuerySchema.parse(query);
     const pagination = paginationFromParsedQuery(command);
-    const page = paginatedResponse(await this.aiPendingActions.listByBusinessAndStatus(businessId, command.status, pagination), pagination.limit);
-    return { aiPendingActions: page.items, pageInfo: page.pageInfo };
+    const [items, totalCount] = await Promise.all([
+      this.aiPendingActions.listByBusinessAndStatus(businessId, command.status, pagination),
+      this.aiPendingActions.countByBusinessAndStatus(businessId, command.status)
+    ]);
+    const page = paginatedResponse(items, pagination.limit);
+    return { aiPendingActions: page.items, pageInfo: page.pageInfo, totalCount };
   }
 
   async updateAiPendingAction(
