@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../prisma.service.js";
 import { createdAtCursorWhere, paginationTake, type AuditEventInput, type CreateBusinessMemberInput, type CreateBusinessPhoneNumberInput, type DisableBusinessMemberInput, type PaginationInput, type RegisterBusinessInput, type UpdateBusinessPhoneNumberInput, type UpdateBusinessSettingsInput } from "./repository.shared.js";
@@ -239,6 +239,18 @@ export class BusinessMembersRepository {
 
   async upsertByPhone(input: CreateBusinessMemberInput) {
     await this.businesses.requireBusiness(input.businessId);
+    const existingMember = await this.prisma.businessMember.findUnique({
+      where: {
+        businessId_phoneNumber: {
+          businessId: input.businessId,
+          phoneNumber: input.phoneNumber
+        }
+      },
+      select: { memberType: true }
+    });
+    if (existingMember?.memberType === "OWNER") {
+      throw new ForbiddenException("Business owner membership cannot be changed");
+    }
     const existingUser = await this.prisma.user.findUnique({
       where: { phoneNumber: input.phoneNumber },
       select: { id: true }
@@ -280,6 +292,9 @@ export class BusinessMembersRepository {
     });
     if (!existing) {
       return null;
+    }
+    if (existing.memberType === "OWNER") {
+      throw new ForbiddenException("Business owner cannot be disabled");
     }
     return this.prisma.businessMember.update({
       where: { id: existing.id },
@@ -475,4 +490,3 @@ export class BusinessPhoneNumbersRepository {
     });
   }
 }
-

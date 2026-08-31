@@ -21,6 +21,7 @@ expectStatus(request("GET", `${worker}/reminders/status`), 401, "Worker internal
 const registration = request("POST", `${core}/auth/register-business`, {
   firebaseUid,
   email: `integration-${suffix}@example.com`,
+  phoneNumber: `+972544${suffix.slice(-6).padStart(6, "0")}`,
   displayName: "בודק אינטגרציה",
   businessName: "עסק אינטגרציה"
 });
@@ -89,6 +90,36 @@ expectStatus(request("POST", `${core}/businesses/${businessId}/members`, {
 const members = request("GET", `${core}/businesses/${businessId}/members`, undefined, { authorization: token });
 expectStatus(members, 200, "list members");
 assert(members.body.members.length > 0, "expected business members");
+const ownerMember = members.body.members.find((member) => member.memberType === "OWNER");
+const employeeMember = members.body.members.find((member) => member.memberType === "EMPLOYEE");
+assert(ownerMember, "expected owner business member");
+assert(employeeMember, "expected employee business member");
+expectStatus(
+  request("POST", `${core}/businesses/${businessId}/members/${ownerMember.id}/disable`, {}, { authorization: token }),
+  403,
+  "disable business owner rejected"
+);
+expectStatus(
+  request("POST", `${core}/businesses/${businessId}/members`, {
+    phoneNumber: ownerMember.phoneNumber,
+    memberType: "EMPLOYEE"
+  }, { authorization: token }),
+  403,
+  "changing business owner membership rejected"
+);
+expectStatus(
+  request("POST", `${core}/businesses/${businessId}/members`, {
+    phoneNumber: `+972533${suffix.slice(-6).padStart(6, "0")}`,
+    memberType: "OWNER"
+  }, { authorization: token }),
+  400,
+  "creating another business owner rejected"
+);
+expectStatus(
+  request("POST", `${core}/businesses/${businessId}/members/${employeeMember.id}/disable`, {}, { authorization: token }),
+  201,
+  "disable employee member"
+);
 
 const appointmentResult = request("POST", `${core}/businesses/${businessId}/appointments`, {
   customerId,

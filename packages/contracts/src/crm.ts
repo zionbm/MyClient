@@ -263,7 +263,7 @@ export type UpdateAiPendingAction = z.infer<typeof UpdateAiPendingActionSchema>;
 export const CreateBusinessMemberSchema = z.object({
   phoneNumber: z.string().trim().min(1),
   displayName: OptionalNonEmptyStringSchema,
-  memberType: z.enum(["OWNER", "EMPLOYEE"]).default("EMPLOYEE")
+  memberType: z.literal("EMPLOYEE").default("EMPLOYEE")
 });
 
 export type CreateBusinessMember = z.infer<typeof CreateBusinessMemberSchema>;
