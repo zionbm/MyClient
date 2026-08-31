@@ -152,7 +152,8 @@ export class CoreVoiceResultPresenter {
 
   voiceResultKind(actionType: string): VoiceCommandResult["items"][number]["kind"] {
     if (actionType.includes("CUSTOMER") && !actionType.includes("NOTE")) return "customer";
-    if (actionType.includes("HOME_VISIT") || actionType.includes("APPOINTMENT")) return "home_visit";
+    if (actionType.includes("HOME_VISIT")) return "home_visit";
+    if (actionType.includes("APPOINTMENT")) return "appointment";
     if (actionType.includes("QUOTE")) return "quote";
     if (actionType.includes("NOTE")) return "note";
     if (actionType.includes("REMINDER")) return "reminder";
@@ -164,11 +165,15 @@ export class CoreVoiceResultPresenter {
     if (status === "pending") {
       if (actionType === "CREATE_CUSTOMER") return "לקוח חדש";
       if (actionType === "CREATE_REMINDER") return "תזכורת חדשה";
-      if (actionType === "CREATE_HOME_VISIT" || actionType === "CREATE_APPOINTMENT") return "ביקור בית חדש";
+      if (actionType === "CREATE_HOME_VISIT") return "ביקור בית חדש";
+      if (actionType === "CREATE_APPOINTMENT") return "פגישה חדשה";
+      if (actionType === "COMPLETE_APPOINTMENT") return "סיום פגישה";
+      if (actionType === "CANCEL_APPOINTMENT") return "ביטול פגישה";
       if (actionType === "CREATE_QUOTE") return "הצעת מחיר חדשה";
     }
     if (actionType.includes("CUSTOMER") && !actionType.includes("NOTE")) return `${prefix}לקוח`;
-    if (actionType.includes("HOME_VISIT") || actionType.includes("APPOINTMENT")) return `${prefix}ביקור בית`;
+    if (actionType.includes("HOME_VISIT")) return `${prefix}ביקור בית`;
+    if (actionType.includes("APPOINTMENT")) return `${prefix}פגישה`;
     if (actionType.includes("QUOTE")) return `${prefix}הצעת מחיר`;
     if (actionType.includes("NOTE")) return `${prefix}הערת לקוח`;
     if (actionType.includes("REMINDER")) return `${prefix}תזכורת`;

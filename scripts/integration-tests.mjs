@@ -68,6 +68,20 @@ const secondCustomerResult = request("POST", `${core}/businesses/${businessId}/c
 }, { authorization: token });
 expectStatus(secondCustomerResult, 201, "create second customer");
 
+const yoavCustomerResult = request("POST", `${core}/businesses/${businessId}/customers`, {
+  name: "יואב גת",
+  phone: "+972502222224"
+}, { authorization: token });
+expectStatus(yoavCustomerResult, 201, "create Yoav customer for voice matching");
+const yoavCustomerId = yoavCustomerResult.body.customer.id;
+
+const jerryCustomerResult = request("POST", `${core}/businesses/${businessId}/customers`, {
+  name: "ג׳רי",
+  phone: "+972502222225"
+}, { authorization: token });
+expectStatus(jerryCustomerResult, 201, "create Jerry customer for voice matching");
+const jerryCustomerId = jerryCustomerResult.body.customer.id;
+
 const firstCustomersPage = request("GET", `${core}/businesses/${businessId}/customers?limit=1`, undefined, { authorization: token });
 expectStatus(firstCustomersPage, 200, "list customers first page");
 assert(firstCustomersPage.body.customers.length === 1, "expected one customer in first page", firstCustomersPage.body);
@@ -128,6 +142,61 @@ const appointmentResult = request("POST", `${core}/businesses/${businessId}/appo
 }, { authorization: token });
 expectStatus(appointmentResult, 201, "create appointment");
 const appointmentId = appointmentResult.body.appointment.id;
+
+const yoavAppointmentResult = request("POST", `${core}/businesses/${businessId}/appointments`, {
+  customerId: yoavCustomerId,
+  title: "פגישה עם יואב גת",
+  startsAt: "2026-08-21T09:30:00.000Z"
+}, { authorization: token });
+expectStatus(yoavAppointmentResult, 201, "create Yoav appointment for voice matching");
+const yoavAppointmentId = yoavAppointmentResult.body.appointment.id;
+
+const completeYoavAppointmentPending = request("POST", `${core}/owner-actions/execute`, {
+  businessId,
+  action: {
+    type: "COMPLETE_APPOINTMENT",
+    idempotencyKey: `it_complete_yoav_${suffix}`,
+    confidence: 0.95,
+    requiresConfirmation: false,
+    missingFields: ["appointmentId"],
+    payload: { customerName: "יואב גת" }
+  }
+}, { authorization: token });
+expectStatus(completeYoavAppointmentPending, 201, "create complete Yoav appointment pending action");
+const completeYoavAppointmentResult = request(
+  "POST",
+  `${core}/businesses/${businessId}/ai-pending-actions/${completeYoavAppointmentPending.body.aiPendingAction.id}/approve`,
+  {},
+  { authorization: token }
+);
+expectStatus(completeYoavAppointmentResult, 201, "resolve and complete Yoav appointment");
+assert(completeYoavAppointmentResult.body.execution.appointment.id === yoavAppointmentId, "expected matching Yoav appointment");
+assert(completeYoavAppointmentResult.body.execution.appointment.status === "DONE", "expected Yoav appointment to be done");
+
+const createJerryReminderPending = request("POST", `${core}/owner-actions/execute`, {
+  businessId,
+  action: {
+    type: "CREATE_REMINDER",
+    idempotencyKey: `it_remind_jerry_${suffix}`,
+    confidence: 0.95,
+    requiresConfirmation: false,
+    missingFields: ["customerId"],
+    payload: {
+      title: "להתקשר לג'רי",
+      customerName: "ג'רי",
+      dueAt: "2026-08-21T10:10:00.000Z"
+    }
+  }
+}, { authorization: token });
+expectStatus(createJerryReminderPending, 201, "create Jerry reminder pending action");
+const createJerryReminderResult = request(
+  "POST",
+  `${core}/businesses/${businessId}/ai-pending-actions/${createJerryReminderPending.body.aiPendingAction.id}/approve`,
+  {},
+  { authorization: token }
+);
+expectStatus(createJerryReminderResult, 201, "resolve Jerry and create reminder");
+assert(createJerryReminderResult.body.execution.reminder.customerId === jerryCustomerId, "expected reminder linked to Jerry customer");
 
 const reminderResult = request("POST", `${core}/businesses/${businessId}/reminders`, {
   customerId,

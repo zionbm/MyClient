@@ -84,6 +84,9 @@ class AiController {
               "אתה ממיר פקודות קוליות של בעל עסק בעברית ל-JSON פעולה עבור שרת CRM. " +
               "החזר מערך actions לפי סדר הביצוע. אם המשתמש מבקש כמה דברים באותו משפט, החזר כמה פעולות. " +
               "אם המשתמש מבקש תזכורת או לחזור למישהו, השתמש ב-CREATE_REMINDER. " +
+              "כאשר מוזכר לקוח קיים, חלץ תמיד את שמו לשדה customerName גם אם השם כבר מופיע בתוך title. אל תמציא customerId. " +
+              "הבחן בין פעולות על פגישה: 'סגור', 'סיים' או 'הפגישה בוצעה' הם COMPLETE_APPOINTMENT; 'בטל' הוא CANCEL_APPOINTMENT; ורק 'קבע', 'צור' או 'הוסף פגישה' הם CREATE_APPOINTMENT. " +
+              "בפעולה על פגישה קיימת החזר customerName וכל פרט מזהה שנאמר, ואל תהפוך אותה ליצירת פגישה חדשה כאשר הרשומה לא ידועה לך. " +
               "אם המשתמש מבקש ביקור בית, התקנה או הגעה לכתובת, השתמש ב-CREATE_HOME_VISIT והכנס כתובת לשדה location. " +
               "אם המשתמש מבקש הצעת מחיר, השתמש ב-CREATE_QUOTE, הכנס את נושא העבודה לשדה title, והכנס סכום ל-estimatedAmount אם נאמר סכום. לדוגמה 'על התקנה של 5 דלתות' חייב להיות title ולא description בלבד. " +
               "השתמש בשמות שדות שתואמים לפעולות השרת: location ו-notes לביקור/פגישה, description למשימה/הצעה, address לכתובת לקוח. " +
@@ -140,6 +143,7 @@ class AiController {
                           email: { type: "string" },
                           address: { type: "string" },
                           customerId: { type: "string" },
+                          customerName: { type: "string" },
                           startsAt: { type: "string" },
                           endsAt: { type: "string" },
                           location: { type: "string" },
@@ -198,6 +202,30 @@ class AiController {
       }];
     }
 
+    const appointmentCustomerName = text.match(/עם\s+(.+?)(?:[.!?]|$)/)?.[1]?.trim() ??
+      text.match(/(?:של|אצל)\s+(.+?)(?:[.!?]|$)/)?.[1]?.trim();
+    if (/(?:תסגור|סגור|סיים|סיימתי).*פגישה|פגישה.*(?:בוצעה|הסתיימה)/.test(text)) {
+      return [{
+        type: "COMPLETE_APPOINTMENT",
+        idempotencyKey,
+        confidence: 0.9,
+        requiresConfirmation: false,
+        missingFields: ["appointmentId"],
+        payload: appointmentCustomerName ? { customerName: appointmentCustomerName } : {}
+      }];
+    }
+
+    if (/(?:תבטל|בטל).*פגישה/.test(text)) {
+      return [{
+        type: "CANCEL_APPOINTMENT",
+        idempotencyKey,
+        confidence: 0.9,
+        requiresConfirmation: true,
+        missingFields: ["appointmentId"],
+        payload: appointmentCustomerName ? { customerName: appointmentCustomerName } : {}
+      }];
+    }
+
     if (text.includes("פגישה") || text.toLowerCase().includes("appointment")) {
       return [{
         type: "CREATE_APPOINTMENT",
@@ -206,6 +234,21 @@ class AiController {
         requiresConfirmation: true,
         missingFields: ["startsAt"],
         payload: { title: text }
+      }];
+    }
+
+    if (text.includes("תזכורת") || text.includes("תזכיר") || text.includes("להתקשר")) {
+      const customerName = text.match(/להתקשר\s+ל(.+?)(?:\s+(?:עוד|בעוד|מחר|היום|בשעה)|[.!?]|$)/)?.[1]?.trim();
+      return [{
+        type: "CREATE_REMINDER",
+        idempotencyKey,
+        confidence: 0.88,
+        requiresConfirmation: false,
+        missingFields: [],
+        payload: {
+          title: customerName ? `להתקשר ל${customerName}` : text,
+          ...(customerName ? { customerName } : {})
+        }
       }];
     }
 

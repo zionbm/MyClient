@@ -93,6 +93,21 @@ export class AppointmentsRepository {
     });
   }
 
+  async listOpenForVoiceMatch(businessId: string, customerId?: string) {
+    await this.businesses.requireBusiness(businessId);
+    return this.prisma.appointment.findMany({
+      where: {
+        businessId,
+        customerId,
+        status: "OPEN",
+        deletedAt: null
+      },
+      include: { customer: true },
+      orderBy: [{ startsAt: "asc" }, { createdAt: "desc" }],
+      take: 100
+    });
+  }
+
   async update(input: UpdateAppointmentInput) {
     const existing = await this.prisma.appointment.findFirst({
       where: {

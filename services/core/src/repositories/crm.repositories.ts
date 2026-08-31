@@ -460,6 +460,23 @@ export class CustomersRepository {
     return customers.length === 1 ? customers[0] : null;
   }
 
+  async listForVoiceReferenceMatch(businessId: string) {
+    return this.prisma.customer.findMany({
+      where: {
+        businessId,
+        deletedAt: null,
+        mergedIntoCustomerId: null
+      },
+      select: {
+        id: true,
+        name: true,
+        phone: true,
+        email: true
+      },
+      orderBy: [{ updatedAt: "desc" }, { id: "desc" }]
+    });
+  }
+
   async merge(input: {
     businessId: string;
     sourceCustomerId: string;
