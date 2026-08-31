@@ -7,6 +7,8 @@ import {
   AuditRepository,
   BusinessSettingsRepository,
   CustomersRepository,
+  HomeVisitsRepository,
+  QuotesRepository,
   RemindersRepository
 } from "./core.repositories.js";
 import {
@@ -25,6 +27,8 @@ export class CoreVoiceActionsService {
     @Inject(CustomersRepository) private readonly customers: CustomersRepository,
     @Inject(RemindersRepository) private readonly reminders: RemindersRepository,
     @Inject(AppointmentsRepository) private readonly appointments: AppointmentsRepository,
+    @Inject(HomeVisitsRepository) private readonly homeVisits: HomeVisitsRepository,
+    @Inject(QuotesRepository) private readonly quotes: QuotesRepository,
     @Inject(AiPendingActionsRepository) private readonly aiPendingActions: AiPendingActionsRepository
   ) {}
 
@@ -57,7 +61,8 @@ export class CoreVoiceActionsService {
         userId: input.userId,
         actionType: action.type,
         payload: payload as Prisma.InputJsonValue,
-        missingFields
+        missingFields,
+        reviewReason: this.voiceReferenceReviewReason(action.type, payload)
       });
       await this.audit.record({
         businessId: input.businessId,
@@ -105,25 +110,47 @@ export class CoreVoiceActionsService {
   private correctVoiceActionIntents(actions: AiAction[], transcript: string): AiAction[] {
     const normalizedTranscript = this.normalizedVoiceReference(transcript);
     const mentionsAppointment = normalizedTranscript?.includes("פגישה") ?? false;
-    const completesAppointment = mentionsAppointment && /(?:תסגור|סגור|סיים|סיימתי|בוצעה|הסתיימה)/.test(transcript);
+    const mentionsHomeVisit = normalizedTranscript?.includes("ביקור בית") ?? false;
+    const mentionsReminder = normalizedTranscript?.includes("תזכורת") ?? false;
+    const completesItem = /(?:תסגור|סגור|תסיים|סיים|סיימתי|בוצעה|הסתיימה)/.test(transcript);
     const cancelsAppointment = mentionsAppointment && /(?:תבטל|בטל|ביטול)/.test(transcript);
+    const completion = completesItem
+      ? mentionsAppointment
+        ? { type: "COMPLETE_APPOINTMENT" as const, idField: "appointmentId", actionFragment: "APPOINTMENT" }
+        : mentionsHomeVisit
+          ? { type: "COMPLETE_HOME_VISIT" as const, idField: "homeVisitId", actionFragment: "HOME_VISIT" }
+          : mentionsReminder
+            ? { type: "COMPLETE_REMINDER" as const, idField: "reminderId", actionFragment: "REMINDER" }
+            : null
+      : null;
 
-    if (!completesAppointment && !cancelsAppointment) {
+    if (!completion && !cancelsAppointment) {
       return actions;
     }
 
     return actions.map((action) => {
-      if (!action.type.includes("APPOINTMENT") && actions.length !== 1) {
+      const actionFragment = cancelsAppointment ? "APPOINTMENT" : completion?.actionFragment;
+      if (actionFragment && !action.type.includes(actionFragment) && actions.length !== 1) {
         return action;
       }
-      const type = cancelsAppointment ? "CANCEL_APPOINTMENT" : "COMPLETE_APPOINTMENT";
+      const type = cancelsAppointment ? "CANCEL_APPOINTMENT" : completion!.type;
+      const idField = cancelsAppointment ? "appointmentId" : completion!.idField;
       const missingFields = [...new Set([
         ...action.missingFields.filter((field) => field !== "startsAt" && field !== "title"),
-        "appointmentId"
+        idField
       ])];
+      const payload = { ...action.payload };
+      if (action.type.startsWith("CREATE_")) {
+        delete payload.title;
+        delete payload.description;
+        delete payload.dueAt;
+        delete payload.startsAt;
+        delete payload.endsAt;
+      }
       return {
         ...action,
         type,
+        payload,
         requiresConfirmation: cancelsAppointment || action.requiresConfirmation,
         missingFields
       };
@@ -236,7 +263,7 @@ export class CoreVoiceActionsService {
     payload: Record<string, unknown>;
     transcript: string;
   }): Promise<Record<string, unknown>> {
-    let payload = input.payload;
+    let payload = this.withVoiceCustomerNameHint(input.payload, input.transcript);
 
     if (this.voiceActionNeedsCustomer(input.actionType, payload)) {
       const customerMatches = await this.resolveVoiceCustomers(input.businessId, payload, input.transcript);
@@ -270,6 +297,20 @@ export class CoreVoiceActionsService {
       }
     }
 
+    if (this.voiceActionNeedsHomeVisit(input.actionType, payload)) {
+      const homeVisit = await this.resolveVoiceHomeVisit(input.businessId, payload, input.transcript);
+      if (homeVisit) {
+        payload = { ...payload, homeVisitId: homeVisit.id };
+      }
+    }
+
+    if (this.voiceActionNeedsQuote(input.actionType, payload)) {
+      const quote = await this.resolveVoiceQuote(input.businessId, payload, input.transcript);
+      if (quote) {
+        payload = { ...payload, quoteId: quote.id };
+      }
+    }
+
     return payload;
   }
 
@@ -281,11 +322,16 @@ export class CoreVoiceActionsService {
       actionType === "CREATE_NOTE" ||
       actionType === "CREATE_REMINDER" ||
       actionType === "CREATE_HOME_VISIT" ||
+      actionType === "UPDATE_HOME_VISIT" ||
+      actionType === "COMPLETE_HOME_VISIT" ||
       actionType === "CREATE_APPOINTMENT" ||
       actionType === "UPDATE_APPOINTMENT" ||
       actionType === "COMPLETE_APPOINTMENT" ||
       actionType === "CANCEL_APPOINTMENT" ||
       actionType === "CREATE_QUOTE" ||
+      actionType === "UPDATE_QUOTE" ||
+      actionType === "MARK_QUOTE_PAID" ||
+      actionType === "UPDATE_REMINDER" ||
       actionType === "COMPLETE_REMINDER";
   }
 
@@ -303,6 +349,20 @@ export class CoreVoiceActionsService {
     return actionType === "UPDATE_APPOINTMENT" ||
       actionType === "COMPLETE_APPOINTMENT" ||
       actionType === "CANCEL_APPOINTMENT";
+  }
+
+  private voiceActionNeedsHomeVisit(actionType: string, payload: Record<string, unknown>) {
+    if (typeof payload.homeVisitId === "string") {
+      return false;
+    }
+    return actionType === "UPDATE_HOME_VISIT" || actionType === "COMPLETE_HOME_VISIT";
+  }
+
+  private voiceActionNeedsQuote(actionType: string, payload: Record<string, unknown>) {
+    if (typeof payload.quoteId === "string") {
+      return false;
+    }
+    return actionType === "UPDATE_QUOTE" || actionType === "MARK_QUOTE_PAID";
   }
 
   private async resolveVoiceCustomers(businessId: string, payload: Record<string, unknown>, transcript: string) {
@@ -349,6 +409,9 @@ export class CoreVoiceActionsService {
 
   private async resolveVoiceReminder(businessId: string, payload: Record<string, unknown>, transcript: string) {
     const customerId = typeof payload.customerId === "string" ? payload.customerId : undefined;
+    if (typeof payload.customerName === "string" && !customerId) {
+      return null;
+    }
     const title = this.normalizedVoiceText(payload.title);
     const text = this.normalizedVoiceText(payload.text);
     const lookupText = this.normalizedVoiceText([title, text, transcript].filter(Boolean).join(" "));
@@ -379,6 +442,9 @@ export class CoreVoiceActionsService {
 
   private async resolveVoiceAppointment(businessId: string, payload: Record<string, unknown>, transcript: string) {
     const customerId = typeof payload.customerId === "string" ? payload.customerId : undefined;
+    if (typeof payload.customerName === "string" && !customerId) {
+      return null;
+    }
     const lookupText = this.normalizedVoiceReference([
       payload.title,
       payload.notes,
@@ -397,8 +463,52 @@ export class CoreVoiceActionsService {
     return matchingAppointments.length === 1 ? matchingAppointments[0] : null;
   }
 
+  private async resolveVoiceHomeVisit(businessId: string, payload: Record<string, unknown>, transcript: string) {
+    const customerId = typeof payload.customerId === "string" ? payload.customerId : undefined;
+    if (typeof payload.customerName === "string" && !customerId) {
+      return null;
+    }
+    const visits = await this.homeVisits.listOpenForVoiceMatch(businessId, customerId);
+    return this.resolveUniqueVoiceWorkItem(visits, payload, transcript);
+  }
+
+  private async resolveVoiceQuote(businessId: string, payload: Record<string, unknown>, transcript: string) {
+    const customerId = typeof payload.customerId === "string" ? payload.customerId : undefined;
+    if (typeof payload.customerName === "string" && !customerId) {
+      return null;
+    }
+    const quotes = await this.quotes.listOpenForVoiceMatch(businessId, customerId);
+    return this.resolveUniqueVoiceWorkItem(quotes, payload, transcript);
+  }
+
+  private resolveUniqueVoiceWorkItem<T extends { title: string }>(items: T[], payload: Record<string, unknown>, transcript: string) {
+    if (items.length === 1) {
+      return items[0];
+    }
+    const lookupText = this.normalizedVoiceReference([
+      payload.title,
+      payload.description,
+      payload.notes,
+      transcript
+    ].filter((value): value is string => typeof value === "string").join(" "));
+    const matchingItems = items.filter((item) => {
+      const normalizedTitle = this.normalizedVoiceReference(item.title);
+      return Boolean(normalizedTitle && lookupText?.includes(normalizedTitle));
+    });
+    return matchingItems.length === 1 ? matchingItems[0] : null;
+  }
+
   private normalizedVoiceText(value: unknown) {
     return typeof value === "string" ? value.replace(/\p{Cf}/gu, "").replace(/\s+/g, " ").trim() : undefined;
+  }
+
+  private withVoiceCustomerNameHint(payload: Record<string, unknown>, transcript: string) {
+    if (typeof payload.customerName === "string" || typeof payload.name === "string") {
+      return payload;
+    }
+    const customerName = transcript.match(/(?:אצל|עם)\s+(.+?)(?:\s+(?:עוד|בעוד|מחר|היום|בשעה|בתאריך)|[.!?]|$)/)?.[1]?.trim() ??
+      transcript.match(/להתקשר\s+ל(.+?)(?:\s+(?:עוד|בעוד|מחר|היום|בשעה|בתאריך)|[.!?]|$)/)?.[1]?.trim();
+    return customerName ? { ...payload, customerName } : payload;
   }
 
   private normalizedVoiceReference(value: unknown) {
@@ -507,6 +617,12 @@ export class CoreVoiceActionsService {
     if ((action.type === "COMPLETE_APPOINTMENT" || action.type === "CANCEL_APPOINTMENT") && payload.appointmentId === undefined) {
       fields.add("appointmentId");
     }
+    if (action.type === "COMPLETE_HOME_VISIT" && payload.homeVisitId === undefined) {
+      fields.add("homeVisitId");
+    }
+    if (action.type === "MARK_QUOTE_PAID" && payload.quoteId === undefined) {
+      fields.add("quoteId");
+    }
     if (this.voiceActionUsesStartsAt(action.type) && payload.startsAt === undefined) {
       fields.add("startsAt");
     }
@@ -514,6 +630,29 @@ export class CoreVoiceActionsService {
       fields.add("title");
     }
     return [...fields].filter((field) => !this.isOptionalVoiceField(action.type, field) && payload[field] === undefined);
+  }
+
+  private voiceReferenceReviewReason(actionType: string, payload: Record<string, unknown>) {
+    const customerName = typeof payload.customerName === "string" ? payload.customerName : undefined;
+    if (customerName && typeof payload.customerId !== "string") {
+      return `לא מצאתי לקוח יחיד שמתאים לשם "${customerName}".`;
+    }
+
+    const target = actionType === "COMPLETE_REMINDER" && typeof payload.reminderId !== "string"
+      ? "תזכורת פתוחה"
+      : (actionType === "COMPLETE_APPOINTMENT" || actionType === "CANCEL_APPOINTMENT") && typeof payload.appointmentId !== "string"
+        ? "פגישה פתוחה"
+        : actionType === "COMPLETE_HOME_VISIT" && typeof payload.homeVisitId !== "string"
+          ? "ביקור בית פתוח"
+          : actionType === "MARK_QUOTE_PAID" && typeof payload.quoteId !== "string"
+            ? "הצעת מחיר פתוחה"
+            : undefined;
+    if (!target) {
+      return undefined;
+    }
+    return customerName
+      ? `לא מצאתי ${target} יחיד שמתאים ללקוח ${customerName}.`
+      : `לא מצאתי ${target} יחיד שמתאים לפקודה.`;
   }
 
   private isOptionalVoiceField(actionType: string, field: string) {

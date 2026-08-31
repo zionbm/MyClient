@@ -82,6 +82,13 @@ const jerryCustomerResult = request("POST", `${core}/businesses/${businessId}/cu
 expectStatus(jerryCustomerResult, 201, "create Jerry customer for voice matching");
 const jerryCustomerId = jerryCustomerResult.body.customer.id;
 
+const mosheCustomerResult = request("POST", `${core}/businesses/${businessId}/customers`, {
+  name: "משה",
+  phone: "+972502222226"
+}, { authorization: token });
+expectStatus(mosheCustomerResult, 201, "create Moshe customer for voice matching");
+const mosheCustomerId = mosheCustomerResult.body.customer.id;
+
 const firstCustomersPage = request("GET", `${core}/businesses/${businessId}/customers?limit=1`, undefined, { authorization: token });
 expectStatus(firstCustomersPage, 200, "list customers first page");
 assert(firstCustomersPage.body.customers.length === 1, "expected one customer in first page", firstCustomersPage.body);
@@ -220,6 +227,37 @@ expectStatus(request("POST", `${core}/businesses/${businessId}/home-visits`, {
   startsAt: "2026-08-21T11:00:00.000Z",
   location: "רחוב בדיקה 1"
 }, { authorization: token }), 201, "create home visit");
+
+const mosheHomeVisitResult = request("POST", `${core}/businesses/${businessId}/home-visits`, {
+  customerId: mosheCustomerId,
+  title: "ביקור בית אצל משה",
+  startsAt: "2026-08-21T11:30:00.000Z",
+  location: "רחוב הדוגמה 2"
+}, { authorization: token });
+expectStatus(mosheHomeVisitResult, 201, "create Moshe home visit for voice matching");
+const mosheHomeVisitId = mosheHomeVisitResult.body.homeVisit.id;
+
+const completeMosheVisitPending = request("POST", `${core}/owner-actions/execute`, {
+  businessId,
+  action: {
+    type: "COMPLETE_HOME_VISIT",
+    idempotencyKey: `it_complete_moshe_${suffix}`,
+    confidence: 0.95,
+    requiresConfirmation: false,
+    missingFields: ["homeVisitId"],
+    payload: { customerName: "משה" }
+  }
+}, { authorization: token });
+expectStatus(completeMosheVisitPending, 201, "create complete Moshe home visit pending action");
+const completeMosheVisitResult = request(
+  "POST",
+  `${core}/businesses/${businessId}/ai-pending-actions/${completeMosheVisitPending.body.aiPendingAction.id}/approve`,
+  {},
+  { authorization: token }
+);
+expectStatus(completeMosheVisitResult, 201, "resolve and complete Moshe home visit");
+assert(completeMosheVisitResult.body.execution.homeVisit.id === mosheHomeVisitId, "expected matching Moshe home visit");
+assert(completeMosheVisitResult.body.execution.homeVisit.status === "DONE", "expected Moshe home visit to be done");
 
 const quoteResult = request("POST", `${core}/businesses/${businessId}/quotes`, {
   customerId,

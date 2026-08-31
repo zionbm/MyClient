@@ -218,6 +218,8 @@ export class CoreVoiceResultPresenter {
   }
 
   pendingReason(aiPendingAction: Record<string, unknown>) {
+    const reviewReason = this.stringValue(aiPendingAction.reviewReason);
+    if (reviewReason) return reviewReason;
     const missingFields = this.stringList(aiPendingAction.missingFields).map((field) => this.voiceFieldLabel(field));
     return missingFields.length > 0 ? `חסר: ${missingFields.join(", ")}` : "ממתין לאישור";
   }

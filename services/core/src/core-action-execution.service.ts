@@ -210,6 +210,28 @@ export class CoreActionExecutionService {
       return { type: input.actionType, appointment };
     }
 
+    if (input.actionType === "COMPLETE_HOME_VISIT") {
+      const homeVisitId = typeof input.payload.homeVisitId === "string" ? input.payload.homeVisitId : undefined;
+      if (!homeVisitId) {
+        throw new BadRequestException("Action payload is missing homeVisitId");
+      }
+      const homeVisit = await this.homeVisits.complete(input.businessId, homeVisitId);
+      if (!homeVisit) {
+        throw new NotFoundException("Home visit not found");
+      }
+      await this.audit.record({
+        businessId: input.businessId,
+        actorType: "user",
+        actorId: input.userId,
+        source: "ai_pending_action",
+        entityType: "home_visit",
+        entityId: homeVisit.id,
+        action: "COMPLETE_HOME_VISIT_FROM_PENDING_ACTION",
+        after: homeVisit as Prisma.InputJsonValue
+      });
+      return { type: input.actionType, homeVisit };
+    }
+
     if (input.actionType === "UPDATE_APPOINTMENT" || input.actionType === "UPDATE_HOME_VISIT") {
       const entityId = input.actionType === "UPDATE_HOME_VISIT"
         ? typeof input.payload.homeVisitId === "string" ? input.payload.homeVisitId : undefined

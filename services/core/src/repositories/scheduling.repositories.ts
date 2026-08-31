@@ -260,6 +260,21 @@ export class HomeVisitsRepository {
     });
   }
 
+  async listOpenForVoiceMatch(businessId: string, customerId?: string) {
+    await this.businesses.requireBusiness(businessId);
+    return this.prisma.homeVisit.findMany({
+      where: {
+        businessId,
+        customerId,
+        status: "OPEN",
+        deletedAt: null
+      },
+      include: { customer: true },
+      orderBy: [{ startsAt: "asc" }, { createdAt: "desc" }],
+      take: 100
+    });
+  }
+
   async update(input: UpdateHomeVisitInput) {
     const existing = await this.prisma.homeVisit.findFirst({
       where: {
@@ -422,6 +437,21 @@ export class QuotesRepository {
       },
       include: { customer: true },
       orderBy: [{ dueAt: "asc" }, { createdAt: "desc" }]
+    });
+  }
+
+  async listOpenForVoiceMatch(businessId: string, customerId?: string) {
+    await this.businesses.requireBusiness(businessId);
+    return this.prisma.quote.findMany({
+      where: {
+        businessId,
+        customerId,
+        status: "OPEN",
+        deletedAt: null
+      },
+      include: { customer: true },
+      orderBy: [{ dueAt: "asc" }, { createdAt: "desc" }],
+      take: 100
     });
   }
 
