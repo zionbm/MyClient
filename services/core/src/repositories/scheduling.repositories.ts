@@ -108,6 +108,13 @@ export class AppointmentsRepository {
     });
   }
 
+  async findByBusinessAndId(businessId: string, appointmentId: string) {
+    return this.prisma.appointment.findFirst({
+      where: { businessId, id: appointmentId, deletedAt: null },
+      include: { customer: true }
+    });
+  }
+
   async update(input: UpdateAppointmentInput) {
     const existing = await this.prisma.appointment.findFirst({
       where: {
@@ -272,6 +279,13 @@ export class HomeVisitsRepository {
       include: { customer: true },
       orderBy: [{ startsAt: "asc" }, { createdAt: "desc" }],
       take: 100
+    });
+  }
+
+  async findByBusinessAndId(businessId: string, homeVisitId: string) {
+    return this.prisma.homeVisit.findFirst({
+      where: { businessId, id: homeVisitId, deletedAt: null },
+      include: { customer: true }
     });
   }
 
@@ -461,7 +475,8 @@ export class QuotesRepository {
         businessId,
         id: quoteId,
         deletedAt: null
-      }
+      },
+      include: { customer: true }
     });
   }
 

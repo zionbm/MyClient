@@ -270,6 +270,34 @@ const quoteId = quoteResult.body.quote.id;
 
 expectStatus(request("POST", `${core}/businesses/${businessId}/quotes/${quoteId}/mark-paid`, undefined, { authorization: token }), 201, "mark quote paid");
 
+for (const [itemType, itemId, expectedTitle] of [
+  ["reminder", reminderId, "לחזור ללקוח אינטגרציה"],
+  ["appointment", appointmentId, "פגישת אינטגרציה"],
+  ["home_visit", mosheHomeVisitId, "ביקור בית אצל משה"],
+  ["quote", quoteId, "הצעת מחיר אינטגרציה"]
+]) {
+  const result = request(
+    "GET",
+    `${core}/businesses/${businessId}/work-items/${itemType}/${itemId}`,
+    undefined,
+    { authorization: token }
+  );
+  expectStatus(result, 200, `get linked ${itemType} work item`);
+  assert(result.body.item.type === itemType, `expected ${itemType} work item type`, result.body);
+  assert(result.body.item.title === expectedTitle, `expected ${itemType} title`, result.body);
+  assert(result.body.item.customer?.id, `expected ${itemType} customer context`, result.body);
+}
+expectStatus(
+  request("GET", `${core}/businesses/${otherBusinessId}/work-items/reminder/${reminderId}`, undefined, { authorization: token }),
+  403,
+  "cross-business linked work item rejected"
+);
+expectStatus(
+  request("GET", `${core}/businesses/${businessId}/work-items/unknown/${reminderId}`, undefined, { authorization: token }),
+  404,
+  "unknown linked work item type rejected"
+);
+
 for (const [label, path, collection] of [
   ["reminders", "reminders", "reminders"],
   ["appointments", "appointments", "appointments"],

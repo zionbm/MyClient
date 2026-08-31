@@ -19,6 +19,33 @@ export class CoreWorkItemsService {
     @Inject(NotificationsRepository) private readonly notifications: NotificationsRepository,
     @Inject(CoreWorkItemPresenter) private readonly workItemPresenter: CoreWorkItemPresenter
   ) {}
+  async getWorkItem(headers: RequestHeaders, businessId: string, itemType: string, itemId: string) {
+    await this.access.requireBusinessAccess(headers, businessId);
+    const item = await (async () => {
+      switch (itemType) {
+        case "reminder": {
+          const reminder = await this.reminders.findByBusinessAndId(businessId, itemId);
+          return reminder ? this.workItemPresenter.reminderWorkItem(reminder) : null;
+        }
+        case "appointment": {
+          const appointment = await this.appointments.findByBusinessAndId(businessId, itemId);
+          return appointment ? this.workItemPresenter.appointmentWorkItem(appointment) : null;
+        }
+        case "home_visit": {
+          const homeVisit = await this.homeVisits.findByBusinessAndId(businessId, itemId);
+          return homeVisit ? this.workItemPresenter.homeVisitWorkItem(homeVisit) : null;
+        }
+        case "quote": {
+          const quote = await this.quotes.findByBusinessAndId(businessId, itemId);
+          return quote ? this.workItemPresenter.quoteWorkItem(quote) : null;
+        }
+        default:
+          throw new NotFoundException("Work item not found");
+      }
+    })();
+    if (!item) throw new NotFoundException("Work item not found");
+    return { item };
+  }
   async getHome(headers: RequestHeaders, businessId: string, query: unknown) {
     await this.access.requireBusinessAccess(headers, businessId);
     const command = HomeQuerySchema.parse(query);

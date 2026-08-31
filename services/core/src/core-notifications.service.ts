@@ -11,8 +11,18 @@ function firebaseApp() {
   }
 }
 
-function notificationPayloadData(payload: Prisma.JsonValue | null | undefined, notificationId: string) {
-  const data: Record<string, string> = { notificationId };
+function notificationPayloadData(
+  payload: Prisma.JsonValue | null | undefined,
+  notification: { id: string; businessId: string; itemType?: string | null; itemId?: string | null; reminderId?: string | null }
+) {
+  const itemType = notification.itemType ?? (notification.reminderId ? "reminder" : null);
+  const itemId = notification.itemId ?? notification.reminderId ?? null;
+  const data: Record<string, string> = {
+    notificationId: notification.id,
+    businessId: notification.businessId,
+    ...(itemType ? { itemType } : {}),
+    ...(itemId ? { itemId } : {})
+  };
   if (payload !== undefined && payload !== null) {
     data.payload = JSON.stringify(payload);
   }
@@ -29,6 +39,9 @@ export class CoreNotificationsService {
   async sendNotification(notification: {
     id: string;
     businessId: string;
+    reminderId?: string | null;
+    itemType?: string | null;
+    itemId?: string | null;
     title: string;
     body: string;
     payload: Prisma.JsonValue | null;
@@ -60,9 +73,9 @@ export class CoreNotificationsService {
     firebaseApp();
     const response = await getMessaging().sendEachForMulticast({
       tokens: tokens.map((deviceToken) => deviceToken.token),
-      android: { priority: "high", notification: { channelId: "reminder_reminders" } },
+      android: { priority: "high", notification: { channelId: "reminders" } },
       notification: { title: notification.title, body: notification.body },
-      data: notificationPayloadData(notification.payload, notification.id)
+      data: notificationPayloadData(notification.payload, notification)
     });
 
     log("info", "firebase notification delivery finished", {

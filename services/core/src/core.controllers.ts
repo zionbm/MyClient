@@ -131,6 +131,7 @@ export class WorkItemsController {
 
 defineRoutes(WorkItemsController, [
   { name: "getHome", method: "get", path: "businesses/:businessId/home", delegate: (core, request) => core.getHome(headers(request), params(request).businessId, request.query) },
+  { name: "getWorkItem", method: "get", path: "businesses/:businessId/work-items/:itemType/:itemId", delegate: (core, request) => core.getWorkItem(headers(request), params(request).businessId, params(request).itemType, params(request).itemId) },
   { name: "listReminders", method: "get", path: "businesses/:businessId/reminders", delegate: (core, request) => core.listReminders(headers(request), params(request).businessId, request.query) },
   { name: "createReminder", method: "post", path: "businesses/:businessId/reminders", delegate: (core, request) => core.createReminder(headers(request), params(request).businessId, request.body) },
   { name: "updateReminder", method: "patch", path: "businesses/:businessId/reminders/:reminderId", delegate: (core, request) => core.updateReminder(headers(request), params(request).businessId, params(request).reminderId, request.body) },

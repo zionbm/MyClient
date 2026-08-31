@@ -167,7 +167,8 @@ export class RemindersRepository {
         businessId,
         id: reminderId,
         deletedAt: null
-      }
+      },
+      include: { customer: true }
     });
   }
 
