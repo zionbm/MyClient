@@ -130,9 +130,9 @@ export class CoreVoiceResultPresenter {
     return {
       id: typeof result.idempotencyKey === "string" ? result.idempotencyKey : `${actionType}:${index}`,
       actionType,
-      kind: this.voiceResultKind(actionType),
+      kind: this.voiceResultKind(actionType, payload),
       status,
-      title: this.voiceResultTitle(actionType, status),
+      title: this.voiceResultTitle(actionType, status, payload),
       subtitle: status === "pending" ? this.pendingReason(aiPendingAction) : undefined,
       payload: status === "pending" ? payload : entity,
       fields,
@@ -150,7 +150,13 @@ export class CoreVoiceResultPresenter {
     return result;
   }
 
-  voiceResultKind(actionType: string): VoiceCommandResult["items"][number]["kind"] {
+  voiceResultKind(actionType: string, payload: Record<string, unknown> = {}): VoiceCommandResult["items"][number]["kind"] {
+    if (actionType === "DELETE_WORK_ITEM") {
+      const itemType = typeof payload.itemType === "string" ? payload.itemType : undefined;
+      if (itemType === "reminder" || itemType === "home_visit" || itemType === "appointment" || itemType === "quote" || itemType === "note") {
+        return itemType;
+      }
+    }
     if (actionType.includes("CUSTOMER") && !actionType.includes("NOTE")) return "customer";
     if (actionType.includes("HOME_VISIT")) return "home_visit";
     if (actionType.includes("APPOINTMENT")) return "appointment";
@@ -160,7 +166,11 @@ export class CoreVoiceResultPresenter {
     return "action";
   }
 
-  voiceResultTitle(actionType: string, status: VoiceCommandResult["items"][number]["status"]) {
+  voiceResultTitle(
+    actionType: string,
+    status: VoiceCommandResult["items"][number]["status"],
+    payload: Record<string, unknown> = {}
+  ) {
     const prefix = status === "pending" ? "" : status === "completed" ? "הושלם: " : "";
     if (status === "pending") {
       if (actionType === "CREATE_CUSTOMER") return "לקוח חדש";
@@ -170,6 +180,20 @@ export class CoreVoiceResultPresenter {
       if (actionType === "COMPLETE_APPOINTMENT") return "סיום פגישה";
       if (actionType === "CANCEL_APPOINTMENT") return "ביטול פגישה";
       if (actionType === "CREATE_QUOTE") return "הצעת מחיר חדשה";
+      if (actionType === "MARK_QUOTE_PAID") return "סגירת הצעת מחיר";
+      if (actionType === "CANCEL_QUOTE") return "ביטול הצעת מחיר";
+      if (actionType === "DELETE_WORK_ITEM") {
+        const itemType = typeof payload.itemType === "string" ? payload.itemType : undefined;
+        return itemType === "quote"
+          ? "מחיקת הצעת מחיר"
+          : itemType === "appointment"
+            ? "מחיקת פגישה"
+            : itemType === "home_visit"
+              ? "מחיקת ביקור בית"
+              : itemType === "reminder"
+                ? "מחיקת תזכורת"
+                : "מחיקת פריט עבודה";
+      }
     }
     if (actionType.includes("CUSTOMER") && !actionType.includes("NOTE")) return `${prefix}לקוח`;
     if (actionType.includes("HOME_VISIT")) return `${prefix}ביקור בית`;

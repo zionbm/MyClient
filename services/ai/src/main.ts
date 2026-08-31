@@ -87,7 +87,8 @@ class AiController {
               "כאשר מוזכר לקוח קיים, חלץ תמיד את שמו לשדה customerName גם אם השם כבר מופיע בתוך title. אל תמציא customerId. " +
               "הבחן בין פעולות על פגישה: 'סגור', 'סיים' או 'הפגישה בוצעה' הם COMPLETE_APPOINTMENT; 'בטל' הוא CANCEL_APPOINTMENT; ורק 'קבע', 'צור' או 'הוסף פגישה' הם CREATE_APPOINTMENT. " +
               "אותו עיקרון חל על כל פריט עבודה קיים: 'סגור/סיים ביקור בית' הוא COMPLETE_HOME_VISIT ו'סגור/סיים תזכורת' הוא COMPLETE_REMINDER. בפעולות כאלה חלץ customerName ואל תיצור פריט חדש. " +
-              "כאשר המשתמש אומר שהצעת מחיר שולמה, השתמש ב-MARK_QUOTE_PAID וחלץ customerName. " +
+              "בהצעת מחיר קיימת: 'סגור', 'סיים', 'נסגרה' או 'שולמה' הם MARK_QUOTE_PAID; 'בטל' או 'לא רלוונטית' הם CANCEL_QUOTE; ו'מחק' הוא DELETE_WORK_ITEM עם itemType='quote' ו-itemId ב-missingFields אם המזהה אינו ידוע. בכל הפעולות האלה חלץ customerName, אל תיצור הצעה חדשה ואל תמציא מזהה. " +
+              "כאשר המשתמש מבקש למחוק פריט עבודה קיים, השתמש ב-DELETE_WORK_ITEM, חלץ customerName והחזר itemType מתאים. " +
               "בפעולה על פגישה קיימת החזר customerName וכל פרט מזהה שנאמר, ואל תהפוך אותה ליצירת פגישה חדשה כאשר הרשומה לא ידועה לך. " +
               "אם המשתמש מבקש ביקור בית, התקנה או הגעה לכתובת, השתמש ב-CREATE_HOME_VISIT והכנס כתובת לשדה location. " +
               "אם המשתמש מבקש הצעת מחיר, השתמש ב-CREATE_QUOTE, הכנס את נושא העבודה לשדה title, והכנס סכום ל-estimatedAmount אם נאמר סכום. לדוגמה 'על התקנה של 5 דלתות' חייב להיות title ולא description בלבד. " +
@@ -206,6 +207,39 @@ class AiController {
 
     const appointmentCustomerName = text.match(/עם\s+(.+?)(?:[.!?]|$)/)?.[1]?.trim() ??
       text.match(/(?:של|אצל)\s+(.+?)(?:[.!?]|$)/)?.[1]?.trim();
+    const quoteCustomerName = text.match(/(?:ל|של|אצל)\s*([^.!?]+?)(?:[.!?]|$)/)?.[1]?.trim();
+    if (/(?:תמחק|מחק|מחיקה).*הצעת מחיר|הצעת מחיר.*(?:תמחק|מחק|מחיקה)/.test(text)) {
+      return [{
+        type: "DELETE_WORK_ITEM",
+        idempotencyKey,
+        confidence: 0.92,
+        requiresConfirmation: true,
+        missingFields: ["itemId"],
+        payload: { itemType: "quote", ...(quoteCustomerName ? { customerName: quoteCustomerName } : {}) }
+      }];
+    }
+
+    if (/(?:תבטל|בטל|ביטול).*הצעת מחיר|הצעת מחיר.*(?:תבטל|בטל|ביטול|לא רלוונטית)/.test(text)) {
+      return [{
+        type: "CANCEL_QUOTE",
+        idempotencyKey,
+        confidence: 0.92,
+        requiresConfirmation: true,
+        missingFields: ["quoteId"],
+        payload: quoteCustomerName ? { customerName: quoteCustomerName } : {}
+      }];
+    }
+
+    if (/(?:תסגור|סגור|סיים|סיימתי).*הצעת מחיר|הצעת מחיר.*(?:נסגרה|שולמה)/.test(text)) {
+      return [{
+        type: "MARK_QUOTE_PAID",
+        idempotencyKey,
+        confidence: 0.92,
+        requiresConfirmation: false,
+        missingFields: ["quoteId"],
+        payload: quoteCustomerName ? { customerName: quoteCustomerName } : {}
+      }];
+    }
     if (/(?:תסגור|סגור|סיים|סיימתי).*פגישה|פגישה.*(?:בוצעה|הסתיימה)/.test(text)) {
       return [{
         type: "COMPLETE_APPOINTMENT",

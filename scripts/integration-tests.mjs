@@ -270,6 +270,53 @@ const quoteId = quoteResult.body.quote.id;
 
 expectStatus(request("POST", `${core}/businesses/${businessId}/quotes/${quoteId}/mark-paid`, undefined, { authorization: token }), 201, "mark quote paid");
 
+async function createQuoteActionForYoav(actionType, actionSuffix, expectedStatus) {
+  const openQuote = request("POST", `${core}/businesses/${businessId}/quotes`, {
+    customerId: yoavCustomerId,
+    title: `הצעת מחיר יואב ${actionSuffix}`,
+    dueAt: "2026-08-21T12:30:00.000Z",
+    estimatedAmount: "300"
+  }, { authorization: token });
+  expectStatus(openQuote, 201, `create Yoav quote for ${actionSuffix}`);
+
+  const pending = request("POST", `${core}/owner-actions/execute`, {
+    businessId,
+    action: {
+      type: actionType,
+      idempotencyKey: `it_quote_${actionSuffix}_${suffix}`,
+      confidence: 0.95,
+      requiresConfirmation: actionType !== "MARK_QUOTE_PAID",
+      missingFields: [actionType === "DELETE_WORK_ITEM" ? "itemId" : "quoteId"],
+      payload: actionType === "DELETE_WORK_ITEM"
+        ? { itemType: "quote", customerName: "יואב גת" }
+        : { customerName: "יואב גת" }
+    }
+  }, { authorization: token });
+  expectStatus(pending, 201, `create ${actionType} pending action`);
+  const approved = request(
+    "POST",
+    `${core}/businesses/${businessId}/ai-pending-actions/${pending.body.aiPendingAction.id}/approve`,
+    {},
+    { authorization: token }
+  );
+  expectStatus(approved, 201, `approve ${actionType}`);
+  const resultItem = approved.body.execution.quote ?? approved.body.execution.item;
+  assert(resultItem.id === openQuote.body.quote.id, `expected ${actionType} to target Yoav quote`, approved.body);
+  if (expectedStatus) {
+    assert(resultItem.status === expectedStatus, `expected ${actionType} status ${expectedStatus}`, approved.body);
+  }
+  return openQuote.body.quote.id;
+}
+
+await createQuoteActionForYoav("MARK_QUOTE_PAID", "close", "PAID");
+await createQuoteActionForYoav("CANCEL_QUOTE", "cancel", "CANCELLED");
+const deletedYoavQuoteId = await createQuoteActionForYoav("DELETE_WORK_ITEM", "delete");
+expectStatus(
+  request("GET", `${core}/businesses/${businessId}/work-items/quote/${deletedYoavQuoteId}`, undefined, { authorization: token }),
+  404,
+  "deleted Yoav quote is hidden"
+);
+
 for (const [itemType, itemId, expectedTitle] of [
   ["reminder", reminderId, "לחזור ללקוח אינטגרציה"],
   ["appointment", appointmentId, "פגישת אינטגרציה"],

@@ -112,8 +112,12 @@ export class CoreVoiceActionsService {
     const mentionsAppointment = normalizedTranscript?.includes("פגישה") ?? false;
     const mentionsHomeVisit = normalizedTranscript?.includes("ביקור בית") ?? false;
     const mentionsReminder = normalizedTranscript?.includes("תזכורת") ?? false;
-    const completesItem = /(?:תסגור|סגור|תסיים|סיים|סיימתי|בוצעה|הסתיימה)/.test(transcript);
+    const mentionsQuote = normalizedTranscript?.includes("הצעת מחיר") ?? false;
+    const completesItem = /(?:תסגור|סגור|תסיים|סיים|סיימתי|בוצעה|הסתיימה|נסגרה|שולמה)/.test(transcript);
     const cancelsAppointment = mentionsAppointment && /(?:תבטל|בטל|ביטול)/.test(transcript);
+    const cancelsQuote = mentionsQuote && /(?:תבטל|בטל|ביטול|לא רלוונטית)/.test(transcript);
+    const deletesItem = /(?:תמחק|מחק|מחיקה)/.test(transcript) &&
+      (mentionsAppointment || mentionsHomeVisit || mentionsReminder || mentionsQuote);
     const completion = completesItem
       ? mentionsAppointment
         ? { type: "COMPLETE_APPOINTMENT" as const, idField: "appointmentId", actionFragment: "APPOINTMENT" }
@@ -121,22 +125,56 @@ export class CoreVoiceActionsService {
           ? { type: "COMPLETE_HOME_VISIT" as const, idField: "homeVisitId", actionFragment: "HOME_VISIT" }
           : mentionsReminder
             ? { type: "COMPLETE_REMINDER" as const, idField: "reminderId", actionFragment: "REMINDER" }
-            : null
+            : mentionsQuote
+              ? { type: "MARK_QUOTE_PAID" as const, idField: "quoteId", actionFragment: "QUOTE" }
+              : null
       : null;
 
-    if (!completion && !cancelsAppointment) {
+    if (!completion && !cancelsAppointment && !cancelsQuote && !deletesItem) {
       return actions;
     }
 
     return actions.map((action) => {
-      const actionFragment = cancelsAppointment ? "APPOINTMENT" : completion?.actionFragment;
+      const itemType = mentionsAppointment
+        ? "appointment"
+        : mentionsHomeVisit
+          ? "home_visit"
+          : mentionsReminder
+            ? "reminder"
+            : "quote";
+      const actionFragment = deletesItem
+        ? itemType === "home_visit"
+          ? "HOME_VISIT"
+          : itemType.toUpperCase()
+        : cancelsAppointment
+          ? "APPOINTMENT"
+          : cancelsQuote
+            ? "QUOTE"
+            : completion?.actionFragment;
       if (actionFragment && !action.type.includes(actionFragment) && actions.length !== 1) {
         return action;
       }
-      const type = cancelsAppointment ? "CANCEL_APPOINTMENT" : completion!.type;
-      const idField = cancelsAppointment ? "appointmentId" : completion!.idField;
+      const type = deletesItem
+        ? "DELETE_WORK_ITEM"
+        : cancelsAppointment
+          ? "CANCEL_APPOINTMENT"
+          : cancelsQuote
+            ? "CANCEL_QUOTE"
+            : completion!.type;
+      const idField = deletesItem
+        ? "itemId"
+        : cancelsAppointment
+          ? "appointmentId"
+          : cancelsQuote
+            ? "quoteId"
+            : completion!.idField;
       const missingFields = [...new Set([
-        ...action.missingFields.filter((field) => field !== "startsAt" && field !== "title"),
+        ...action.missingFields.filter((field) =>
+          field !== "startsAt" &&
+          field !== "title" &&
+          (!deletesItem || !["reminderId", "appointmentId", "homeVisitId", "quoteId"].includes(field))
+        ),
+        ...(deletesItem ? ["itemType"] : []),
         idField
       ])];
       const payload = { ...action.payload };
@@ -147,11 +185,28 @@ export class CoreVoiceActionsService {
         delete payload.startsAt;
         delete payload.endsAt;
       }
+      if (deletesItem) {
+        const typedIdField = itemType === "reminder"
+          ? "reminderId"
+          : itemType === "appointment"
+            ? "appointmentId"
+            : itemType === "home_visit"
+              ? "homeVisitId"
+              : "quoteId";
+        if (typeof payload[typedIdField] === "string") {
+          payload.itemId = payload[typedIdField];
+        }
+        delete payload.reminderId;
+        delete payload.appointmentId;
+        delete payload.homeVisitId;
+        delete payload.quoteId;
+        payload.itemType = itemType;
+      }
       return {
         ...action,
         type,
         payload,
-        requiresConfirmation: cancelsAppointment || action.requiresConfirmation,
+        requiresConfirmation: deletesItem || cancelsAppointment || cancelsQuote || action.requiresConfirmation,
         missingFields
       };
     });
@@ -283,6 +338,22 @@ export class CoreVoiceActionsService {
       }
     }
 
+    if (input.actionType === "DELETE_WORK_ITEM" && typeof payload.itemId !== "string") {
+      const itemType = typeof payload.itemType === "string" ? payload.itemType : undefined;
+      const item = itemType === "reminder"
+        ? await this.resolveVoiceReminder(input.businessId, payload, input.transcript)
+        : itemType === "appointment"
+          ? await this.resolveVoiceAppointment(input.businessId, payload, input.transcript)
+          : itemType === "home_visit"
+            ? await this.resolveVoiceHomeVisit(input.businessId, payload, input.transcript)
+            : itemType === "quote"
+              ? await this.resolveVoiceQuote(input.businessId, payload, input.transcript)
+              : null;
+      if (item && "id" in item) {
+        payload = { ...payload, itemId: item.id };
+      }
+    }
+
     if (this.voiceActionNeedsReminder(input.actionType, payload)) {
       const reminder = await this.resolveVoiceReminder(input.businessId, payload, input.transcript);
       if (reminder) {
@@ -331,6 +402,8 @@ export class CoreVoiceActionsService {
       actionType === "CREATE_QUOTE" ||
       actionType === "UPDATE_QUOTE" ||
       actionType === "MARK_QUOTE_PAID" ||
+      actionType === "CANCEL_QUOTE" ||
+      actionType === "DELETE_WORK_ITEM" ||
       actionType === "UPDATE_REMINDER" ||
       actionType === "COMPLETE_REMINDER";
   }
@@ -362,7 +435,9 @@ export class CoreVoiceActionsService {
     if (typeof payload.quoteId === "string") {
       return false;
     }
-    return actionType === "UPDATE_QUOTE" || actionType === "MARK_QUOTE_PAID";
+    return actionType === "UPDATE_QUOTE" ||
+      actionType === "MARK_QUOTE_PAID" ||
+      actionType === "CANCEL_QUOTE";
   }
 
   private async resolveVoiceCustomers(businessId: string, payload: Record<string, unknown>, transcript: string) {
@@ -620,8 +695,12 @@ export class CoreVoiceActionsService {
     if (action.type === "COMPLETE_HOME_VISIT" && payload.homeVisitId === undefined) {
       fields.add("homeVisitId");
     }
-    if (action.type === "MARK_QUOTE_PAID" && payload.quoteId === undefined) {
+    if ((action.type === "MARK_QUOTE_PAID" || action.type === "CANCEL_QUOTE") && payload.quoteId === undefined) {
       fields.add("quoteId");
+    }
+    if (action.type === "DELETE_WORK_ITEM") {
+      if (payload.itemType === undefined) fields.add("itemType");
+      if (payload.itemId === undefined) fields.add("itemId");
     }
     if (this.voiceActionUsesStartsAt(action.type) && payload.startsAt === undefined) {
       fields.add("startsAt");
@@ -644,8 +723,10 @@ export class CoreVoiceActionsService {
         ? "פגישה פתוחה"
         : actionType === "COMPLETE_HOME_VISIT" && typeof payload.homeVisitId !== "string"
           ? "ביקור בית פתוח"
-          : actionType === "MARK_QUOTE_PAID" && typeof payload.quoteId !== "string"
+          : (actionType === "MARK_QUOTE_PAID" || actionType === "CANCEL_QUOTE") && typeof payload.quoteId !== "string"
             ? "הצעת מחיר פתוחה"
+            : actionType === "DELETE_WORK_ITEM" && typeof payload.itemId !== "string"
+              ? this.voiceWorkItemLabel(payload.itemType)
             : undefined;
     if (!target) {
       return undefined;
@@ -653,6 +734,18 @@ export class CoreVoiceActionsService {
     return customerName
       ? `לא מצאתי ${target} יחיד שמתאים ללקוח ${customerName}.`
       : `לא מצאתי ${target} יחיד שמתאים לפקודה.`;
+  }
+
+  private voiceWorkItemLabel(itemType: unknown) {
+    return itemType === "quote"
+      ? "הצעת מחיר פתוחה"
+      : itemType === "appointment"
+        ? "פגישה פתוחה"
+        : itemType === "home_visit"
+          ? "ביקור בית פתוח"
+          : itemType === "reminder"
+            ? "תזכורת פתוחה"
+            : "פריט עבודה מתאים";
   }
 
   private isOptionalVoiceField(actionType: string, field: string) {

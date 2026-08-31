@@ -321,6 +321,22 @@ export class CoreActionExecutionService {
       return { type: input.actionType, quote };
     }
 
+    if (input.actionType === "CANCEL_QUOTE") {
+      const quoteId = typeof input.payload.quoteId === "string" ? input.payload.quoteId : undefined;
+      if (!quoteId) {
+        throw new BadRequestException("Action payload is missing quoteId");
+      }
+      const quote = await this.quotes.update({
+        businessId: input.businessId,
+        quoteId,
+        status: "CANCELLED"
+      });
+      if (!quote) {
+        throw new NotFoundException("Quote not found");
+      }
+      return { type: input.actionType, quote };
+    }
+
     if (input.actionType === "UPDATE_QUOTE") {
       const quoteId = typeof input.payload.quoteId === "string" ? input.payload.quoteId : undefined;
       if (!quoteId) {
@@ -336,7 +352,13 @@ export class CoreActionExecutionService {
           ? new Prisma.Decimal(input.payload.estimatedAmount)
           : undefined,
         dueAt: typeof input.payload.dueAt === "string" ? await input.resolveDueAt(input.businessId, input.payload) : undefined,
-        status: input.payload.status === "PAID" ? "PAID" : input.payload.status === "OPEN" ? "OPEN" : undefined
+        status: input.payload.status === "PAID"
+          ? "PAID"
+          : input.payload.status === "CANCELLED"
+            ? "CANCELLED"
+            : input.payload.status === "OPEN"
+              ? "OPEN"
+              : undefined
       });
       if (!quote) {
         throw new NotFoundException("Quote not found");
