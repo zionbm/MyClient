@@ -393,6 +393,14 @@ assert(notifications.body.notifications.length > 0, "expected at least one notif
 assert(notifications.body.pageInfo, "expected notifications pageInfo");
 const notificationId = notifications.body.notifications[0].id;
 
+const homeWithUnreadNotification = request("GET", `${core}/businesses/${businessId}/home`, undefined, { authorization: token });
+expectStatus(homeWithUnreadNotification, 200, "home excludes unread notifications");
+assert(
+  homeWithUnreadNotification.body.items.every((item) => item.type !== "notification"),
+  "expected notifications to stay out of home work items",
+  homeWithUnreadNotification.body
+);
+
 expectStatus(request("POST", `${core}/businesses/${businessId}/notifications/${notificationId}/snooze`, {
   preset: "IN_15_MINUTES"
 }, { authorization: token }), 201, "snooze notification");

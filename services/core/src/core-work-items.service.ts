@@ -1,7 +1,7 @@
 import { Inject, Injectable, NotFoundException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { CreateAppointmentSchema, CreateHomeVisitSchema, CreateQuoteSchema, CreateReminderSchema, HomeQuerySchema, UpdateAppointmentSchema, UpdateHomeVisitSchema, UpdateQuoteSchema, UpdateReminderSchema } from "@myclient/contracts";
-import { AppointmentsRepository, AuditRepository, BusinessSettingsRepository, HomeVisitsRepository, NotificationsRepository, QuotesRepository, RemindersRepository } from "./core.repositories.js";
+import { AppointmentsRepository, AuditRepository, BusinessSettingsRepository, HomeVisitsRepository, QuotesRepository, RemindersRepository } from "./core.repositories.js";
 import { CoreAccessService } from "./core-access.service.js";
 import { CoreWorkItemPresenter } from "./core-work-item.presenter.js";
 import { addUtcDays, defaultAiReminderDueAt, homeVisitStatus, isSameUtcInstant, paginatedResponse, paginationFromQuery, parseOptionalAmount, parseOptionalDate, parseRequiredDate, reminderStatus, scheduledTimeOrZero, startOfLocalDate, type RequestHeaders } from "./core-utils.js";
@@ -16,7 +16,6 @@ export class CoreWorkItemsService {
     @Inject(AppointmentsRepository) private readonly appointments: AppointmentsRepository,
     @Inject(HomeVisitsRepository) private readonly homeVisits: HomeVisitsRepository,
     @Inject(QuotesRepository) private readonly quotes: QuotesRepository,
-    @Inject(NotificationsRepository) private readonly notifications: NotificationsRepository,
     @Inject(CoreWorkItemPresenter) private readonly workItemPresenter: CoreWorkItemPresenter
   ) {}
   async getWorkItem(headers: RequestHeaders, businessId: string, itemType: string, itemId: string) {
@@ -53,7 +52,7 @@ export class CoreWorkItemsService {
     const start = startOfLocalDate(command.date, settings.timezone);
     const end = addUtcDays(start, 1);
     const includeOpenBeforeStart = isSameUtcInstant(start, startOfLocalDate(undefined, settings.timezone));
-    const [reminders, homeVisits, appointments, quotes, notifications] = await Promise.all([
+    const [reminders, homeVisits, appointments, quotes] = await Promise.all([
       command.filter === "home_visits" || command.filter === "appointments" || command.filter === "quotes" || command.filter === "calls"
         ? Promise.resolve([])
         : this.reminders.listRemindersForDate({ businessId, start, end, search: command.search, urgentOnly: command.filter === "urgent", includeOpenBeforeStart }),
@@ -65,38 +64,14 @@ export class CoreWorkItemsService {
         : this.appointments.listForDate({ businessId, start, end, search: command.search, includeOpenBeforeStart }),
       command.filter === "reminders" || command.filter === "home_visits" || command.filter === "appointments" || command.filter === "calls" || command.filter === "urgent"
         ? Promise.resolve([])
-        : this.quotes.listForDate({ businessId, start, end, search: command.search, includeOpenBeforeStart }),
-      command.filter === "all" || command.filter === "urgent"
-        ? this.notifications.listByBusinessAndStatus(businessId, "SENT")
-        : Promise.resolve([])
+        : this.quotes.listForDate({ businessId, start, end, search: command.search, includeOpenBeforeStart })
     ]);
-
-    const notificationItems = notifications
-      .filter((notification) => !notification.readAt)
-      .slice(0, 20)
-      .map((notification) => ({
-        id: notification.id,
-        type: "notification",
-        title: notification.title,
-        description: notification.body,
-        dueAt: notification.createdAt,
-        priority: "NORMAL",
-        status: notification.status,
-        source: "notification",
-        customer: null,
-        linkedEntity: {
-          type: notification.itemType ?? (notification.reminderId ? "reminder" : "notification"),
-          id: notification.itemId ?? notification.reminderId ?? notification.id
-        },
-        actions: ["open", "mark_read"]
-      }));
 
     const items = [
       ...reminders.map((reminder) => this.workItemPresenter.reminderWorkItem(reminder)),
       ...homeVisits.map((homeVisit) => this.workItemPresenter.homeVisitWorkItem(homeVisit)),
       ...appointments.map((appointment) => this.workItemPresenter.appointmentWorkItem(appointment)),
-      ...quotes.map((quote) => this.workItemPresenter.quoteWorkItem(quote)),
-      ...notificationItems
+      ...quotes.map((quote) => this.workItemPresenter.quoteWorkItem(quote))
     ].sort((a, b) => {
       const priority = Number(b.priority === "URGENT") - Number(a.priority === "URGENT");
       if (priority !== 0) return priority;
