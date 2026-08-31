@@ -1,7 +1,7 @@
 import { Inject, Injectable, NotFoundException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { CreateAppointmentSchema, CreateHomeVisitSchema, CreateQuoteSchema, CreateReminderSchema, HomeQuerySchema, UpdateAppointmentSchema, UpdateHomeVisitSchema, UpdateQuoteSchema, UpdateReminderSchema } from "@myclient/contracts";
-import { AppointmentsRepository, AuditRepository, BusinessSettingsRepository, HomeVisitsRepository, QuotesRepository, RemindersRepository } from "./core.repositories.js";
+import { AppointmentsRepository, AuditRepository, BusinessSettingsRepository, HomeVisitsRepository, NotesRepository, QuotesRepository, RemindersRepository } from "./core.repositories.js";
 import { CoreAccessService } from "./core-access.service.js";
 import { CoreWorkItemPresenter } from "./core-work-item.presenter.js";
 import { addUtcDays, defaultAiReminderDueAt, homeVisitStatus, isSameUtcInstant, paginatedResponse, paginationFromQuery, parseOptionalAmount, parseOptionalDate, parseRequiredDate, reminderStatus, scheduledTimeOrZero, startOfLocalDate, type RequestHeaders } from "./core-utils.js";
@@ -16,6 +16,7 @@ export class CoreWorkItemsService {
     @Inject(AppointmentsRepository) private readonly appointments: AppointmentsRepository,
     @Inject(HomeVisitsRepository) private readonly homeVisits: HomeVisitsRepository,
     @Inject(QuotesRepository) private readonly quotes: QuotesRepository,
+    @Inject(NotesRepository) private readonly notes: NotesRepository,
     @Inject(CoreWorkItemPresenter) private readonly workItemPresenter: CoreWorkItemPresenter
   ) {}
   async getWorkItem(headers: RequestHeaders, businessId: string, itemType: string, itemId: string) {
@@ -37,6 +38,10 @@ export class CoreWorkItemsService {
         case "quote": {
           const quote = await this.quotes.findByBusinessAndId(businessId, itemId);
           return quote ? this.workItemPresenter.quoteWorkItem(quote) : null;
+        }
+        case "note": {
+          const note = await this.notes.findByBusinessAndId(businessId, itemId);
+          return note ? this.workItemPresenter.noteWorkItem(note) : null;
         }
         default:
           throw new NotFoundException("Work item not found");

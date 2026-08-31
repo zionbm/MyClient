@@ -68,7 +68,18 @@ export class CoreActionExecutionService {
       if (!reminderId) {
         throw new BadRequestException("Action payload is missing reminderId");
       }
-      const reminder = await this.reminders.complete(input.businessId, reminderId);
+      const reminder = await this.reminders.update({
+        businessId: input.businessId,
+        reminderId,
+        customerId: typeof input.payload.customerId === "string" ? input.payload.customerId : undefined,
+        title: typeof input.payload.title === "string" ? input.payload.title : undefined,
+        description: typeof input.payload.description === "string" ? input.payload.description : undefined,
+        priority: input.payload.priority === "URGENT" ? "URGENT" : input.payload.priority === "NORMAL" ? "NORMAL" : undefined,
+        dueAt: typeof input.payload.dueAt === "string" ? await input.resolveDueAt(input.businessId, input.payload) : undefined,
+        status: input.payload.status === "OPEN" || input.payload.status === "CANCELLED" || input.payload.status === "DONE"
+          ? input.payload.status
+          : "DONE"
+      });
       if (!reminder) {
         throw new NotFoundException("Reminder not found");
       }
@@ -192,7 +203,15 @@ export class CoreActionExecutionService {
       const appointment = await this.appointments.update({
         businessId: input.businessId,
         appointmentId,
-        status: input.actionType === "COMPLETE_APPOINTMENT" ? "DONE" : "CANCELLED"
+        customerId: typeof input.payload.customerId === "string" ? input.payload.customerId : undefined,
+        title: typeof input.payload.title === "string" ? input.payload.title : undefined,
+        location: typeof input.payload.location === "string" ? input.payload.location : undefined,
+        notes: typeof input.payload.notes === "string" ? input.payload.notes : undefined,
+        startsAt: typeof input.payload.startsAt === "string" ? parseRequiredDate(input.payload.startsAt) : undefined,
+        endsAt: typeof input.payload.endsAt === "string" ? parseRequiredDate(input.payload.endsAt) : undefined,
+        status: input.payload.status === "OPEN" || input.payload.status === "DONE" || input.payload.status === "CANCELLED"
+          ? input.payload.status
+          : input.actionType === "COMPLETE_APPOINTMENT" ? "DONE" : "CANCELLED"
       });
       if (!appointment) {
         throw new NotFoundException("Appointment not found");
@@ -215,7 +234,19 @@ export class CoreActionExecutionService {
       if (!homeVisitId) {
         throw new BadRequestException("Action payload is missing homeVisitId");
       }
-      const homeVisit = await this.homeVisits.complete(input.businessId, homeVisitId);
+      const homeVisit = await this.homeVisits.update({
+        businessId: input.businessId,
+        homeVisitId,
+        customerId: typeof input.payload.customerId === "string" ? input.payload.customerId : undefined,
+        title: typeof input.payload.title === "string" ? input.payload.title : undefined,
+        location: typeof input.payload.location === "string" ? input.payload.location : undefined,
+        notes: typeof input.payload.notes === "string" ? input.payload.notes : undefined,
+        startsAt: typeof input.payload.startsAt === "string" ? parseRequiredDate(input.payload.startsAt) : undefined,
+        endsAt: typeof input.payload.endsAt === "string" ? parseRequiredDate(input.payload.endsAt) : undefined,
+        status: input.payload.status === "OPEN" || input.payload.status === "DONE" || input.payload.status === "CANCELLED"
+          ? input.payload.status
+          : "DONE"
+      });
       if (!homeVisit) {
         throw new NotFoundException("Home visit not found");
       }
@@ -314,7 +345,20 @@ export class CoreActionExecutionService {
       if (!quoteId) {
         throw new BadRequestException("Action payload is missing quoteId");
       }
-      const quote = await this.quotes.markPaid(input.businessId, quoteId);
+      const quote = await this.quotes.update({
+        businessId: input.businessId,
+        quoteId,
+        customerId: typeof input.payload.customerId === "string" ? input.payload.customerId : undefined,
+        title: typeof input.payload.title === "string" ? input.payload.title : undefined,
+        description: typeof input.payload.description === "string" ? input.payload.description : undefined,
+        estimatedAmount: typeof input.payload.estimatedAmount === "string" || typeof input.payload.estimatedAmount === "number"
+          ? new Prisma.Decimal(input.payload.estimatedAmount)
+          : undefined,
+        dueAt: typeof input.payload.dueAt === "string" ? parseRequiredDate(input.payload.dueAt) : undefined,
+        status: input.payload.status === "OPEN" || input.payload.status === "CANCELLED" || input.payload.status === "PAID"
+          ? input.payload.status
+          : "PAID"
+      });
       if (!quote) {
         throw new NotFoundException("Quote not found");
       }
@@ -329,7 +373,16 @@ export class CoreActionExecutionService {
       const quote = await this.quotes.update({
         businessId: input.businessId,
         quoteId,
-        status: "CANCELLED"
+        customerId: typeof input.payload.customerId === "string" ? input.payload.customerId : undefined,
+        title: typeof input.payload.title === "string" ? input.payload.title : undefined,
+        description: typeof input.payload.description === "string" ? input.payload.description : undefined,
+        estimatedAmount: typeof input.payload.estimatedAmount === "string" || typeof input.payload.estimatedAmount === "number"
+          ? new Prisma.Decimal(input.payload.estimatedAmount)
+          : undefined,
+        dueAt: typeof input.payload.dueAt === "string" ? parseRequiredDate(input.payload.dueAt) : undefined,
+        status: input.payload.status === "OPEN" || input.payload.status === "PAID" || input.payload.status === "CANCELLED"
+          ? input.payload.status
+          : "CANCELLED"
       });
       if (!quote) {
         throw new NotFoundException("Quote not found");

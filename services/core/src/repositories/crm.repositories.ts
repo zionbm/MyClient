@@ -640,7 +640,8 @@ export class NotesRepository {
         customer: {
           deletedAt: null
         }
-      }
+      },
+      include: { customer: true }
     });
   }
 

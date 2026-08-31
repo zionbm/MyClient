@@ -177,6 +177,8 @@ export class CoreVoiceResultPresenter {
       if (actionType === "CREATE_REMINDER") return "תזכורת חדשה";
       if (actionType === "CREATE_HOME_VISIT") return "ביקור בית חדש";
       if (actionType === "CREATE_APPOINTMENT") return "פגישה חדשה";
+      if (actionType === "COMPLETE_REMINDER") return "סגירת תזכורת";
+      if (actionType === "COMPLETE_HOME_VISIT") return "סגירת ביקור בית";
       if (actionType === "COMPLETE_APPOINTMENT") return "סיום פגישה";
       if (actionType === "CANCEL_APPOINTMENT") return "ביטול פגישה";
       if (actionType === "CREATE_QUOTE") return "הצעת מחיר חדשה";
@@ -207,12 +209,25 @@ export class CoreVoiceResultPresenter {
   voicePendingFields(actionType: string, payload: Record<string, unknown>, aiPendingAction: Record<string, unknown>, timeZone: string) {
     const missingFields = new Set(this.stringList(aiPendingAction.missingFields));
     const fields = this.voiceEntityFields(actionType, payload, timeZone);
+    const proposedStatus = this.voiceProposedStatus(actionType);
+    if (proposedStatus) fields.unshift({ label: "סטטוס", value: proposedStatus, state: "normal" as const });
     for (const field of missingFields) {
       if (!fields.some((item) => item.label === this.voiceFieldLabel(field))) {
         fields.push({ label: this.voiceFieldLabel(field), value: "חסר", state: "missing" as const });
       }
     }
     return fields.map((field) => missingFields.has(this.fieldKeyFromHebrewLabel(field.label)) ? { ...field, state: "missing" as const, value: field.value || "חסר" } : field);
+  }
+
+  private voiceProposedStatus(actionType: string) {
+    if (actionType === "COMPLETE_REMINDER") return "תיסגר כבוצעה לאחר אישור";
+    if (actionType === "COMPLETE_HOME_VISIT") return "ייסגר כבוצע לאחר אישור";
+    if (actionType === "COMPLETE_APPOINTMENT") return "תיסגר כבוצעה לאחר אישור";
+    if (actionType === "CANCEL_APPOINTMENT") return "תבוטל לאחר אישור";
+    if (actionType === "MARK_QUOTE_PAID") return "תיסגר כשולמה לאחר אישור";
+    if (actionType === "CANCEL_QUOTE") return "תבוטל לאחר אישור";
+    if (actionType === "DELETE_WORK_ITEM") return "יימחק לאחר אישור";
+    return undefined;
   }
 
   voiceEntityFields(actionType: string, entity: Record<string, unknown>, timeZone: string): VoiceCommandResult["items"][number]["fields"] {

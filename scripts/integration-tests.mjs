@@ -213,6 +213,36 @@ const reminderResult = request("POST", `${core}/businesses/${businessId}/reminde
 expectStatus(reminderResult, 201, "create reminder");
 const reminderId = reminderResult.body.reminder.id;
 
+const editReminderLifecyclePending = request("POST", `${core}/owner-actions/execute`, {
+  businessId,
+  action: {
+    type: "COMPLETE_REMINDER",
+    idempotencyKey: `it_edit_complete_reminder_${suffix}`,
+    confidence: 0.95,
+    requiresConfirmation: false,
+    missingFields: ["reminderId"],
+    payload: { customerName: "לקוח אינטגרציה" }
+  }
+}, { authorization: token });
+expectStatus(editReminderLifecyclePending, 201, "create editable reminder completion action");
+const editedReminderLifecycle = request(
+  "POST",
+  `${core}/businesses/${businessId}/ai-pending-actions/${editReminderLifecyclePending.body.aiPendingAction.id}/approve`,
+  {
+    payload: {
+      reminderId,
+      customerName: "לקוח אינטגרציה",
+      title: "תזכורת שנערכה לפני אישור",
+      dueAt: "2026-08-21T10:05:00.000Z",
+      status: "CANCELLED"
+    }
+  },
+  { authorization: token }
+);
+expectStatus(editedReminderLifecycle, 201, "approve reminder lifecycle edits");
+assert(editedReminderLifecycle.body.execution.reminder.title === "תזכורת שנערכה לפני אישור", "expected edited reminder title");
+assert(editedReminderLifecycle.body.execution.reminder.status === "CANCELLED", "expected edited reminder status to override completion default");
+
 const dueReminderResult = request("POST", `${core}/businesses/${businessId}/reminders`, {
   customerId,
   title: `תזכורת due יחידה ${suffix}`,
@@ -318,7 +348,7 @@ expectStatus(
 );
 
 for (const [itemType, itemId, expectedTitle] of [
-  ["reminder", reminderId, "לחזור ללקוח אינטגרציה"],
+  ["reminder", reminderId, "תזכורת שנערכה לפני אישור"],
   ["appointment", appointmentId, "פגישת אינטגרציה"],
   ["home_visit", mosheHomeVisitId, "ביקור בית אצל משה"],
   ["quote", quoteId, "הצעת מחיר אינטגרציה"]
@@ -374,6 +404,15 @@ assert(customerDetail.body.activity.some((item) => item.type === "home_visit"), 
 assert(customerDetail.body.activity.some((item) => item.type === "quote"), "expected customer quote activity");
 assert(customerDetail.body.activity.some((item) => item.type === "note"), "expected customer note activity");
 const noteId = customerDetail.body.activity.find((item) => item.type === "note").id;
+const noteWorkItem = request(
+  "GET",
+  `${core}/businesses/${businessId}/work-items/note/${noteId}`,
+  undefined,
+  { authorization: token }
+);
+expectStatus(noteWorkItem, 200, "get note as a full work item");
+assert(noteWorkItem.body.item.type === "note", "expected note work item type");
+assert(noteWorkItem.body.item.customer.id === customerId, "expected note work item customer");
 
 const aiPending = request("POST", `${core}/owner-actions/execute`, {
   businessId,
