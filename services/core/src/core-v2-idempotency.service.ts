@@ -3,6 +3,7 @@ import { ConflictException, Inject, Injectable } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { log } from "@myclient/common";
 import { PrismaService } from "./prisma.service.js";
+import { executeWithDurablePending, idempotencyReplayDecision } from "./v2-idempotency.js";
 
 type IdempotentWriteInput<T> = {
   businessId: string;
@@ -65,49 +66,47 @@ export class CoreV2IdempotencyService {
           }
         }
       });
-      if (existing.requestHash !== hash) {
+      const decision = idempotencyReplayDecision({
+        requestHash: existing.requestHash,
+        expectedHash: hash,
+        status: existing.status,
+        response: existing.response,
+        expiresAt: existing.expiresAt
+      });
+      if (decision === "PAYLOAD_MISMATCH") {
         log("warn", "v2 idempotency key payload mismatch", { businessId: input.businessId, scope: input.scope });
         throw new ConflictException({
           code: "IDEMPOTENCY_KEY_REUSED",
           message: "The idempotency key was already used with a different request"
         });
       }
-      if (existing.status === "COMPLETED" && existing.response !== null) {
+      if (decision === "REPLAY") {
         log("info", "v2 idempotency replay", { businessId: input.businessId, scope: input.scope });
         return existing.response as T;
       }
-      if (existing.expiresAt > new Date()) {
+      if (decision === "IN_PROGRESS") {
         log("info", "v2 idempotency request still in progress", { businessId: input.businessId, scope: input.scope });
         throw new ConflictException({
           code: "IDEMPOTENCY_REQUEST_IN_PROGRESS",
           message: "A request with this idempotency key is still in progress"
         });
       }
-      const reclaimed = await this.prisma.apiIdempotencyRecord.updateMany({
-        where: { id: existing.id, status: "PENDING", expiresAt: { lte: new Date() } },
-        data: { expiresAt }
+      log("warn", "v2 idempotency result is unknown", { businessId: input.businessId, scope: input.scope });
+      throw new ConflictException({
+        code: "IDEMPOTENCY_RESULT_UNKNOWN",
+        message: "The outcome of the original request is unknown; inspect current state before using a new idempotency key"
       });
-      if (reclaimed.count !== 1) {
-        throw new ConflictException({
-          code: "IDEMPOTENCY_REQUEST_IN_PROGRESS",
-          message: "A request with this idempotency key is still in progress"
-        });
-      }
-      record = { ...existing, expiresAt };
     }
 
-    try {
-      const response = await input.execute();
-      await this.prisma.apiIdempotencyRecord.update({
-        where: { id: record.id },
-        data: { status: "COMPLETED", response: jsonResponse(response) }
-      });
-      return response;
-    } catch (error) {
-      await this.prisma.apiIdempotencyRecord.deleteMany({
-        where: { id: record.id, status: "PENDING" }
-      });
-      throw error;
-    }
+    return executeWithDurablePending({
+      execute: input.execute,
+      persistCompleted: async (response) => {
+        await this.prisma.apiIdempotencyRecord.update({
+          where: { id: record.id },
+          data: { status: "COMPLETED", response: jsonResponse(response) }
+        });
+      },
+      onUncertain: (phase) => log(phase === "EXECUTION" ? "warn" : "error", phase === "EXECUTION" ? "v2 idempotent operation failed with an uncertain outcome" : "v2 idempotency response persistence failed", { businessId: input.businessId, scope: input.scope })
+    });
   }
 }
