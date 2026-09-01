@@ -41,6 +41,7 @@ import {
   V2CustomersRepository,
   V2ServiceAddressesRepository,
   V2TasksRepository,
+  V2ActivitiesRepository,
   RemindersRepository
 } from "./core.repositories.js";
 import { PrismaService } from "./prisma.service.js";
@@ -64,6 +65,8 @@ import { CoreV2CustomersService } from "./core-v2-customers.service.js";
 import { CoreV2IdempotencyService } from "./core-v2-idempotency.service.js";
 import { CoreV2TasksService } from "./core-v2-tasks.service.js";
 import { CoreV2AssistantService } from "./core-v2-assistant.service.js";
+import { CoreV2ActivitiesService } from "./core-v2-activities.service.js";
+import { CoreV2SearchService } from "./core-v2-search.service.js";
 import {
   buildReminderFromCallDescription,
   buildReminderNotificationBody,
@@ -444,6 +447,8 @@ const {
   SystemController,
   V2CustomersController,
   V2AssistantController,
+  V2ActivitiesController,
+  V2SearchController,
   V2TasksController,
   VoiceCommandsController,
   WorkItemsController
@@ -458,6 +463,8 @@ const {
     SearchController,
     V2CustomersController,
     V2AssistantController,
+    V2ActivitiesController,
+    V2SearchController,
     V2TasksController,
     WorkItemsController,
     NotificationsController,
@@ -490,6 +497,7 @@ const {
     V2CustomerPhonesRepository,
     V2ServiceAddressesRepository,
     V2TasksRepository,
+    V2ActivitiesRepository,
     CoreAccessService,
     CoreAiInternalClient,
     CoreVoiceInternalClient,
@@ -506,6 +514,8 @@ const {
     CoreV2CustomersService,
     CoreV2TasksService,
     CoreV2AssistantService,
+    CoreV2ActivitiesService,
+    CoreV2SearchService,
     CoreCustomersService,
     CoreVoiceCommandsApplicationService,
     CoreWorkItemsService,

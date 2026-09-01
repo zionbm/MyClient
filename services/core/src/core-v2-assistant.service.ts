@@ -12,6 +12,7 @@ import {
 import { CoreAccessService } from "./core-access.service.js";
 import { CoreAiInternalClient } from "./core-internal-clients.service.js";
 import { CoreV2IdempotencyService } from "./core-v2-idempotency.service.js";
+import { CoreV2ActivitiesService } from "./core-v2-activities.service.js";
 import { AssistantSessionsRepository } from "./core.repositories.js";
 import { PrismaService } from "./prisma.service.js";
 import { parseOptionalDate, requiredIdempotencyKey, type RequestHeaders } from "./core-utils.js";
@@ -44,6 +45,7 @@ export class CoreV2AssistantService {
     @Inject(CoreAiInternalClient) private readonly ai: CoreAiInternalClient,
     @Inject(CoreV2IdempotencyService) private readonly idempotency: CoreV2IdempotencyService,
     @Inject(AssistantSessionsRepository) private readonly sessions: AssistantSessionsRepository,
+    @Inject(CoreV2ActivitiesService) private readonly activities: CoreV2ActivitiesService,
     @Inject(PrismaService) private readonly prisma: PrismaService
   ) {}
 
@@ -178,21 +180,24 @@ export class CoreV2AssistantService {
               businessId,
               userId: user.id,
               key,
+              headers,
               step,
               outputs
             });
-            sequence += 1;
-            await tx.actionMutation.create({
-              data: {
-                actionBatchId: actionBatch.id,
-                actionBatchStepId: batchStep.id,
-                sequence,
-                entityType: output.entityType,
-                entityId: output.entityId,
-                operation: "CREATE",
-                after: jsonValue(output.entity)
-              }
-            });
+            if (output.entityType && output.entityId && output.entity) {
+              sequence += 1;
+              await tx.actionMutation.create({
+                data: {
+                  actionBatchId: actionBatch.id,
+                  actionBatchStepId: batchStep.id,
+                  sequence,
+                  entityType: output.entityType,
+                  entityId: output.entityId,
+                  operation: "CREATE",
+                  after: jsonValue(output.entity)
+                }
+              });
+            }
             await tx.actionBatchStep.update({
               where: { id: batchStep.id },
               data: { status: "COMPLETED", output: jsonValue(output) }
@@ -204,13 +209,14 @@ export class CoreV2AssistantService {
 
           const waiting = [...statuses.values()].some((status) => status !== "COMPLETED");
           const completedCount = [...statuses.values()].filter((status) => status === "COMPLETED").length;
-          const summary = waiting
+          const readSummary = receiptSteps.map((step) => step.message).filter((message): message is string => typeof message === "string").join(" ");
+          const summary = readSummary || (waiting
             ? completedCount > 0
               ? "ביצעתי את הפעולות הברורות ושמרתי שאלה להשלמה."
               : "אני צריך עוד פרט לפני שאוכל לבצע את הבקשה."
             : completedCount === 1
               ? "הפעולה בוצעה בהצלחה."
-              : `בוצעו ${completedCount} פעולות בהצלחה.`;
+              : `בוצעו ${completedCount} פעולות בהצלחה.`);
           const status = waiting
             ? completedCount > 0 ? "PARTIALLY_COMPLETED" : "WAITING"
             : "COMPLETED";
@@ -275,10 +281,37 @@ export class CoreV2AssistantService {
       businessId: string;
       userId: string;
       key: string;
+      headers: RequestHeaders;
       step: AssistantPlanStep;
       outputs: Map<string, Record<string, unknown>>;
     }
   ) {
+    if (input.step.tool === "GET_AVAILABILITY") {
+      const result = await this.activities.availability(input.headers, input.businessId, input.step.input);
+      const slots = result.freeSlots.slice(0, 3);
+      const times = slots.map((slot) => new Intl.DateTimeFormat("he-IL", {
+        timeZone: result.timezone,
+        hour: "2-digit",
+        minute: "2-digit"
+      }).format(slot.startsAt));
+      return {
+        result,
+        message: times.length > 0
+          ? `החלונות הפנויים הראשונים הם ${times.join(", ")}.`
+          : "לא מצאתי חלון פנוי ביום המבוקש."
+      };
+    }
+    if (input.step.tool === "GET_SCHEDULE") {
+      const result = await this.activities.schedule(input.headers, input.businessId, input.step.input);
+      const limit = typeof input.step.input.limit === "number" ? input.step.input.limit : result.items.length;
+      const items = result.items.slice(0, limit);
+      return {
+        result: { items },
+        message: items.length > 0
+          ? `הפעילות הבאה היא ${items[0]!.title}.`
+          : "לא מצאתי פעילות מתוזמנת בטווח המבוקש."
+      };
+    }
     if (input.step.tool === "CREATE_CUSTOMER") {
       const command = V2CreateCustomerSchema.parse(input.step.input);
       const customer = await tx.customer.create({

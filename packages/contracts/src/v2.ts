@@ -277,3 +277,60 @@ export const V2AssistantCommandSchema = z.object({
   clientSessionId: z.string().trim().min(1).max(200)
 });
 export type V2AssistantCommand = z.infer<typeof V2AssistantCommandSchema>;
+
+const V2ActivityFieldsSchema = z.object({
+  customerId: z.string().trim().min(1),
+  title: z.string().trim().min(1),
+  description: OptionalTrimmedStringSchema,
+  startsAt: OptionalIsoDateSchema,
+  endsAt: OptionalIsoDateSchema,
+  serviceAddressId: OptionalTrimmedStringSchema,
+  locationSnapshot: OptionalTrimmedStringSchema,
+  status: V2ActivityStatusSchema.optional(),
+  allowScheduleConflict: z.boolean().optional()
+}).superRefine((value, context) => {
+  if (value.endsAt && !value.startsAt) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["endsAt"], message: "endsAt requires startsAt" });
+  }
+  if (value.startsAt && value.endsAt && new Date(value.endsAt) <= new Date(value.startsAt)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["endsAt"], message: "endsAt must be after startsAt" });
+  }
+});
+
+export const V2CreateJobSchema = V2ActivityFieldsSchema;
+export const V2CreateVisitSchema = V2ActivityFieldsSchema;
+export type V2CreateJob = z.infer<typeof V2CreateJobSchema>;
+export type V2CreateVisit = z.infer<typeof V2CreateVisitSchema>;
+
+export const V2UpdateActivitySchema = z.object({
+  customerId: OptionalTrimmedStringSchema,
+  title: OptionalTrimmedStringSchema,
+  description: NullableTrimmedStringSchema,
+  startsAt: NullableIsoDateSchema,
+  endsAt: NullableIsoDateSchema,
+  serviceAddressId: z.string().trim().min(1).nullable().optional(),
+  locationSnapshot: NullableTrimmedStringSchema,
+  status: V2ActivityStatusSchema.optional(),
+  allowScheduleConflict: z.boolean().optional(),
+  version: V2EntityVersionSchema.optional()
+}).refine((value) => Object.keys(value).some((key) => !["version", "allowScheduleConflict"].includes(key)), {
+  message: "At least one activity field is required"
+});
+export type V2UpdateActivity = z.infer<typeof V2UpdateActivitySchema>;
+
+export const V2ScheduleQuerySchema = z.object({
+  from: z.string().datetime({ offset: true }),
+  to: z.string().datetime({ offset: true })
+}).refine((value) => new Date(value.to) > new Date(value.from), { message: "to must be after from" });
+
+export const V2AvailabilityQuerySchema = z.object({
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  durationMinutes: z.coerce.number().int().min(15).max(480).default(60),
+  excludeEntityId: OptionalTrimmedStringSchema
+});
+
+export const V2SearchQuerySchema = V2PaginationQuerySchema.extend({
+  query: z.string().trim().min(1),
+  target: z.enum(["all", "customers", "tasks", "jobs", "visits"]).default("all"),
+  status: z.enum(["all", "open", "closed", "cancelled"]).default("all")
+});

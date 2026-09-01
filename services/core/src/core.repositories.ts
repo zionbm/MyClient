@@ -69,6 +69,8 @@ export {
   V2TasksRepository
 } from "./repositories/v2-crm.repositories.js";
 
+export { V2ActivitiesRepository } from "./repositories/v2-activities.repositories.js";
+
 type CreateReminderInput = {
   businessId: string;
   customerId?: string;

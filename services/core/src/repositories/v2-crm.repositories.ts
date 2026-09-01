@@ -52,6 +52,26 @@ export class V2CustomersRepository {
     });
   }
 
+  async timeline(businessId: string, customerId: string) {
+    const customer = await this.prisma.customer.findFirst({
+      where: { id: customerId, businessId, deletedAt: null, mergedIntoCustomerId: null },
+      select: { id: true }
+    });
+    if (!customer) return null;
+    const [tasks, jobs, visits, notes] = await Promise.all([
+      this.prisma.task.findMany({ where: { businessId, customerId, deletedAt: null } }),
+      this.prisma.job.findMany({ where: { businessId, customerId, deletedAt: null } }),
+      this.prisma.visit.findMany({ where: { businessId, customerId, deletedAt: null } }),
+      this.prisma.note.findMany({ where: { businessId, customerId, deletedAt: null } })
+    ]);
+    return [
+      ...tasks.map((item) => ({ type: "task", occurredAt: item.dueAt ?? item.createdAt, item })),
+      ...jobs.map((item) => ({ type: "job", occurredAt: item.startsAt ?? item.createdAt, item })),
+      ...visits.map((item) => ({ type: "visit", occurredAt: item.startsAt ?? item.createdAt, item })),
+      ...notes.map((item) => ({ type: "note", occurredAt: item.createdAt, item }))
+    ].sort((a, b) => b.occurredAt.getTime() - a.occurredAt.getTime());
+  }
+
   async update(input: {
     businessId: string;
     customerId: string;

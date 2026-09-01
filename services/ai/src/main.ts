@@ -87,6 +87,42 @@ class AiController {
   }
 
   private mockV2Plan(transcript: string): AssistantPlan {
+    if (transcript.includes("זמינ") || transcript.includes("פנוי")) {
+      return {
+        version: "2",
+        requestKind: "QUESTION",
+        language: "he-IL",
+        extractedFacts: {},
+        steps: [{
+          stepId: "availability",
+          kind: "READ",
+          tool: "GET_AVAILABILITY",
+          dependsOn: [],
+          input: { date: new Date().toISOString().slice(0, 10), durationMinutes: 60 },
+          confidence: 0.8,
+          requiresExplicitConfirmation: false
+        }]
+      };
+    }
+    if (transcript.includes("הפעילות הבאה") || transcript.includes("מה הבא")) {
+      const from = new Date();
+      const to = new Date(from.getTime() + 30 * 24 * 60 * 60 * 1000);
+      return {
+        version: "2",
+        requestKind: "QUESTION",
+        language: "he-IL",
+        extractedFacts: {},
+        steps: [{
+          stepId: "next_activity",
+          kind: "READ",
+          tool: "GET_SCHEDULE",
+          dependsOn: [],
+          input: { from: from.toISOString(), to: to.toISOString(), limit: 1 },
+          confidence: 0.9,
+          requiresExplicitConfirmation: false
+        }]
+      };
+    }
     const customerName = transcript.match(/(?:לקוח\s+)?בשם\s+(.+?)(?=\s+ו(?:תזכיר|תוסיף|תיצר|תיצור)|[,.;]|$)/)?.[1]?.trim();
     const taskText = transcript.match(/(?:תזכירי?\s+לי|תוסיף(?:י)?\s+משימה)\s+(.+?)(?:[.;]|$)/)?.[1]?.trim();
     const steps: AssistantPlan["steps"] = [];
@@ -149,7 +185,8 @@ class AiController {
             role: "system",
             content:
               "אתה מתכנן פעולות עבור MyClient V2. החזר AssistantPlan בעברית he-IL בלבד. " +
-              "בשלב הנוכחי בצע רק CREATE_CUSTOMER ו-CREATE_TASK. לקוח דורש שם בלבד ומשימה דורשת title בלבד. " +
+              "בשלב הנוכחי מותר לבצע CREATE_CUSTOMER ו-CREATE_TASK, ולענות באמצעות GET_AVAILABILITY או GET_SCHEDULE. לקוח דורש שם בלבד ומשימה דורשת title בלבד. " +
+              "GET_AVAILABILITY דורש date בפורמט YYYY-MM-DD ו-durationMinutes. GET_SCHEDULE דורש from ו-to כ-ISO datetime; לשאלת הפעילות הבאה הוסף limit=1. " +
               "אם משימה תלויה בלקוח שנוצר קודם, השתמש ב-customerRef עם stepId ו-outputField=entityId. " +
               "אל תמציא מזהים. מידע חסר הופך ל-ASK_CLARIFICATION. עד 10 צעדים וללא מעגלים."
           },
