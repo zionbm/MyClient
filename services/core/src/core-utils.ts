@@ -1,7 +1,7 @@
 import { BadRequestException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { getEnv } from "@myclient/common";
-import { PaginationQuerySchema } from "@myclient/contracts";
+import { IdempotencyKeySchema, PaginationQuerySchema } from "@myclient/contracts";
 
 export type RequestHeaders = Record<string, string | string[] | undefined>;
 
@@ -9,6 +9,16 @@ export type VoiceCommandExecutionResult = {
   status: string;
   results: Array<Record<string, unknown>>;
 };
+
+export function requiredIdempotencyKey(headers: RequestHeaders): string {
+  const value = headers["x-idempotency-key"] ?? headers["X-Idempotency-Key"];
+  const firstValue = Array.isArray(value) ? value[0] : value;
+  const parsed = IdempotencyKeySchema.safeParse(firstValue);
+  if (!parsed.success) {
+    throw new BadRequestException("Missing or invalid x-idempotency-key header");
+  }
+  return parsed.data;
+}
 
 export function formatCaller(callerPhone: string | undefined): string {
   return callerPhone ?? "מספר לא מזוהה";
@@ -503,4 +513,3 @@ export function callDisplayStatus(call: { selectedDigit?: string | null; transcr
   }
   return "NO_ACTION";
 }
-

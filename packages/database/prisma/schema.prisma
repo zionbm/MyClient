@@ -121,28 +121,29 @@ model Business {
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 
-  users             User[]
-  members           BusinessMember[]
-  settings          BusinessSettings?
-  phoneNumbers      BusinessPhoneNumber[]
-  customers         Customer[]
-  appointments      Appointment[]
-  homeVisits        HomeVisit[]
-  reminders         Reminder[]
-  quotes            Quote[]
-  notes             Note[]
-  IncomingCall      IncomingCall[]
-  voiceCommands     OwnerVoiceCommand[]
-  deviceTokens      DeviceToken[]
-  tasks             Task[]
-  jobs              Job[]
-  visits            Visit[]
-  customerPhones    CustomerPhone[]
-  serviceAddresses  ServiceAddress[]
-  amounts           Amount[]
-  amountEvents      AmountEvent[]
-  actionBatches     ActionBatch[]
-  assistantSessions AssistantSession[]
+  users                 User[]
+  members               BusinessMember[]
+  settings              BusinessSettings?
+  phoneNumbers          BusinessPhoneNumber[]
+  customers             Customer[]
+  appointments          Appointment[]
+  homeVisits            HomeVisit[]
+  reminders             Reminder[]
+  quotes                Quote[]
+  notes                 Note[]
+  IncomingCall          IncomingCall[]
+  voiceCommands         OwnerVoiceCommand[]
+  deviceTokens          DeviceToken[]
+  tasks                 Task[]
+  jobs                  Job[]
+  visits                Visit[]
+  customerPhones        CustomerPhone[]
+  serviceAddresses      ServiceAddress[]
+  amounts               Amount[]
+  amountEvents          AmountEvent[]
+  actionBatches         ActionBatch[]
+  assistantSessions     AssistantSession[]
+  apiIdempotencyRecords ApiIdempotencyRecord[]
 }
 
 model BusinessSettings {
@@ -763,6 +764,26 @@ model UserPreference {
   updatedAt             DateTime              @updatedAt
 
   user User @relation(fields: [userId], references: [id])
+}
+
+model ApiIdempotencyRecord {
+  id          String   @id @default(uuid())
+  businessId  String
+  userId      String
+  scope       String
+  key         String
+  requestHash String
+  status      String   @default("PENDING")
+  response    Json?
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  business Business @relation(fields: [businessId], references: [id])
+
+  @@unique([businessId, userId, scope, key])
+  @@index([expiresAt])
+  @@index([businessId, createdAt])
 }
 
 model AiPendingAction {

@@ -61,6 +61,13 @@ export {
   UserPreferencesRepository
 } from "./repositories/v2-foundation.repositories.js";
 
+export {
+  V2CustomerPhonesRepository,
+  V2CustomersRepository,
+  V2ServiceAddressesRepository,
+  V2TasksRepository
+} from "./repositories/v2-crm.repositories.js";
+
 type CreateReminderInput = {
   businessId: string;
   customerId?: string;

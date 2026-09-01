@@ -8,6 +8,8 @@ import { CoreAiPendingActionsApplicationService } from "./core-ai-pending-action
 import { CoreBusinessApplicationService } from "./core-business-application.service.js";
 import { CoreVoiceCommandsApplicationService } from "./core-voice-commands-application.service.js";
 import { CoreSearchService } from "./core-search.service.js";
+import { CoreV2CustomersService } from "./core-v2-customers.service.js";
+import { CoreV2TasksService } from "./core-v2-tasks.service.js";
 
 export const CORE_SERVICE = Symbol("CORE_SERVICE");
 
@@ -122,6 +124,40 @@ defineRoutes(CustomersController, [
   { name: "deleteNote", method: "delete", path: "businesses/:businessId/customers/:customerId/notes/:noteId", delegate: (core, request) => core.deleteNote(headers(request), params(request).businessId, params(request).customerId, params(request).noteId) },
   { name: "listNotes", method: "get", path: "businesses/:businessId/customers/:customerId/notes", delegate: (core, request) => core.listNotes(headers(request), params(request).businessId, params(request).customerId) },
   { name: "listIncomingCalls", method: "get", path: "businesses/:businessId/calls", delegate: (core, request) => core.listIncomingCalls(headers(request), params(request).businessId, request.query) }
+]);
+
+@Controller()
+export class V2CustomersController {
+  constructor(@Inject(CoreV2CustomersService) readonly core: CoreV2CustomersService) {}
+}
+
+defineRoutes(V2CustomersController, [
+  { name: "createCustomer", method: "post", path: "v2/businesses/:businessId/customers", delegate: (core, request) => core.createCustomer(headers(request), params(request).businessId, request.body) },
+  { name: "listCustomers", method: "get", path: "v2/businesses/:businessId/customers", delegate: (core, request) => core.listCustomers(headers(request), params(request).businessId, request.query) },
+  { name: "getCustomer", method: "get", path: "v2/businesses/:businessId/customers/:customerId", delegate: (core, request) => core.getCustomer(headers(request), params(request).businessId, params(request).customerId) },
+  { name: "updateCustomer", method: "patch", path: "v2/businesses/:businessId/customers/:customerId", delegate: (core, request) => core.updateCustomer(headers(request), params(request).businessId, params(request).customerId, request.body) },
+  { name: "createPhone", method: "post", path: "v2/businesses/:businessId/customers/:customerId/phones", delegate: (core, request) => core.createPhone(headers(request), params(request).businessId, params(request).customerId, request.body) },
+  { name: "updatePhone", method: "patch", path: "v2/businesses/:businessId/customers/:customerId/phones/:phoneId", delegate: (core, request) => core.updatePhone(headers(request), params(request).businessId, params(request).customerId, params(request).phoneId, request.body) },
+  { name: "deletePhone", method: "delete", path: "v2/businesses/:businessId/customers/:customerId/phones/:phoneId", delegate: (core, request) => core.deletePhone(headers(request), params(request).businessId, params(request).customerId, params(request).phoneId) },
+  { name: "createAddress", method: "post", path: "v2/businesses/:businessId/customers/:customerId/addresses", delegate: (core, request) => core.createAddress(headers(request), params(request).businessId, params(request).customerId, request.body) },
+  { name: "updateAddress", method: "patch", path: "v2/businesses/:businessId/customers/:customerId/addresses/:addressId", delegate: (core, request) => core.updateAddress(headers(request), params(request).businessId, params(request).customerId, params(request).addressId, request.body) },
+  { name: "deleteAddress", method: "delete", path: "v2/businesses/:businessId/customers/:customerId/addresses/:addressId", delegate: (core, request) => core.deleteAddress(headers(request), params(request).businessId, params(request).customerId, params(request).addressId) }
+]);
+
+@Controller()
+export class V2TasksController {
+  constructor(@Inject(CoreV2TasksService) readonly core: CoreV2TasksService) {}
+}
+
+defineRoutes(V2TasksController, [
+  { name: "createTask", method: "post", path: "v2/businesses/:businessId/tasks", delegate: (core, request) => core.createTask(headers(request), params(request).businessId, request.body) },
+  { name: "listTasks", method: "get", path: "v2/businesses/:businessId/tasks", delegate: (core, request) => core.listTasks(headers(request), params(request).businessId, request.query) },
+  { name: "getTask", method: "get", path: "v2/businesses/:businessId/tasks/:taskId", delegate: (core, request) => core.getTask(headers(request), params(request).businessId, params(request).taskId) },
+  { name: "updateTask", method: "patch", path: "v2/businesses/:businessId/tasks/:taskId", delegate: (core, request) => core.updateTask(headers(request), params(request).businessId, params(request).taskId, request.body) },
+  { name: "deleteTask", method: "delete", path: "v2/businesses/:businessId/tasks/:taskId", delegate: (core, request) => core.deleteTask(headers(request), params(request).businessId, params(request).taskId) },
+  { name: "completeTask", method: "post", path: "v2/businesses/:businessId/tasks/:taskId/complete", delegate: (core, request) => core.completeTask(headers(request), params(request).businessId, params(request).taskId) },
+  { name: "cancelTask", method: "post", path: "v2/businesses/:businessId/tasks/:taskId/cancel", delegate: (core, request) => core.cancelTask(headers(request), params(request).businessId, params(request).taskId) },
+  { name: "reopenTask", method: "post", path: "v2/businesses/:businessId/tasks/:taskId/reopen", delegate: (core, request) => core.reopenTask(headers(request), params(request).businessId, params(request).taskId) }
 ]);
 
 @Controller()

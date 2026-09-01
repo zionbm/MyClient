@@ -36,6 +36,10 @@ import {
   ActionBatchesRepository,
   QuotesRepository,
   UserPreferencesRepository,
+  V2CustomerPhonesRepository,
+  V2CustomersRepository,
+  V2ServiceAddressesRepository,
+  V2TasksRepository,
   RemindersRepository
 } from "./core.repositories.js";
 import { PrismaService } from "./prisma.service.js";
@@ -55,6 +59,9 @@ import { CoreBusinessApplicationService } from "./core-business-application.serv
 import { CoreOpenAiRealtimeClient } from "./core-openai-realtime-client.service.js";
 import { CoreVoiceActionsService } from "./core-voice-actions.service.js";
 import { CoreVoiceCommandsApplicationService } from "./core-voice-commands-application.service.js";
+import { CoreV2CustomersService } from "./core-v2-customers.service.js";
+import { CoreV2IdempotencyService } from "./core-v2-idempotency.service.js";
+import { CoreV2TasksService } from "./core-v2-tasks.service.js";
 import {
   buildReminderFromCallDescription,
   buildReminderNotificationBody,
@@ -74,6 +81,7 @@ export class CoreService {
     @Inject(IncomingCallsRepository) private readonly incomingCalls: IncomingCallsRepository,
     @Inject(CallTranscriptsRepository) private readonly callTranscripts: CallTranscriptsRepository,
     @Inject(RemindersRepository) private readonly reminders: RemindersRepository,
+    @Inject(V2TasksRepository) private readonly v2Tasks: V2TasksRepository,
     @Inject(NotificationsRepository) private readonly notifications: NotificationsRepository,
     @Inject(AiPendingActionsRepository) private readonly aiPendingActions: AiPendingActionsRepository
   ) {}
@@ -205,9 +213,16 @@ export class CoreService {
     const requestedLimit = Number((body as { limit?: unknown })?.limit ?? 20);
     const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 100)) : 20;
     const dueReminders = await this.reminders.claimDueReminders(limit);
+    const remainingTaskLimit = Math.max(limit - dueReminders.length, 0);
+    const dueTasks = remainingTaskLimit > 0 ? await this.v2Tasks.claimDue(remainingTaskLimit) : [];
     const processedReminders = [];
+    const processedTasks = [];
 
-    log("info", "due reminder poll started", { limit, dueReminderCount: dueReminders.length });
+    log("info", "due reminder poll started", {
+      limit,
+      dueReminderCount: dueReminders.length,
+      dueTaskCount: dueTasks.length
+    });
 
     for (const reminder of dueReminders) {
       const notification = await this.notifications.create({
@@ -242,11 +257,43 @@ export class CoreService {
       });
     }
 
-    log("info", "due reminder poll finished", { processed: processedReminders.length });
+    for (const task of dueTasks) {
+      const notification = await this.notifications.create({
+        businessId: task.businessId,
+        itemType: "task",
+        itemId: task.id,
+        title: "תזכורת למשימה",
+        body: buildReminderReminderBody(task),
+        payload: {
+          source: "v2_task_reminder",
+          taskId: task.id,
+          itemType: "task",
+          itemId: task.id,
+          dueAt: task.dueAt?.toISOString() ?? null
+        }
+      });
+      const notificationDelivery = await this.notificationDelivery.sendNotification(notification);
+      await this.audit.record({
+        businessId: task.businessId,
+        actorType: "system",
+        source: "scheduler",
+        entityType: "task",
+        entityId: task.id,
+        action: "SEND_V2_TASK_NOTIFICATION",
+        after: task as Prisma.InputJsonValue,
+        result: notificationDelivery.status
+      });
+      processedTasks.push({ task, notification: notificationDelivery.notification, notificationDelivery });
+    }
+
+    log("info", "due reminder poll finished", {
+      processed: processedReminders.length + processedTasks.length
+    });
 
     return {
-      processed: processedReminders.length,
-      reminders: processedReminders
+      processed: processedReminders.length + processedTasks.length,
+      reminders: processedReminders,
+      tasks: processedTasks
     };
   }
   async executeOwnerAction(headers: RequestHeaders, body: unknown) {
@@ -393,6 +440,8 @@ const {
   NotificationsController,
   SearchController,
   SystemController,
+  V2CustomersController,
+  V2TasksController,
   VoiceCommandsController,
   WorkItemsController
 } = await import("./core.controllers.js");
@@ -404,6 +453,8 @@ const {
     VoiceCommandsController,
     CustomersController,
     SearchController,
+    V2CustomersController,
+    V2TasksController,
     WorkItemsController,
     NotificationsController,
     AiActionsController
@@ -430,6 +481,10 @@ const {
     AiPendingActionsRepository,
     ActionBatchesRepository,
     UserPreferencesRepository,
+    V2CustomersRepository,
+    V2CustomerPhonesRepository,
+    V2ServiceAddressesRepository,
+    V2TasksRepository,
     CoreAccessService,
     CoreAiInternalClient,
     CoreVoiceInternalClient,
@@ -442,6 +497,9 @@ const {
     CoreVoiceResultPresenter,
     CoreAiPendingActionsApplicationService,
     CoreBusinessApplicationService,
+    CoreV2IdempotencyService,
+    CoreV2CustomersService,
+    CoreV2TasksService,
     CoreCustomersService,
     CoreVoiceCommandsApplicationService,
     CoreWorkItemsService,

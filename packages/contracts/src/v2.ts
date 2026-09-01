@@ -74,3 +74,76 @@ export type IdempotencyKey = z.infer<typeof IdempotencyKeySchema>;
 
 export const V2EntityVersionSchema = z.number().int().positive();
 export type V2EntityVersion = z.infer<typeof V2EntityVersionSchema>;
+
+const OptionalTrimmedStringSchema = z.string().trim().min(1).optional();
+const NullableTrimmedStringSchema = z.string().trim().min(1).nullable().optional();
+const OptionalIsoDateSchema = z.string().datetime({ offset: true }).optional();
+const NullableIsoDateSchema = z.string().datetime({ offset: true }).nullable().optional();
+
+export const V2CreateCustomerSchema = z.object({
+  name: z.string().trim().min(1),
+  email: z.string().trim().email().optional(),
+  generalNotes: OptionalTrimmedStringSchema
+});
+export type V2CreateCustomer = z.infer<typeof V2CreateCustomerSchema>;
+
+export const V2UpdateCustomerSchema = z.object({
+  name: OptionalTrimmedStringSchema,
+  email: z.string().trim().email().nullable().optional(),
+  generalNotes: NullableTrimmedStringSchema,
+  version: V2EntityVersionSchema.optional()
+}).refine((value) => Object.keys(value).some((key) => key !== "version"), {
+  message: "At least one customer field is required"
+});
+export type V2UpdateCustomer = z.infer<typeof V2UpdateCustomerSchema>;
+
+export const V2CreateCustomerPhoneSchema = z.object({
+  phone: z.string().trim().min(1),
+  label: OptionalTrimmedStringSchema,
+  isPrimary: z.boolean().optional()
+});
+export type V2CreateCustomerPhone = z.infer<typeof V2CreateCustomerPhoneSchema>;
+
+export const V2UpdateCustomerPhoneSchema = z.object({
+  phone: OptionalTrimmedStringSchema,
+  label: NullableTrimmedStringSchema,
+  isPrimary: z.boolean().optional()
+}).refine((value) => Object.keys(value).length > 0, {
+  message: "At least one phone field is required"
+});
+export type V2UpdateCustomerPhone = z.infer<typeof V2UpdateCustomerPhoneSchema>;
+
+export const V2CreateServiceAddressSchema = z.object({
+  label: OptionalTrimmedStringSchema,
+  addressText: z.string().trim().min(1)
+});
+export type V2CreateServiceAddress = z.infer<typeof V2CreateServiceAddressSchema>;
+
+export const V2UpdateServiceAddressSchema = z.object({
+  label: NullableTrimmedStringSchema,
+  addressText: OptionalTrimmedStringSchema
+}).refine((value) => Object.keys(value).length > 0, {
+  message: "At least one address field is required"
+});
+export type V2UpdateServiceAddress = z.infer<typeof V2UpdateServiceAddressSchema>;
+
+export const V2CreateTaskSchema = z.object({
+  customerId: OptionalTrimmedStringSchema,
+  title: z.string().trim().min(1),
+  description: OptionalTrimmedStringSchema,
+  dueAt: OptionalIsoDateSchema,
+  status: V2TaskStatusSchema.optional()
+});
+export type V2CreateTask = z.infer<typeof V2CreateTaskSchema>;
+
+export const V2UpdateTaskSchema = z.object({
+  customerId: z.string().trim().min(1).nullable().optional(),
+  title: OptionalTrimmedStringSchema,
+  description: NullableTrimmedStringSchema,
+  dueAt: NullableIsoDateSchema,
+  status: V2TaskStatusSchema.optional(),
+  version: V2EntityVersionSchema.optional()
+}).refine((value) => Object.keys(value).some((key) => key !== "version"), {
+  message: "At least one task field is required"
+});
+export type V2UpdateTask = z.infer<typeof V2UpdateTaskSchema>;
