@@ -554,7 +554,7 @@ export class CoreV2AssistantService {
         let sequence = await tx.actionMutation.count({ where: { actionBatchId: batch.id } });
         const plannedCurrentStep = plan.steps.find((step) => step.stepId === currentStep.stepKey)!;
         let selectedOutput: Record<string, unknown> = { entityId: command.selectedEntityId, ...(command.payload ?? {}) };
-        if (pending.requiresExplicitConfirmation && plannedCurrentStep.kind === "WRITE") {
+        if (plannedCurrentStep.kind === "WRITE") {
           const confirmationOverrides = objectValue(objectValue(pending.payload).confirmationOverrides);
           const confirmedStep = {
             ...plannedCurrentStep,
@@ -569,13 +569,14 @@ export class CoreV2AssistantService {
               data: {
                 payload: jsonValue({ tool: plannedCurrentStep.tool, input: plannedCurrentStep.input, confirmationOverrides: refreshed.confirmationOverrides }),
                 question: executed.question,
+                missingFields: Array.isArray(refreshed.missingFields) ? refreshed.missingFields as string[] : [],
                 candidateEntities: refreshed.candidates ? jsonValue(refreshed.candidates) : Prisma.JsonNull,
                 entityVersions: refreshed.entityVersions ? jsonValue(refreshed.entityVersions) : Prisma.JsonNull,
                 requiresExplicitConfirmation: refreshed.requiresExplicitConfirmation === true
               }
             });
-            log("info", "v2 pending action refreshed", { businessId, actionType: pending.actionType, reason: "SCHEDULE_CHANGED" });
-            return { actionBatchId: batch.id, summary: "לוח הזמנים השתנה. צריך לאשר מחדש את ההתנגשות העדכנית.", remaining: 1, needsReview: true };
+            log("info", "v2 pending action refreshed", { businessId, actionType: pending.actionType, reason: "STILL_MISSING_INPUT" });
+            return { actionBatchId: batch.id, summary: executed.question, remaining: 1, needsReview: true };
           }
           selectedOutput = executed;
           if (executed.entityType && executed.entityId && executed.entity) {
