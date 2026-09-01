@@ -24,6 +24,7 @@ export {
 export {
   V2CustomerPhonesRepository,
   V2CustomersRepository,
+  V2NotesRepository,
   V2ServiceAddressesRepository,
   V2TasksRepository
 } from "./repositories/v2-crm.repositories.js";

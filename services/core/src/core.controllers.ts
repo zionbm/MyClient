@@ -11,6 +11,7 @@ import { CoreV2ActivitiesService } from "./core-v2-activities.service.js";
 import { CoreV2SearchService } from "./core-v2-search.service.js";
 import { CoreV2AmountsService } from "./core-v2-amounts.service.js";
 import { CoreV2ActionBatchesService } from "./core-v2-action-batches.service.js";
+import { CoreV2NotesService } from "./core-v2-notes.service.js";
 
 export const CORE_SERVICE = Symbol("CORE_SERVICE");
 
@@ -114,6 +115,17 @@ defineRoutes(V2CustomersController, [
   { name: "createAddress", method: "post", path: "v2/businesses/:businessId/customers/:customerId/addresses", delegate: (core, request) => core.createAddress(headers(request), params(request).businessId, params(request).customerId, request.body) },
   { name: "updateAddress", method: "patch", path: "v2/businesses/:businessId/customers/:customerId/addresses/:addressId", delegate: (core, request) => core.updateAddress(headers(request), params(request).businessId, params(request).customerId, params(request).addressId, request.body) },
   { name: "deleteAddress", method: "delete", path: "v2/businesses/:businessId/customers/:customerId/addresses/:addressId", delegate: (core, request) => core.deleteAddress(headers(request), params(request).businessId, params(request).customerId, params(request).addressId) }
+]);
+
+@Controller()
+export class V2NotesController {
+  constructor(@Inject(CoreV2NotesService) readonly core: CoreV2NotesService) {}
+}
+
+defineRoutes(V2NotesController, [
+  { name: "createNote", method: "post", path: "v2/businesses/:businessId/customers/:customerId/notes", delegate: (core, request) => core.create(headers(request), params(request).businessId, params(request).customerId, request.body) },
+  { name: "updateNote", method: "patch", path: "v2/businesses/:businessId/customers/:customerId/notes/:noteId", delegate: (core, request) => core.update(headers(request), params(request).businessId, params(request).customerId, params(request).noteId, request.body) },
+  { name: "deleteNote", method: "delete", path: "v2/businesses/:businessId/customers/:customerId/notes/:noteId", delegate: (core, request) => core.delete(headers(request), params(request).businessId, params(request).customerId, params(request).noteId) }
 ]);
 
 @Controller()

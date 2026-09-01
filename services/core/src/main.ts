@@ -32,6 +32,7 @@ import {
   UserPreferencesRepository,
   V2CustomerPhonesRepository,
   V2CustomersRepository,
+  V2NotesRepository,
   V2ServiceAddressesRepository,
   V2TasksRepository,
   V2ActivitiesRepository,
@@ -53,6 +54,7 @@ import { CoreV2ActivitiesService } from "./core-v2-activities.service.js";
 import { CoreV2SearchService } from "./core-v2-search.service.js";
 import { CoreV2AmountsService } from "./core-v2-amounts.service.js";
 import { CoreV2ActionBatchesService } from "./core-v2-action-batches.service.js";
+import { CoreV2NotesService } from "./core-v2-notes.service.js";
 import {
   buildReminderFromCallDescription,
   buildReminderNotificationBody,
@@ -309,6 +311,7 @@ const {
   NotificationsController,
   SystemController,
   V2CustomersController,
+  V2NotesController,
   V2AssistantController,
   V2ActivitiesController,
   V2SearchController,
@@ -323,6 +326,7 @@ const {
     InternalController,
     CallsController,
     V2CustomersController,
+    V2NotesController,
     V2AssistantController,
     V2ActivitiesController,
     V2SearchController,
@@ -348,6 +352,7 @@ const {
     AssistantSessionsRepository,
     UserPreferencesRepository,
     V2CustomersRepository,
+    V2NotesRepository,
     V2CustomerPhonesRepository,
     V2ServiceAddressesRepository,
     V2TasksRepository,
@@ -361,6 +366,7 @@ const {
     CoreBusinessApplicationService,
     CoreV2IdempotencyService,
     CoreV2CustomersService,
+    CoreV2NotesService,
     CoreV2TasksService,
     CoreV2AssistantService,
     CoreV2ActivitiesService,

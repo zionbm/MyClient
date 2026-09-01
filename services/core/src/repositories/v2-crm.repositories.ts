@@ -47,7 +47,8 @@ export class V2CustomersRepository {
       include: {
         customerPhones: { where: { deletedAt: null }, orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }] },
         serviceAddresses: { where: { deletedAt: null }, orderBy: { createdAt: "asc" } },
-        tasks: { where: { deletedAt: null }, orderBy: [{ dueAt: "asc" }, { createdAt: "desc" }] }
+        tasks: { where: { deletedAt: null }, orderBy: [{ dueAt: "asc" }, { createdAt: "desc" }] },
+        notes: { where: { deletedAt: null }, orderBy: { createdAt: "desc" } }
       }
     });
   }
@@ -486,5 +487,65 @@ export class V2TasksRepository {
       if (result.count === 1) claimed.push({ ...candidate, reminderSentAt });
     }
     return claimed;
+  }
+}
+
+@Injectable()
+export class V2NotesRepository {
+  constructor(@Inject(PrismaService) private readonly prisma: PrismaService) {}
+
+  async create(input: {
+    businessId: string;
+    customerId: string;
+    text: string;
+    status?: "OPEN" | "DONE" | "CANCELLED";
+  }) {
+    const customer = await this.prisma.customer.findFirst({
+      where: {
+        id: input.customerId,
+        businessId: input.businessId,
+        deletedAt: null,
+        mergedIntoCustomerId: null
+      },
+      select: { id: true }
+    });
+    return customer ? this.prisma.note.create({ data: input }) : null;
+  }
+
+  findById(businessId: string, customerId: string, noteId: string) {
+    return this.prisma.note.findFirst({
+      where: { id: noteId, businessId, customerId, deletedAt: null }
+    });
+  }
+
+  async update(input: {
+    businessId: string;
+    customerId: string;
+    noteId: string;
+    text?: string;
+    status?: "OPEN" | "DONE" | "CANCELLED";
+  }) {
+    const updated = await this.prisma.note.updateMany({
+      where: {
+        id: input.noteId,
+        businessId: input.businessId,
+        customerId: input.customerId,
+        deletedAt: null
+      },
+      data: { text: input.text, status: input.status }
+    });
+    return updated.count === 1
+      ? this.findById(input.businessId, input.customerId, input.noteId)
+      : null;
+  }
+
+  async softDelete(businessId: string, customerId: string, noteId: string) {
+    const updated = await this.prisma.note.updateMany({
+      where: { id: noteId, businessId, customerId, deletedAt: null },
+      data: { deletedAt: new Date() }
+    });
+    return updated.count === 1
+      ? this.prisma.note.findUnique({ where: { id: noteId } })
+      : null;
   }
 }

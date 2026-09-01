@@ -129,6 +129,20 @@ export const V2UpdateTaskSchema = z.object({
 });
 export type V2UpdateTask = z.infer<typeof V2UpdateTaskSchema>;
 
+export const V2CreateNoteSchema = z.object({
+  text: z.string().trim().min(1),
+  status: z.enum(["OPEN", "DONE", "CANCELLED"]).optional()
+});
+export type V2CreateNote = z.infer<typeof V2CreateNoteSchema>;
+
+export const V2UpdateNoteSchema = z.object({
+  text: OptionalTrimmedStringSchema,
+  status: z.enum(["OPEN", "DONE", "CANCELLED"]).optional()
+}).refine((value) => Object.keys(value).length > 0, {
+  message: "At least one note field is required"
+});
+export type V2UpdateNote = z.infer<typeof V2UpdateNoteSchema>;
+
 export const V2ConfirmedMutationSchema = z.object({
   confirmed: z.literal(true)
 });
