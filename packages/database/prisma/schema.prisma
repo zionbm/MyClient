@@ -118,6 +118,7 @@ model Business {
   id                  String   @id @default(uuid())
   name                String
   productModelVersion Int      @default(1)
+  v1WriteBlockedAt    DateTime?
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 
@@ -144,6 +145,8 @@ model Business {
   actionBatches         ActionBatch[]
   assistantSessions     AssistantSession[]
   apiIdempotencyRecords ApiIdempotencyRecord[]
+
+  @@index([v1WriteBlockedAt])
 }
 
 model BusinessSettings {

@@ -43,6 +43,12 @@ test("grounded summary rejects amounts absent from the receipt", () => {
   assert.equal(summaryIsGrounded("נשמרו 700 שקלים", receipt), false);
 });
 
+test("grounded summary must preserve scheduling warnings", () => {
+  const receipt = { steps: [{ warnings: ["הפעילות נקבעה מחוץ לשעות העבודה."] }] };
+  assert.equal(summaryIsGrounded("הפעולה בוצעה בהצלחה.", receipt), false);
+  assert.equal(summaryIsGrounded("הפעולה בוצעה. הפעילות נקבעה מחוץ לשעות העבודה.", receipt), true);
+});
+
 test("AssistantPlan rejects dependency cycles", () => {
   const result = AssistantPlanSchema.safeParse({
     ...basePlan,

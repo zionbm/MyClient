@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { ConflictException, Inject, Injectable } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
+import { log } from "@myclient/common";
 import { PrismaService } from "./prisma.service.js";
 
 type IdempotentWriteInput<T> = {
@@ -65,15 +66,18 @@ export class CoreV2IdempotencyService {
         }
       });
       if (existing.requestHash !== hash) {
+        log("warn", "v2 idempotency key payload mismatch", { businessId: input.businessId, scope: input.scope });
         throw new ConflictException({
           code: "IDEMPOTENCY_KEY_REUSED",
           message: "The idempotency key was already used with a different request"
         });
       }
       if (existing.status === "COMPLETED" && existing.response !== null) {
+        log("info", "v2 idempotency replay", { businessId: input.businessId, scope: input.scope });
         return existing.response as T;
       }
       if (existing.expiresAt > new Date()) {
+        log("info", "v2 idempotency request still in progress", { businessId: input.businessId, scope: input.scope });
         throw new ConflictException({
           code: "IDEMPOTENCY_REQUEST_IN_PROGRESS",
           message: "A request with this idempotency key is still in progress"

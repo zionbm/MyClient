@@ -409,6 +409,12 @@ export class V2TasksRepository {
     });
   }
 
+  findByIdempotencyKey(businessId: string, idempotencyKey: string) {
+    return this.prisma.task.findUnique({
+      where: { businessId_idempotencyKey: { businessId, idempotencyKey } }
+    });
+  }
+
   async update(input: {
     businessId: string;
     taskId: string;

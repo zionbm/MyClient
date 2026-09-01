@@ -141,6 +141,7 @@ class VoiceController {
   @Post("tts/openai")
   async synthesizeOpenAi(@Headers() headers: RequestHeaders, @Body() body: { text?: string; voice?: string }) {
     requireInternalSecret(headers);
+    const startedAt = Date.now();
     const text = body.text?.trim();
     if (!text) throw new BadRequestException("TTS text is required");
     const response = await fetch("https://api.openai.com/v1/audio/speech", {
@@ -150,6 +151,7 @@ class VoiceController {
     });
     if (!response.ok) throw new BadGatewayException(`OpenAI TTS failed with ${response.status}`);
     const bytes = Buffer.from(await response.arrayBuffer());
+    log("info", "openai tts completed", { model: getEnv("OPENAI_TTS_MODEL", "gpt-4o-mini-tts"), voice: body.voice ?? getEnv("OPENAI_TTS_VOICE", "coral"), bytes: bytes.byteLength, durationMs: Date.now() - startedAt });
     return { provider: "openai", text, contentType: "audio/mpeg", audioBase64: bytes.toString("base64") };
   }
 }

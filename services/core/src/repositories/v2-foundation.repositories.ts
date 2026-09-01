@@ -61,7 +61,8 @@ export class ActionBatchesRepository {
   async listRecent(businessId: string, limit = 20) {
     await this.businesses.requireBusiness(businessId);
     return this.prisma.actionBatch.findMany({
-      where: { businessId },
+      where: { businessId, status: { in: ["COMPLETED", "PARTIALLY_COMPLETED", "UNDONE"] } },
+      include: { _count: { select: { mutations: true } } },
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       take: Math.min(Math.max(limit, 1), 100)
     });

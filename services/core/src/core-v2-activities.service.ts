@@ -1,5 +1,6 @@
 import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from "@nestjs/common";
 import { Prisma, type ActivityStatus } from "@prisma/client";
+import { log } from "@myclient/common";
 import {
   V2AvailabilityQuerySchema,
   V2CreateJobSchema,
@@ -189,7 +190,7 @@ export class CoreV2ActivitiesService {
         if ("missingLink" in result) throw new NotFoundException("Customer or service address not found");
         if (!("entity" in result)) {
           if (!startsAt) throw new ConflictException({ code: "SCHEDULE_CONFLICT", conflicts: result.conflicts });
-          await this.throwConflict(businessId, startsAt, endsAt, result.conflicts);
+          await this.throwConflict(businessId, startsAt, endsAt, kind, result.conflicts);
         }
         const entity = result.entity;
         if (!entity) throw new NotFoundException(`${kind} was not created`);
@@ -239,7 +240,7 @@ export class CoreV2ActivitiesService {
           const existing = await this.activities.findById(kind, businessId, entityId);
           const conflictStart = update.startsAt ?? existing?.startsAt;
           if (!conflictStart) throw new ConflictException({ code: "SCHEDULE_CONFLICT", conflicts: result.conflicts });
-          await this.throwConflict(businessId, conflictStart, update.endsAt ?? existing?.endsAt, result.conflicts);
+          await this.throwConflict(businessId, conflictStart, update.endsAt ?? existing?.endsAt, kind, result.conflicts);
         }
         if (!result.entity) throw new NotFoundException(`${kind} was not updated`);
         await this.recordAudit(kind, businessId, user.id, entityId, action.toUpperCase(), result.entity);
@@ -265,12 +266,18 @@ export class CoreV2ActivitiesService {
     return { ...result, clarification: next.clarification };
   }
 
-  private async throwConflict(businessId: string, startsAt: Date, endsAt: Date | null | undefined, conflicts: unknown[]): Promise<never> {
-    const durationMinutes = Math.max(15, Math.round(((endsAt?.getTime() ?? startsAt.getTime() + 60 * 60_000) - startsAt.getTime()) / 60_000));
+  private async throwConflict(businessId: string, startsAt: Date, endsAt: Date | null | undefined, kind: V2ActivityKind, conflicts: unknown[]): Promise<never> {
+    const preview = await this.conflictPreview(businessId, startsAt, endsAt, kind, conflicts);
+    log("info", "v2 schedule conflict", { businessId, kind, conflictCount: conflicts.length, alternativeCount: preview.alternativeSlots.length });
+    throw new ConflictException(preview);
+  }
+
+  async conflictPreview(businessId: string, startsAt: Date, endsAt: Date | null | undefined, kind: V2ActivityKind, conflicts: unknown[]) {
+    const durationMinutes = Math.max(15, Math.round(((endsAt?.getTime() ?? startsAt.getTime() + (kind === "job" ? 120 : 60) * 60_000) - startsAt.getTime()) / 60_000));
     const settings = await this.settings.getByBusiness(businessId);
     const date = new Intl.DateTimeFormat("en-CA", { timeZone: settings.timezone }).format(startsAt);
     const availability = await this.availabilityForConflict(businessId, date, durationMinutes, settings);
-    throw new ConflictException({ code: "SCHEDULE_CONFLICT", message: "The requested time overlaps another activity", conflicts, alternativeSlots: availability.slice(0, 3) });
+    return { code: "SCHEDULE_CONFLICT", message: "The requested time overlaps another activity", kind, conflicts, alternativeSlots: availability.slice(0, 3) };
   }
 
   private async availabilityForConflict(businessId: string, date: string, durationMinutes: number, settings: Awaited<ReturnType<BusinessSettingsRepository["getByBusiness"]>>) {
@@ -280,7 +287,7 @@ export class CoreV2ActivitiesService {
     return freeSlots(window, items.map((item) => ({ startsAt: item.startsAt!, endsAt: item.effectiveEndsAt! })), durationMinutes);
   }
 
-  private async scheduleWarnings(businessId: string, startsAt: Date | undefined, endsAt: Date | undefined, kind: V2ActivityKind) {
+  async scheduleWarnings(businessId: string, startsAt: Date | undefined, endsAt: Date | undefined, kind: V2ActivityKind) {
     if (!startsAt) return [];
     const settings = await this.settings.getByBusiness(businessId);
     const effectiveEnd = endsAt ?? new Date(startsAt.getTime() + (kind === "job" ? 120 : 60) * 60_000);

@@ -76,12 +76,15 @@ class AiController {
   @Post("v2/assistant/plan")
   async planV2(@Headers() headers: RequestHeaders, @Body() body: { transcript?: string; context?: unknown }) {
     requireInternalSecret(headers);
+    const startedAt = Date.now();
     const transcript = (body.transcript ?? "").trim();
-    const plan = getEnv("MOCK_LLM_PROVIDER", "false") === "true"
+    const mock = getEnv("MOCK_LLM_PROVIDER", "false") === "true";
+    const plan = mock
       ? this.mockV2Plan(transcript)
       : await this.openAiV2Plan(transcript, body.context);
+    log("info", "v2 assistant plan completed", { provider: mock ? "mock" : "openai", model: mock ? undefined : getEnv("OPENAI_LLM_MODEL", "gpt-5-mini"), stepCount: plan.steps.length, durationMs: Date.now() - startedAt });
     return {
-      provider: getEnv("MOCK_LLM_PROVIDER", "false") === "true" ? "mock" : "openai",
+      provider: mock ? "mock" : "openai",
       plan: AssistantPlanSchema.parse(plan)
     };
   }
@@ -89,7 +92,9 @@ class AiController {
   @Post("v2/assistant/summarize")
   async summarizeV2(@Headers() headers: RequestHeaders, @Body() body: { transcript?: string; receipt?: unknown }) {
     requireInternalSecret(headers);
+    const startedAt = Date.now();
     if (getEnv("MOCK_LLM_PROVIDER", "false") === "true") {
+      log("info", "v2 assistant summary completed", { provider: "mock", durationMs: Date.now() - startedAt });
       return { textSummary: "הבקשה טופלה לפי התוצאה המוצגת.", spokenSummary: "הבקשה טופלה." };
     }
     const response = await fetch("https://api.openai.com/v1/responses", {
@@ -98,7 +103,7 @@ class AiController {
       body: JSON.stringify({
         model: getEnv("OPENAI_LLM_MODEL", "gpt-5-mini"),
         input: [
-          { role: "system", content: "נסח סיכום עברי טבעי וקצר אך ורק לפי קבלת הביצוע. אסור להוסיף פעולה, ישות, סכום או תוצאה שאינם בקבלה." },
+          { role: "system", content: "נסח סיכום עברי טבעי וקצר אך ורק לפי קבלת הביצוע. אסור להוסיף פעולה, ישות, סכום או תוצאה שאינם בקבלה. חובה לכלול כל warning שמופיע בקבלה, ובפרט קביעה מחוץ לשעות העבודה." },
           { role: "user", content: `תמלול: ${body.transcript ?? ""}\nקבלה: ${JSON.stringify(body.receipt ?? {})}` }
         ],
         text: { format: { type: "json_schema", name: "assistant_summary_v2", strict: true, schema: { type: "object", additionalProperties: false, required: ["textSummary", "spokenSummary"], properties: { textSummary: { type: "string" }, spokenSummary: { type: "string" } } } } }
@@ -108,6 +113,7 @@ class AiController {
     if (!response.ok) throw new BadGatewayException(`OpenAI V2 summary failed with ${response.status}`);
     const text = result.output_text ?? result.output?.flatMap((item) => item.content ?? []).find((content) => content.text)?.text;
     if (!text) throw new BadGatewayException("OpenAI V2 summary returned empty output");
+    log("info", "v2 assistant summary completed", { provider: "openai", model: getEnv("OPENAI_LLM_MODEL", "gpt-5-mini"), durationMs: Date.now() - startedAt });
     return JSON.parse(text) as { textSummary: string; spokenSummary: string };
   }
 
@@ -213,6 +219,7 @@ class AiController {
               "תכנן רק כלים מתוך ה-allowlist. לפני שינוי ישות קיימת השתמש ב-FIND_CUSTOMERS וב-FIND_TASKS/FIND_JOBS/FIND_VISITS לפי הצורך, ואז העבר entityRef מובנה לשלב הכתיבה. " +
               "יצירה רגילה, עדכון, השלמה, ביטול ודיווח סיום אינם דורשים אישור נוסף. מחיקה, מיזוג, Undo ועקיפת התנגשות דורשים requiresExplicitConfirmation=true. " +
               "לקוח חדש דורש שם בלבד; Task דורשת title בלבד; Job/Visit דורשים לקוח וכותרת. אל תניח שהיה או לא היה חיוב בסיום פעילות. " +
+              "פתור ביטויי זמן רק לפי environment.now, environment.timezone ו-environment.workingHours שב-context: מחר הוא היום הקלנדרי הבא; יום בשבוע הוא המופע העתידי הקרוב; שעה שכבר חלפה היום דורשת clarification לגבי מחר; זמן מפורש בעבר אינו מוזז. החזר זמנים כ-ISO עם offset. " +
               "GET_AVAILABILITY דורש date בפורמט YYYY-MM-DD ו-durationMinutes. GET_SCHEDULE דורש from ו-to כ-ISO datetime; לשאלת הפעילות הבאה הוסף limit=1. " +
               "אם משימה תלויה בלקוח שנוצר קודם, השתמש ב-customerRef עם stepId ו-outputField=entityId. " +
               "אל תמציא מזהים. מידע חסר הופך ל-ASK_CLARIFICATION. עד 10 צעדים וללא מעגלים."

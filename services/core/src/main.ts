@@ -1,6 +1,7 @@
 import "reflect-metadata";
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   Inject,
   Module,
@@ -70,6 +71,7 @@ import { CoreV2ActivitiesService } from "./core-v2-activities.service.js";
 import { CoreV2SearchService } from "./core-v2-search.service.js";
 import { CoreV2AmountsService } from "./core-v2-amounts.service.js";
 import { CoreV2ActionBatchesService } from "./core-v2-action-batches.service.js";
+import { v1WriteBusinessId } from "./v1-write-guard.js";
 import {
   buildReminderFromCallDescription,
   buildReminderNotificationBody,
@@ -84,6 +86,7 @@ export class CoreService {
     @Inject(CoreNotificationsService) private readonly notificationDelivery: CoreNotificationsService,
     @Inject(CoreVoiceActionsService) private readonly voiceActions: CoreVoiceActionsService,
     @Inject(AuditRepository) private readonly audit: AuditRepository,
+    @Inject(BusinessesRepository) private readonly businesses: BusinessesRepository,
     @Inject(BusinessSettingsRepository) private readonly settings: BusinessSettingsRepository,
     @Inject(BusinessPhoneNumbersRepository) private readonly phoneNumbers: BusinessPhoneNumbersRepository,
     @Inject(IncomingCallsRepository) private readonly incomingCalls: IncomingCallsRepository,
@@ -309,6 +312,7 @@ export class CoreService {
     if (!request.businessId) {
       throw new BadRequestException("businessId is required");
     }
+    await this.requireV1Writable(request.businessId);
 
     const user = await this.access.requireBusinessAccess(headers, request.businessId);
     const action = AiActionSchema.parse(request.action);
@@ -378,6 +382,8 @@ export class CoreService {
     sourceCallId: string;
     idempotencyKey: string;
   }) {
+    const business = await this.businesses.requireBusiness(command.businessId);
+    if (business.v1WriteBlockedAt) return this.executeTaskFromCall(command);
     const existing = await this.reminders.findByIdempotencyKey(command.businessId, command.idempotencyKey);
     if (existing) {
       return { duplicate: true, reminder: existing };
@@ -436,6 +442,66 @@ export class CoreService {
     log("info", "reminder from call created", { businessId: command.businessId, reminderId: reminder.id });
 
     return { duplicate: false, reminder, notification: notificationDelivery.notification, notificationDelivery };
+  }
+
+  private async executeTaskFromCall(command: {
+    businessId: string;
+    incomingCallId?: string;
+    callerPhone?: string;
+    transcript?: string;
+    recordingUrl?: string;
+    priority: "NORMAL" | "URGENT";
+    sourceCallId: string;
+    idempotencyKey: string;
+  }) {
+    const existing = await this.v2Tasks.findByIdempotencyKey(command.businessId, command.idempotencyKey);
+    if (existing) return { duplicate: true, reminder: existing, task: existing };
+    const urgentPrefix = command.priority === "URGENT" ? "[URGENT] " : "";
+    const task = await this.v2Tasks.create({
+      businessId: command.businessId,
+      title: `${urgentPrefix}לחזור ללקוח`,
+      description: buildReminderFromCallDescription(command.callerPhone, command.transcript),
+      dueAt: await this.voiceActions.resolveAiReminderDueAt(command.businessId, {}),
+      source: "telephony_v2",
+      idempotencyKey: command.idempotencyKey
+    });
+    if (!task) throw new BadRequestException("Could not create V2 callback task");
+    const notification = await this.notifications.create({
+      businessId: command.businessId,
+      itemType: "task",
+      itemId: task.id,
+      title: command.priority === "URGENT" ? "הודעת לקוח דחופה" : "בקשת חזרה ללקוח",
+      body: buildReminderNotificationBody(command.callerPhone, command.transcript),
+      payload: {
+        source: "telephony_v2",
+        sourceCallId: command.sourceCallId,
+        incomingCallId: command.incomingCallId ?? null,
+        recordingUrl: command.recordingUrl ?? null,
+        priority: command.priority,
+        taskId: task.id,
+        itemType: "task",
+        itemId: task.id
+      }
+    });
+    const notificationDelivery = await this.notificationDelivery.sendNotification(notification);
+    await this.audit.record({
+      businessId: command.businessId,
+      actorType: "system",
+      source: "telephony_v2",
+      entityType: "task",
+      entityId: task.id,
+      action: "CREATE_TASK_FROM_CALL",
+      after: task as Prisma.InputJsonValue,
+      result: notificationDelivery.status
+    });
+    return { duplicate: false, reminder: task, task, notification: notificationDelivery.notification, notificationDelivery };
+  }
+
+  private async requireV1Writable(businessId: string) {
+    const business = await this.businesses.requireBusiness(businessId);
+    if (business.v1WriteBlockedAt) {
+      throw new ConflictException({ code: "V1_READ_ONLY", message: "העסק הועבר ל-V2. ממשק V1 זמין לקריאה בלבד." });
+    }
   }
 
 }
@@ -541,6 +607,18 @@ async function bootstrap() {
   const adapter = new FastifyAdapter();
   const app = await NestFactory.create<NestFastifyApplication>(CoreModule, adapter);
   configureHttpObservability(adapter.getInstance(), "core");
+  const prisma = app.get(PrismaService);
+  adapter.getInstance().addHook("preHandler", async (request) => {
+    const businessId = v1WriteBusinessId(request.method, request.url);
+    if (!businessId) return;
+    const business = await prisma.business.findUnique({ where: { id: businessId }, select: { v1WriteBlockedAt: true } });
+    if (business?.v1WriteBlockedAt) {
+      throw new ConflictException({
+        code: "V1_READ_ONLY",
+        message: "העסק הועבר ל-V2. ממשק V1 זמין לקריאה בלבד."
+      });
+    }
+  });
   adapter.getInstance().addContentTypeParser(
     ["audio/mp4", "audio/m4a", "audio/aac", "application/octet-stream"],
     { parseAs: "buffer" },

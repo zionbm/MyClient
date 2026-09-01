@@ -1,5 +1,6 @@
 import { ConflictException, Inject, Injectable, NotFoundException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
+import { log } from "@myclient/common";
 import { V2UndoSchema, V2UpdateUserPreferencesSchema } from "@myclient/contracts";
 import { CoreAccessService } from "./core-access.service.js";
 import { CoreV2IdempotencyService } from "./core-v2-idempotency.service.js";
@@ -68,7 +69,9 @@ export class CoreV2ActionBatchesService {
 
   async undoPreview(headers: RequestHeaders, businessId: string, actionBatchId: string) {
     await this.access.requireV2BusinessAccess(headers, businessId);
-    return this.preview(businessId, actionBatchId);
+    const result = await this.preview(businessId, actionBatchId);
+    log("info", "v2 undo previewed", { businessId, actionBatchId, eligible: result.eligible, blockerCount: result.blockers.length });
+    return result;
   }
 
   async undo(headers: RequestHeaders, businessId: string, actionBatchId: string, body: unknown) {
@@ -81,18 +84,22 @@ export class CoreV2ActionBatchesService {
       key: requiredIdempotencyKey(headers),
       request: { actionBatchId, confirmed: true },
       execute: async () => {
-        const preview = await this.preview(businessId, actionBatchId);
-        if (!preview.eligible) throw new ConflictException({ code: "UNDO_BLOCKED", message: preview.reason, blockers: preview.blockers });
-        return this.prisma.$transaction(async (tx) => {
-          const batch = await tx.actionBatch.findFirst({ where: { id: actionBatchId, businessId }, include: { mutations: { orderBy: { sequence: "desc" } } } });
-          if (!batch) throw new NotFoundException("Action batch not found");
-          for (const mutation of orderMutationsForUndo(batch.mutations)) await this.reverseMutation(tx, mutation, user.id);
-          const summary = undoSummary(batch.mutations);
-          const actionBatch = await tx.actionBatch.update({ where: { id: batch.id }, data: { status: "UNDONE", undoneAt: new Date(), undoneByUserId: user.id } });
-          return { actionBatch, revertedMutations: batch.mutations.length, summary };
-        });
+        const result = await this.prisma.$transaction((tx) => this.undoInTransaction(tx, businessId, actionBatchId, user.id));
+        log("info", "v2 undo completed", { businessId, actionBatchId, mutationCount: result.revertedMutations });
+        return result;
       }
     });
+  }
+
+  async undoInTransaction(tx: Prisma.TransactionClient, businessId: string, actionBatchId: string, userId: string) {
+    const preview = await this.preview(businessId, actionBatchId);
+    if (!preview.eligible) throw new ConflictException({ code: "UNDO_BLOCKED", message: preview.reason, blockers: preview.blockers });
+    const batch = await tx.actionBatch.findFirst({ where: { id: actionBatchId, businessId }, include: { mutations: { orderBy: { sequence: "desc" } } } });
+    if (!batch) throw new NotFoundException("Action batch not found");
+    for (const mutation of orderMutationsForUndo(batch.mutations)) await this.reverseMutation(tx, mutation, userId);
+    const summary = undoSummary(batch.mutations);
+    const actionBatch = await tx.actionBatch.update({ where: { id: batch.id }, data: { status: "UNDONE", undoneAt: new Date(), undoneByUserId: userId } });
+    return { actionBatch, revertedMutations: batch.mutations.length, summary };
   }
 
   async speech(headers: RequestHeaders, businessId: string, actionBatchId: string) {
@@ -115,7 +122,7 @@ export class CoreV2ActionBatchesService {
   }
 
   async runRetention(headers: RequestHeaders) {
-    this.access.requireInternalSecret(headers);
+    await this.access.requireInternalScheduler(headers);
     const cutoff = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000);
     const transcriptCutoff = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
     return this.prisma.$transaction(async (tx) => {
@@ -165,7 +172,7 @@ export class CoreV2ActionBatchesService {
   }
 
   private async preview(businessId: string, actionBatchId: string) {
-    const recent = await this.prisma.actionBatch.findMany({ where: { businessId }, orderBy: { createdAt: "desc" }, take: 20, select: { id: true } });
+    const recent = await this.prisma.actionBatch.findMany({ where: { businessId, status: { in: ["COMPLETED", "PARTIALLY_COMPLETED", "UNDONE"] }, mutations: { some: {} } }, orderBy: { createdAt: "desc" }, take: 20, select: { id: true } });
     const batch = await this.prisma.actionBatch.findFirst({ where: { id: actionBatchId, businessId }, include: { mutations: true } });
     if (!batch) throw new NotFoundException("Action batch not found");
     const blockers: Array<Record<string, unknown>> = [];
@@ -193,6 +200,7 @@ export class CoreV2ActionBatchesService {
         if (currentVersion !== after.version) blockers.push({ entityType: mutation.entityType, entityId: mutation.entityId, reason: "VERSION_CHANGED" });
         if (mutation.operation === "MERGE") blockers.push(...await this.validateMergeSnapshot(mutation.before));
         if (mutation.operation === "RESTORE") blockers.push(...await this.validateRestoreSnapshot(mutation.before));
+        if (mutation.operation === "DELETE_CASCADE") blockers.push(...await this.validateDeleteCascadeSnapshot(mutation.before));
       }
       if (blockers.length > 0) reason = "אחת הישויות השתנתה מאז הפעולה.";
     }
@@ -214,6 +222,7 @@ export class CoreV2ActionBatchesService {
     if (!before) throw new ConflictException("Undo snapshot is missing");
     if (mutation.operation === "MERGE") return this.reverseMerge(tx, before);
     if (mutation.operation === "RESTORE") return this.reverseRestore(tx, before);
+    if (mutation.operation === "DELETE_CASCADE") return this.reverseDeleteCascade(tx, mutation.entityType, mutation.entityId, before);
     if (mutation.entityType === "customer") return tx.customer.update({ where: { id: mutation.entityId }, data: { name: String(before.name), phone: before.phone as string | null, email: before.email as string | null, address: before.address as string | null, normalizedName: before.normalizedName as string | null, generalNotes: before.generalNotes as string | null, deletedAt: date(before.deletedAt), deletedByUserId: before.deletedByUserId as string | null, deleteActionBatchId: before.deleteActionBatchId as string | null, mergedIntoCustomerId: before.mergedIntoCustomerId as string | null, mergedAt: date(before.mergedAt), mergedByUserId: before.mergedByUserId as string | null, version: { increment: 1 } } });
     if (mutation.entityType === "task") return tx.task.update({ where: { id: mutation.entityId }, data: { customerId: before.customerId as string | null, title: String(before.title), description: before.description as string | null, status: before.status as "OPEN" | "DONE" | "CANCELLED", dueAt: date(before.dueAt), reminderSentAt: date(before.reminderSentAt), source: String(before.source), sourceRef: before.sourceRef as string | null, idempotencyKey: before.idempotencyKey as string | null, deletedAt: date(before.deletedAt), deletedByUserId: before.deletedByUserId as string | null, deleteActionBatchId: before.deleteActionBatchId as string | null, version: { increment: 1 } } });
     if (mutation.entityType === "job" || mutation.entityType === "visit") {
@@ -244,6 +253,13 @@ export class CoreV2ActionBatchesService {
   }
 
   private mutationEntityIds(mutation: { entityId: string; operation: string; before: Prisma.JsonValue | null }) {
+    if (mutation.operation === "DELETE_CASCADE") {
+      const snapshot = record(record(mutation.before)?.deleteCascade as Prisma.JsonValue);
+      return [
+        mutation.entityId,
+        ...records(snapshot?.amounts).flatMap((item) => typeof item.id === "string" ? [item.id] : [])
+      ];
+    }
     if (mutation.operation === "RESTORE") {
       const snapshot = record(record(mutation.before)?.restoreSnapshot as Prisma.JsonValue);
       return [
@@ -267,6 +283,50 @@ export class CoreV2ActionBatchesService {
       }),
       ...["tasks", "jobs", "visits", "notes"].flatMap((key) => records(snapshot?.[key]).flatMap((item) => typeof item.id === "string" ? [item.id] : []))
     ].filter(Boolean);
+  }
+
+  private async validateDeleteCascadeSnapshot(value: Prisma.JsonValue | null) {
+    const snapshot = record(record(value)?.deleteCascade as Prisma.JsonValue);
+    const activity = record(snapshot?.activity as Prisma.JsonValue);
+    if (!snapshot || !activity) return [{ reason: "DELETE_CASCADE_SNAPSHOT_MISSING" }];
+    const blockers: Array<Record<string, unknown>> = [];
+    for (const item of records(snapshot.amounts)) {
+      if (typeof item.id !== "string" || typeof item.version !== "number") continue;
+      const current = await this.prisma.amount.findUnique({ where: { id: item.id }, select: { version: true, deletedAt: true } });
+      if (!current || !current.deletedAt || current.version !== item.version + 1) blockers.push({ entityType: "amount", entityId: item.id, reason: "DELETE_CASCADE_STATE_CHANGED" });
+    }
+    return blockers;
+  }
+
+  private async reverseDeleteCascade(tx: Prisma.TransactionClient, entityType: string, entityId: string, before: Record<string, unknown>) {
+    const snapshot = record(before.deleteCascade as Prisma.JsonValue);
+    const activity = record(snapshot?.activity as Prisma.JsonValue);
+    if (!snapshot || !activity || (entityType !== "job" && entityType !== "visit")) throw new ConflictException("Delete cascade snapshot is missing");
+    const activityData = {
+      customerId: String(activity.customerId), title: String(activity.title), description: activity.description as string | null,
+      startsAt: date(activity.startsAt), endsAt: date(activity.endsAt), serviceAddressId: activity.serviceAddressId as string | null,
+      locationSnapshot: activity.locationSnapshot as string | null, status: activity.status as "OPEN" | "CLOSED" | "CANCELLED",
+      executionCompletedAt: date(activity.executionCompletedAt), executionCompletedByUserId: activity.executionCompletedByUserId as string | null,
+      idempotencyKey: activity.idempotencyKey as string | null, deletedAt: date(activity.deletedAt),
+      deletedByUserId: activity.deletedByUserId as string | null, deleteActionBatchId: activity.deleteActionBatchId as string | null,
+      version: { increment: 1 }
+    };
+    for (const amount of records(snapshot.amounts)) {
+      if (typeof amount.id !== "string") continue;
+      await tx.amount.update({
+        where: { id: amount.id },
+        data: {
+          jobId: amount.jobId as string | null, visitId: amount.visitId as string | null,
+          totalAmount: String(amount.totalAmount), paidAmount: String(amount.paidAmount), currency: String(amount.currency),
+          paymentStatus: amount.paymentStatus as "UNPAID" | "PARTIALLY_PAID" | "PAID",
+          deletedAt: date(amount.deletedAt), deletedByUserId: amount.deletedByUserId as string | null,
+          deleteActionBatchId: amount.deleteActionBatchId as string | null, version: { increment: 1 }
+        }
+      });
+    }
+    return entityType === "job"
+      ? tx.job.update({ where: { id: entityId }, data: activityData })
+      : tx.visit.update({ where: { id: entityId }, data: activityData });
   }
 
   private async validateMergeSnapshot(value: Prisma.JsonValue | null) {

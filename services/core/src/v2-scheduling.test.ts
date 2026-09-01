@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { WorkingHoursSchema } from "@myclient/contracts";
 import { DEFAULT_WORKING_HOURS, freeSlots, localDateTimeToUtc, workingWindow } from "./v2-scheduling.js";
 
 test("default Israeli work week uses the product-defined hours", () => {
@@ -30,4 +31,11 @@ test("free slots exclude overlaps and use deterministic 30-minute starts", () =>
     "2026-09-06T05:00:00.000Z",
     "2026-09-06T07:00:00.000Z"
   ]);
+});
+
+test("working-hours settings reject malformed or reversed open windows", () => {
+  assert.equal(WorkingHoursSchema.safeParse({ sunday: { open: "08:00", close: "18:00" } }).success, true);
+  assert.equal(WorkingHoursSchema.safeParse({ sunday: { open: "8:00", close: "18:00" } }).success, false);
+  assert.equal(WorkingHoursSchema.safeParse({ sunday: { open: "18:00", close: "08:00" } }).success, false);
+  assert.equal(WorkingHoursSchema.safeParse({ saturday: { open: "00:00", close: "00:00", closed: true } }).success, true);
 });

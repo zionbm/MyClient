@@ -130,6 +130,7 @@ export class RemindersRepository {
   async claimDueReminders(limit: number) {
     const candidates = await this.prisma.reminder.findMany({
       where: {
+        business: { v1WriteBlockedAt: null },
         status: "OPEN",
         deletedAt: null,
         dueAt: {

@@ -48,22 +48,24 @@ export class V2ActivitiesRepository {
   }
 
   async create(input: V2ActivityWrite & { kind: V2ActivityKind; allowScheduleConflict: boolean }) {
-    return this.prisma.$transaction(async (tx) => {
-      await this.lockSchedule(tx, input.businessId);
-      const linked = await this.validateLinks(tx, input.businessId, input.customerId, input.serviceAddressId);
-      if (!linked.valid) return { missingLink: true as const };
-      const locationSnapshot = input.locationSnapshot ?? linked.addressText ?? undefined;
-      const conflicts = input.startsAt
-        ? await this.conflictsInTransaction(tx, input.businessId, input.startsAt, input.endsAt, input.kind)
-        : [];
-      if (conflicts.length > 0 && !input.allowScheduleConflict) return { conflicts };
-      const { kind: _kind, allowScheduleConflict: _allowScheduleConflict, ...activityInput } = input;
-      const data = { ...activityInput, locationSnapshot };
-      const entity = input.kind === "job"
-        ? await tx.job.create({ data })
-        : await tx.visit.create({ data });
-      return { entity, conflicts };
-    });
+    return this.prisma.$transaction((tx) => this.createInTransaction(tx, input));
+  }
+
+  async createInTransaction(tx: Prisma.TransactionClient, input: V2ActivityWrite & { kind: V2ActivityKind; allowScheduleConflict: boolean }) {
+    await this.lockSchedule(tx, input.businessId);
+    const linked = await this.validateLinks(tx, input.businessId, input.customerId, input.serviceAddressId);
+    if (!linked.valid) return { missingLink: true as const };
+    const locationSnapshot = input.locationSnapshot ?? linked.addressText ?? undefined;
+    const conflicts = input.startsAt
+      ? await this.conflictsInTransaction(tx, input.businessId, input.startsAt, input.endsAt, input.kind)
+      : [];
+    if (conflicts.length > 0 && !input.allowScheduleConflict) return { conflicts };
+    const { kind: _kind, allowScheduleConflict: _allowScheduleConflict, ...activityInput } = input;
+    const data = { ...activityInput, locationSnapshot };
+    const entity = input.kind === "job"
+      ? await tx.job.create({ data })
+      : await tx.visit.create({ data });
+    return { entity, conflicts };
   }
 
   async update(input: Partial<V2ActivityWrite> & {
@@ -73,41 +75,43 @@ export class V2ActivitiesRepository {
     version?: number;
     allowScheduleConflict: boolean;
   }) {
-    return this.prisma.$transaction(async (tx) => {
-      await this.lockSchedule(tx, input.businessId);
-      const existing = input.kind === "job"
-        ? await tx.job.findFirst({ where: { id: input.entityId, businessId: input.businessId, deletedAt: null } })
-        : await tx.visit.findFirst({ where: { id: input.entityId, businessId: input.businessId, deletedAt: null } });
-      if (!existing || (input.version !== undefined && existing.version !== input.version)) return { notFound: true as const };
-      const customerId = input.customerId ?? existing.customerId;
-      const serviceAddressId = input.serviceAddressId === undefined ? existing.serviceAddressId : input.serviceAddressId;
-      const linked = await this.validateLinks(tx, input.businessId, customerId, serviceAddressId);
-      if (!linked.valid) return { missingLink: true as const };
-      const startsAt = input.startsAt === undefined ? existing.startsAt : input.startsAt;
-      const endsAt = input.endsAt === undefined ? existing.endsAt : input.endsAt;
-      if (endsAt && (!startsAt || endsAt <= startsAt)) return { invalidSchedule: true as const };
-      const conflicts = startsAt
-        ? await this.conflictsInTransaction(tx, input.businessId, startsAt, endsAt, input.kind, input.entityId)
-        : [];
-      if (conflicts.length > 0 && !input.allowScheduleConflict) return { conflicts };
-      const data = {
-        customerId: input.customerId,
-        title: input.title,
-        description: input.description,
-        startsAt: input.startsAt,
-        endsAt: input.endsAt,
-        serviceAddressId: input.serviceAddressId,
-        locationSnapshot: input.locationSnapshot ?? (input.serviceAddressId !== undefined ? linked.addressText : undefined),
-        status: input.status,
-        executionCompletedAt: input.executionCompletedAt,
-        executionCompletedByUserId: input.executionCompletedByUserId,
-        version: { increment: 1 }
-      };
-      const entity = input.kind === "job"
-        ? await tx.job.update({ where: { id: input.entityId }, data })
-        : await tx.visit.update({ where: { id: input.entityId }, data });
-      return { entity, conflicts };
-    });
+    return this.prisma.$transaction((tx) => this.updateInTransaction(tx, input));
+  }
+
+  async updateInTransaction(tx: Prisma.TransactionClient, input: Partial<V2ActivityWrite> & { kind: V2ActivityKind; entityId: string; businessId: string; version?: number; allowScheduleConflict: boolean }) {
+    await this.lockSchedule(tx, input.businessId);
+    const existing = input.kind === "job"
+      ? await tx.job.findFirst({ where: { id: input.entityId, businessId: input.businessId, deletedAt: null } })
+      : await tx.visit.findFirst({ where: { id: input.entityId, businessId: input.businessId, deletedAt: null } });
+    if (!existing || (input.version !== undefined && existing.version !== input.version)) return { notFound: true as const };
+    const customerId = input.customerId ?? existing.customerId;
+    const serviceAddressId = input.serviceAddressId === undefined ? existing.serviceAddressId : input.serviceAddressId;
+    const linked = await this.validateLinks(tx, input.businessId, customerId, serviceAddressId);
+    if (!linked.valid) return { missingLink: true as const };
+    const startsAt = input.startsAt === undefined ? existing.startsAt : input.startsAt;
+    const endsAt = input.endsAt === undefined ? existing.endsAt : input.endsAt;
+    if (endsAt && (!startsAt || endsAt <= startsAt)) return { invalidSchedule: true as const };
+    const conflicts = startsAt
+      ? await this.conflictsInTransaction(tx, input.businessId, startsAt, endsAt, input.kind, input.entityId)
+      : [];
+    if (conflicts.length > 0 && !input.allowScheduleConflict) return { conflicts };
+    const data = {
+      customerId: input.customerId,
+      title: input.title,
+      description: input.description,
+      startsAt: input.startsAt,
+      endsAt: input.endsAt,
+      serviceAddressId: input.serviceAddressId,
+      locationSnapshot: input.locationSnapshot ?? (input.serviceAddressId !== undefined ? linked.addressText : undefined),
+      status: input.status,
+      executionCompletedAt: input.executionCompletedAt,
+      executionCompletedByUserId: input.executionCompletedByUserId,
+      version: { increment: 1 }
+    };
+    const entity = input.kind === "job"
+      ? await tx.job.update({ where: { id: input.entityId }, data })
+      : await tx.visit.update({ where: { id: input.entityId }, data });
+    return { entity, conflicts };
   }
 
   async softDelete(kind: V2ActivityKind, businessId: string, entityId: string, deletedByUserId: string) {
@@ -120,7 +124,7 @@ export class V2ActivitiesRepository {
       if (result.count !== 1) return false;
       await tx.amount.updateMany({
         where: { businessId, deletedAt: null, ...(kind === "job" ? { jobId: entityId } : { visitId: entityId }) },
-        data: { deletedAt, deletedByUserId }
+        data: { deletedAt, deletedByUserId, version: { increment: 1 } }
       });
       return true;
     });

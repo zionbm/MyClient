@@ -1,5 +1,6 @@
 import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
+import { log } from "@myclient/common";
 import {
   AssistantPlanSchema,
   AssistantStepReferenceSchema,
@@ -16,16 +17,22 @@ import { CoreAccessService } from "./core-access.service.js";
 import { CoreAiInternalClient } from "./core-internal-clients.service.js";
 import { CoreV2IdempotencyService } from "./core-v2-idempotency.service.js";
 import { CoreV2ActivitiesService } from "./core-v2-activities.service.js";
-import { AssistantSessionsRepository } from "./core.repositories.js";
+import { CoreV2ActionBatchesService } from "./core-v2-action-batches.service.js";
+import { AssistantSessionsRepository, BusinessSettingsRepository, V2ActivitiesRepository } from "./core.repositories.js";
 import { PrismaService } from "./prisma.service.js";
 import { parseOptionalDate, requiredIdempotencyKey, type RequestHeaders } from "./core-utils.js";
 import { paginationFromParsedQuery, paginatedResponse } from "./core-utils.js";
 import { normalizeCustomerName } from "./v2-normalization.js";
 import { stepsBlockedByPlannedClarification, summaryIsGrounded } from "./v2-assistant-plan.js";
 import { assertAmountInvariant, money, nextPaidAmount, paymentStatus } from "./v2-money.js";
+import { DEFAULT_WORKING_HOURS, freeSlots, isWithinWorkingHours, localDate, workingWindow, type WorkingHours } from "./v2-scheduling.js";
 
 function jsonValue(value: unknown): Prisma.InputJsonValue {
   return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
+}
+
+function objectValue(value: unknown) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
 function orderedSteps(steps: AssistantPlanStep[]) {
@@ -51,7 +58,10 @@ export class CoreV2AssistantService {
     @Inject(CoreAiInternalClient) private readonly ai: CoreAiInternalClient,
     @Inject(CoreV2IdempotencyService) private readonly idempotency: CoreV2IdempotencyService,
     @Inject(AssistantSessionsRepository) private readonly sessions: AssistantSessionsRepository,
+    @Inject(BusinessSettingsRepository) private readonly settings: BusinessSettingsRepository,
     @Inject(CoreV2ActivitiesService) private readonly activities: CoreV2ActivitiesService,
+    @Inject(V2ActivitiesRepository) private readonly activityRepository: V2ActivitiesRepository,
+    @Inject(CoreV2ActionBatchesService) private readonly actionBatches: CoreV2ActionBatchesService,
     @Inject(PrismaService) private readonly prisma: PrismaService
   ) {}
 
@@ -92,11 +102,22 @@ export class CoreV2AssistantService {
       key,
       request: command,
       execute: async () => {
+        const startedAt = Date.now();
+        const businessSettings = await this.settings.getByBusiness(businessId);
+        const planningContext = {
+          session: session.context,
+          environment: {
+            now: new Date().toISOString(),
+            timezone: businessSettings.timezone,
+            workingHours: businessSettings.workingHours ?? DEFAULT_WORKING_HOURS
+          }
+        };
         const planned = await this.ai.planV2AssistantCommand({
           transcript: command.transcript,
-          context: session.context
+          context: planningContext
         });
         let plan = AssistantPlanSchema.parse(planned.plan);
+        let planningRounds = 1;
         const initialReadSteps = orderedSteps(plan.steps).filter((step) => step.kind === "READ");
         if (initialReadSteps.length > 0) {
           const readOutputs = await this.prisma.$transaction(async (tx) => {
@@ -112,9 +133,10 @@ export class CoreV2AssistantService {
           if (readOutputs && Object.keys(readOutputs).length > 0) {
             const replanned = await this.ai.planV2AssistantCommand({
               transcript: command.transcript,
-              context: { session: session.context, readResults: readOutputs, instruction: "זהו סבב התכנון השני והאחרון. השתמש בתוצאות הקריאה ואל תבקש סבב נוסף." }
+              context: { ...planningContext, readResults: readOutputs, instruction: "זהו סבב התכנון השני והאחרון. השתמש בתוצאות הקריאה ואל תבקש סבב נוסף." }
             });
             plan = AssistantPlanSchema.parse(replanned.plan);
+            planningRounds = 2;
           }
         }
         const steps = orderedSteps(plan.steps);
@@ -228,13 +250,14 @@ export class CoreV2AssistantService {
               outputs
             });
             if (output.waiting) {
+              const pendingOptions = objectValue(output);
               const pending = await tx.aiPendingAction.create({
                 data: {
                   businessId,
                   userId: user.id,
                   actionType: step.tool,
-                  payload: jsonValue({ tool: step.tool, input: step.input }),
-                  missingFields: output.missingFields ?? [],
+                  payload: jsonValue({ tool: step.tool, input: step.input, confirmationOverrides: pendingOptions.confirmationOverrides }),
+                  missingFields: Array.isArray(pendingOptions.missingFields) ? pendingOptions.missingFields as string[] : [],
                   actionBatchId: actionBatch.id,
                   actionBatchStepId: batchStep.id,
                   createdByUserId: user.id,
@@ -243,7 +266,7 @@ export class CoreV2AssistantService {
                   candidateEntities: output.candidates ? jsonValue(output.candidates) : undefined,
                   entityVersions: output.entityVersions ? jsonValue(output.entityVersions) : undefined,
                   dependencyStepKeys: step.dependsOn,
-                  requiresExplicitConfirmation: step.requiresExplicitConfirmation
+                  requiresExplicitConfirmation: step.requiresExplicitConfirmation || pendingOptions.requiresExplicitConfirmation === true
                 }
               });
               await tx.actionBatchStep.update({
@@ -281,13 +304,15 @@ export class CoreV2AssistantService {
           const waiting = [...statuses.values()].some((status) => status !== "COMPLETED");
           const completedCount = [...statuses.values()].filter((status) => status === "COMPLETED").length;
           const readSummary = receiptSteps.map((step) => step.message).filter((message): message is string => typeof message === "string").join(" ");
-          const summary = readSummary || (waiting
+          const baseSummary = readSummary || (waiting
             ? completedCount > 0
               ? "ביצעתי את הפעולות הברורות ושמרתי שאלה להשלמה."
               : "אני צריך עוד פרט לפני שאוכל לבצע את הבקשה."
             : completedCount === 1
               ? "הפעולה בוצעה בהצלחה."
               : `בוצעו ${completedCount} פעולות בהצלחה.`);
+          const warnings = [...new Set(receiptSteps.flatMap((step) => Array.isArray(step.warnings) ? step.warnings.filter((warning): warning is string => typeof warning === "string") : []))];
+          const summary = warnings.length > 0 ? `${baseSummary} ${warnings.join(" ")}` : baseSummary;
           const status = waiting
             ? completedCount > 0 ? "PARTIALLY_COMPLETED" : "WAITING"
             : "COMPLETED";
@@ -342,9 +367,20 @@ export class CoreV2AssistantService {
             }
           };
         });
+        log("info", "v2 assistant command executed", {
+          businessId,
+          provider: planned.provider,
+          planningRounds,
+          status: execution.actionBatch.status,
+          stepCount: execution.receipt.steps.length,
+          durationMs: Date.now() - startedAt
+        });
         try {
           const grounded = await this.ai.summarizeV2AssistantReceipt({ transcript: command.transcript, receipt: execution.receipt });
-          if (!summaryIsGrounded(grounded.textSummary, execution.receipt) || !summaryIsGrounded(grounded.spokenSummary, execution.receipt)) return execution;
+          if (!summaryIsGrounded(grounded.textSummary, execution.receipt) || !summaryIsGrounded(grounded.spokenSummary, execution.receipt)) {
+            log("warn", "v2 assistant summary fallback", { businessId, reason: "UNGROUNDED", actionBatchId: execution.actionBatch.id });
+            return execution;
+          }
           await this.prisma.actionBatch.update({ where: { id: execution.actionBatch.id }, data: { finalSummary: grounded.textSummary, spokenSummary: grounded.spokenSummary } });
           return {
             ...execution,
@@ -353,6 +389,7 @@ export class CoreV2AssistantService {
             voiceResult: { ...execution.voiceResult, summary: grounded.textSummary }
           };
         } catch {
+          log("warn", "v2 assistant summary fallback", { businessId, reason: "PROVIDER_FAILURE", actionBatchId: execution.actionBatch.id });
           return execution;
         }
       }
@@ -406,6 +443,7 @@ export class CoreV2AssistantService {
         const action = await this.prisma.aiPendingAction.findFirst({ where: { id: pendingActionId, businessId, status: "PENDING" } });
         if (!action) throw new NotFoundException("Pending action not found");
         const rejected = await this.prisma.aiPendingAction.update({ where: { id: action.id }, data: { status: "REJECTED", resolvedAt: new Date(), resolvedByUserId: user.id } });
+        log("info", "v2 pending action resolved", { businessId, outcome: "REJECTED", ageMs: Date.now() - action.createdAt.getTime(), actionType: action.actionType });
         if (action.actionBatchStepId) await this.prisma.actionBatchStep.update({ where: { id: action.actionBatchStepId }, data: { status: "REJECTED" } });
         if (action.actionBatchId) await this.prisma.actionBatch.update({ where: { id: action.actionBatchId }, data: { status: "PARTIALLY_COMPLETED", finalSummary: "הפעולה הממתינה נדחתה." } });
         return { action: rejected };
@@ -440,10 +478,11 @@ export class CoreV2AssistantService {
         const plannedCurrentStep = plan.steps.find((step) => step.stepId === currentStep.stepKey)!;
         let selectedOutput: Record<string, unknown> = { entityId: command.selectedEntityId, ...(command.payload ?? {}) };
         if (pending.requiresExplicitConfirmation && plannedCurrentStep.kind === "WRITE") {
+          const confirmationOverrides = objectValue(objectValue(pending.payload).confirmationOverrides);
           const confirmedStep = {
             ...plannedCurrentStep,
             requiresExplicitConfirmation: false,
-            input: { ...plannedCurrentStep.input, ...(command.payload ?? {}), ...(command.selectedEntityId ? { entityId: command.selectedEntityId } : {}) }
+            input: { ...plannedCurrentStep.input, ...confirmationOverrides, ...(command.payload ?? {}), ...(command.selectedEntityId ? { entityId: command.selectedEntityId } : {}) }
           };
           const executed = await this.executeBasicWrite(tx, { businessId, userId: user.id, key: requiredIdempotencyKey(headers), headers, step: confirmedStep, outputs });
           if (executed.waiting) throw new ConflictException({ code: "PENDING_ACTION_NEEDS_REVIEW", message: executed.question });
@@ -456,6 +495,7 @@ export class CoreV2AssistantService {
         await tx.actionBatchStep.update({ where: { id: currentStep.id }, data: { status: "COMPLETED", output: jsonValue(selectedOutput) } });
         outputs.set(currentStep.stepKey, selectedOutput);
         await tx.aiPendingAction.update({ where: { id: pending.id }, data: { status: "COMPLETED", resolution: jsonValue(command), resolvedAt: new Date(), resolvedByUserId: user.id } });
+        log("info", "v2 pending action resolved", { businessId, outcome: "COMPLETED", ageMs: Date.now() - pending.createdAt.getTime(), actionType: pending.actionType });
         for (const step of orderedSteps(plan.steps)) {
           const stored = allSteps.find((item) => item.stepKey === step.stepId);
           if (!stored || stored.status !== "BLOCKED" || !step.dependsOn.every((dependency) => outputs.has(dependency))) continue;
@@ -803,23 +843,58 @@ export class CoreV2AssistantService {
       return { entityType: "task", entityId: entity.id, entity, before: existing, operation: input.step.tool === "DELETE_TASK" ? "DELETE" : "UPDATE" };
     }
     if (input.step.tool === "CREATE_JOB" || input.step.tool === "CREATE_VISIT") {
+      const kind = input.step.tool === "CREATE_JOB" ? "job" as const : "visit" as const;
       const customerId = this.resolveEntityId(input.step.input.customerId, input.step.input.customerRef, input.outputs);
       const title = typeof input.step.input.title === "string" ? input.step.input.title.trim() : "";
       if (!customerId || !title) return { waiting: true as const, question: "צריך לקוח וכותרת לפעילות.", missingFields: [!customerId ? "customerId" : "title"] };
       const startsAt = typeof input.step.input.startsAt === "string" ? new Date(input.step.input.startsAt) : undefined;
       const endsAt = typeof input.step.input.endsAt === "string" ? new Date(input.step.input.endsAt) : undefined;
-      const data = { businessId: input.businessId, customerId, title, description: typeof input.step.input.description === "string" ? input.step.input.description : undefined, startsAt, endsAt, locationSnapshot: typeof input.step.input.locationSnapshot === "string" ? input.step.input.locationSnapshot : undefined, sourceRef: undefined, idempotencyKey: `${input.key}:${input.step.stepId}` };
-      const entity = input.step.tool === "CREATE_JOB" ? await tx.job.create({ data }) : await tx.visit.create({ data });
-      return { entityType: input.step.tool === "CREATE_JOB" ? "job" : "visit", entityId: entity.id, entity };
+      if ((startsAt && Number.isNaN(startsAt.getTime())) || (endsAt && Number.isNaN(endsAt.getTime())) || (startsAt && endsAt && endsAt <= startsAt)) return { waiting: true as const, question: "המועד אינו תקין. צריך שעת התחלה ושעת סיום מאוחרת ממנה.", missingFields: ["schedule"] };
+      const result = await this.activityRepository.createInTransaction(tx, {
+        kind,
+        businessId: input.businessId,
+        customerId,
+        title,
+        description: typeof input.step.input.description === "string" ? input.step.input.description : undefined,
+        startsAt,
+        endsAt,
+        serviceAddressId: typeof input.step.input.serviceAddressId === "string" ? input.step.input.serviceAddressId : undefined,
+        locationSnapshot: typeof input.step.input.locationSnapshot === "string" ? input.step.input.locationSnapshot : undefined,
+        idempotencyKey: `${input.key}:${input.step.stepId}`,
+        allowScheduleConflict: input.step.input.allowScheduleConflict === true
+      });
+      if ("missingLink" in result) return { waiting: true as const, question: "הלקוח או כתובת השירות אינם זמינים עוד.", missingFields: ["customerOrAddress"] };
+      if (!("entity" in result)) return this.scheduleConflictPending(input.businessId, startsAt!, endsAt, kind, result.conflicts);
+      const entity = result.entity;
+      if (!entity) throw new ConflictException("Activity creation did not return an entity");
+      return { entityType: kind, entityId: entity.id, entity, warnings: await this.activities.scheduleWarnings(input.businessId, startsAt, endsAt, kind) };
     }
     if (input.step.tool === "UPDATE_JOB" || input.step.tool === "UPDATE_VISIT") {
-      const kind = input.step.tool === "UPDATE_JOB" ? "job" : "visit";
+      const kind = input.step.tool === "UPDATE_JOB" ? "job" as const : "visit" as const;
       const entityId = this.resolveEntityId(input.step.input.entityId, input.step.input.entityRef, input.outputs);
       const existing = entityId ? kind === "job" ? await tx.job.findFirst({ where: { id: entityId, businessId: input.businessId, deletedAt: null } }) : await tx.visit.findFirst({ where: { id: entityId, businessId: input.businessId, deletedAt: null } }) : null;
       if (!existing) return { waiting: true as const, question: "לא מצאתי את הפעילות לעדכון.", missingFields: ["entityId"] };
-      const data = { title: typeof input.step.input.title === "string" ? input.step.input.title : undefined, description: typeof input.step.input.description === "string" ? input.step.input.description : undefined, startsAt: typeof input.step.input.startsAt === "string" ? new Date(input.step.input.startsAt) : undefined, endsAt: typeof input.step.input.endsAt === "string" ? new Date(input.step.input.endsAt) : undefined, locationSnapshot: typeof input.step.input.locationSnapshot === "string" ? input.step.input.locationSnapshot : undefined, version: { increment: 1 } };
-      const entity = kind === "job" ? await tx.job.update({ where: { id: existing.id }, data }) : await tx.visit.update({ where: { id: existing.id }, data });
-      return { entityType: kind, entityId: entity.id, entity, before: existing, operation: "UPDATE" };
+      const startsAt = typeof input.step.input.startsAt === "string" ? new Date(input.step.input.startsAt) : undefined;
+      const endsAt = typeof input.step.input.endsAt === "string" ? new Date(input.step.input.endsAt) : undefined;
+      const result = await this.activityRepository.updateInTransaction(tx, {
+        kind,
+        entityId: existing.id,
+        businessId: input.businessId,
+        title: typeof input.step.input.title === "string" ? input.step.input.title : undefined,
+        description: typeof input.step.input.description === "string" ? input.step.input.description : undefined,
+        startsAt,
+        endsAt,
+        serviceAddressId: typeof input.step.input.serviceAddressId === "string" ? input.step.input.serviceAddressId : undefined,
+        locationSnapshot: typeof input.step.input.locationSnapshot === "string" ? input.step.input.locationSnapshot : undefined,
+        allowScheduleConflict: input.step.input.allowScheduleConflict === true
+      });
+      if ("invalidSchedule" in result) return { waiting: true as const, question: "שעת הסיום חייבת להיות אחרי שעת ההתחלה.", missingFields: ["schedule"] };
+      if ("missingLink" in result) return { waiting: true as const, question: "הלקוח או כתובת השירות אינם זמינים עוד.", missingFields: ["customerOrAddress"] };
+      if ("notFound" in result) return { waiting: true as const, question: "הפעילות השתנתה מאז הבדיקה. צריך לבדוק שוב.", missingFields: ["entityVersion"] };
+      if (!("entity" in result)) return this.scheduleConflictPending(input.businessId, startsAt ?? existing.startsAt!, endsAt ?? existing.endsAt, kind, result.conflicts);
+      const entity = result.entity;
+      if (!entity) throw new ConflictException("Activity update did not return an entity");
+      return { entityType: kind, entityId: entity.id, entity, before: existing, operation: "UPDATE", warnings: await this.activities.scheduleWarnings(input.businessId, entity.startsAt ?? undefined, entity.endsAt ?? undefined, kind) };
     }
     if (["REPORT_JOB_COMPLETED", "CANCEL_JOB", "REOPEN_JOB", "DELETE_JOB", "REPORT_VISIT_COMPLETED", "CANCEL_VISIT", "REOPEN_VISIT", "DELETE_VISIT"].includes(input.step.tool)) {
       const kind = input.step.tool.includes("VISIT") ? "visit" : "job";
@@ -837,12 +912,17 @@ export class CoreV2AssistantService {
       if (completedAt && existing.amounts.length === 0 && !noCharge) {
         return { waiting: true as const, question: "האם היה חיוב עבור הפעילות?", missingFields: ["noChargeOrAmount"] };
       }
-      const data = isDelete ? { deletedAt: new Date(), deletedByUserId: input.userId, version: { increment: 1 } }
+      const deletedAt = isDelete ? new Date() : undefined;
+      const data = isDelete ? { deletedAt, deletedByUserId: input.userId, version: { increment: 1 } }
         : isCancel ? { status: "CANCELLED" as const, version: { increment: 1 } }
         : isReopen ? { status: "OPEN" as const, executionCompletedAt: null, executionCompletedByUserId: null, version: { increment: 1 } }
         : { executionCompletedAt: completedAt, executionCompletedByUserId: input.userId, status: paid || noCharge ? "CLOSED" as const : "OPEN" as const, version: { increment: 1 } };
+      if (isDelete) {
+        await tx.amount.updateMany({ where: { businessId: input.businessId, deletedAt: null, ...(kind === "job" ? { jobId: existing.id } : { visitId: existing.id }) }, data: { deletedAt, deletedByUserId: input.userId, version: { increment: 1 } } });
+      }
       const entity = kind === "job" ? await tx.job.update({ where: { id: existing.id }, data }) : await tx.visit.update({ where: { id: existing.id }, data });
-      return { entityType: kind, entityId: entity.id, entity, before: existing, operation: isDelete ? "DELETE" : "UPDATE" };
+      const { amounts, ...activityBefore } = existing;
+      return { entityType: kind, entityId: entity.id, entity, before: isDelete ? { deleteCascade: { activity: activityBefore, amounts } } : existing, operation: isDelete ? "DELETE_CASCADE" : "UPDATE" };
     }
     if (["SET_ACTIVITY_AMOUNT", "ADD_PAYMENT", "SET_PAID_TOTAL", "SETTLE_BALANCE"].includes(input.step.tool)) {
       const entityId = this.resolveEntityId(input.step.input.entityId, input.step.input.entityRef, input.outputs);
@@ -874,7 +954,52 @@ export class CoreV2AssistantService {
       }
       return { entityType: "amount", entityId: entity.id, entity, before: existing ?? undefined, operation: existing ? "UPDATE" : "CREATE" };
     }
+    if (input.step.tool === "UNDO_ACTION_BATCH") {
+      const requestedId = typeof input.step.input.actionBatchId === "string" ? input.step.input.actionBatchId : undefined;
+      const target = requestedId
+        ? await tx.actionBatch.findFirst({ where: { id: requestedId, businessId: input.businessId } })
+        : await tx.actionBatch.findFirst({
+            where: { businessId: input.businessId, status: { not: "UNDONE" }, mutations: { some: {} } },
+            orderBy: [{ createdAt: "desc" }, { id: "desc" }]
+          });
+      if (!target) return { waiting: true as const, question: "לא מצאתי פעולה אחרונה שניתן לבטל.", missingFields: ["actionBatchId"] };
+      const undone = await this.actionBatches.undoInTransaction(tx, input.businessId, target.id, input.userId);
+      return { result: undone, message: undone.summary };
+    }
     throw new BadRequestException(`Assistant tool is not executable in the current vertical slice: ${input.step.tool}`);
+  }
+
+  private async scheduleConflictPending(
+    businessId: string,
+    startsAt: Date,
+    endsAt: Date | null | undefined,
+    kind: "job" | "visit",
+    conflicts: unknown[]
+  ) {
+    const preview = await this.activities.conflictPreview(businessId, startsAt, endsAt, kind, conflicts);
+    const candidates = [
+      {
+        id: "keep-conflicting-time",
+        title: "לקבוע בכל זאת במועד שביקשת",
+        payload: { allowScheduleConflict: true }
+      },
+      ...preview.alternativeSlots.map((slot, index) => ({
+        id: `alternative-${index + 1}`,
+        title: `חלופה ${index + 1}: ${slot.startsAt.toISOString()}`,
+        payload: { startsAt: slot.startsAt.toISOString(), endsAt: slot.endsAt.toISOString(), allowScheduleConflict: false }
+      }))
+    ];
+    return {
+      waiting: true as const,
+      question: "המועד מתנגש בפעילות קיימת. אפשר לבחור חלופה או לאשר קביעה בכל זאת.",
+      candidates,
+      requiresExplicitConfirmation: true,
+      confirmationOverrides: { allowScheduleConflict: true },
+      entityVersions: Object.fromEntries(conflicts.flatMap((value) => {
+        const conflict = objectValue(value);
+        return typeof conflict.id === "string" && typeof conflict.version === "number" ? [[conflict.id, conflict.version]] : [];
+      }))
+    };
   }
 
   private resolveCustomerReference(value: unknown, outputs: Map<string, Record<string, unknown>>) {

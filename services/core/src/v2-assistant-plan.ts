@@ -26,5 +26,18 @@ export function summaryIsGrounded(summary: string, receipt: unknown) {
   if (!summary.trim() || summary.length > 500) return false;
   const receiptText = JSON.stringify(receipt);
   const numbers = summary.match(/\d+(?:[.,]\d+)?/g) ?? [];
-  return numbers.every((number) => receiptText.includes(number.replace(",", ".")) || receiptText.includes(number));
+  const warnings: string[] = [];
+  const visit = (value: unknown) => {
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item);
+      return;
+    }
+    if (!value || typeof value !== "object") return;
+    for (const [key, item] of Object.entries(value)) {
+      if (key === "warnings" && Array.isArray(item)) warnings.push(...item.filter((warning): warning is string => typeof warning === "string"));
+      else visit(item);
+    }
+  };
+  visit(receipt);
+  return numbers.every((number) => receiptText.includes(number.replace(",", ".")) || receiptText.includes(number)) && warnings.every((warning) => summary.includes(warning));
 }

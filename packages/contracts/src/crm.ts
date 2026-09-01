@@ -21,13 +21,21 @@ export const SearchQuerySchema = PaginationQuerySchema.extend({
 
 export type SearchQuery = z.infer<typeof SearchQuerySchema>;
 
+const WorkingHoursTimeSchema = z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/, "Working-hours time must use HH:mm");
+
 export const WorkingHoursSchema = z.record(
   z.object({
-    open: z.string().trim().min(1),
-    close: z.string().trim().min(1),
+    open: WorkingHoursTimeSchema,
+    close: WorkingHoursTimeSchema,
     closed: z.boolean().optional()
   })
-);
+).superRefine((hours, context) => {
+  for (const [day, value] of Object.entries(hours)) {
+    if (!value.closed && value.open >= value.close) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: [day], message: "Opening time must be before closing time" });
+    }
+  }
+});
 
 export const UpdateBusinessSettingsSchema = z.object({
   businessName: OptionalNonEmptyStringSchema,

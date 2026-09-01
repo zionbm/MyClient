@@ -205,7 +205,7 @@ jobs:
               --image="$(image_for voice)" \
               --service-account="$RUNTIME_SERVICE_ACCOUNT" \
               --no-allow-unauthenticated \
-              --set-env-vars=NODE_ENV=production,DEFAULT_LOCALE=he-IL,MOCK_STT_PROVIDER=false,MOCK_TTS_PROVIDER=true,OPENAI_STT_MODEL=gpt-4o-mini-transcribe \
+              --set-env-vars=NODE_ENV=production,DEFAULT_LOCALE=he-IL,MOCK_STT_PROVIDER=false,MOCK_TTS_PROVIDER=false,OPENAI_STT_MODEL=gpt-4o-mini-transcribe,OPENAI_TTS_MODEL=gpt-4o-mini-tts,OPENAI_TTS_VOICE=coral \
               --set-secrets=INTERNAL_API_SECRET=INTERNAL_API_SECRET:latest,OPENAI_API_KEY=OPENAI_API_KEY:latest \
               --quiet
             gcloud run services add-iam-policy-binding myclient-voice \
@@ -281,7 +281,7 @@ jobs:
           }
 
           deploy_scheduler() {
-            local core_url scheduler_sa job_name
+            local core_url scheduler_sa job_name retention_job_name
             core_url="$(service_url core)"
             scheduler_sa="$(scheduler_service_account_email)"
             job_name="myclient-due-reminders"
@@ -321,6 +321,38 @@ jobs:
                 --oidc-service-account-email="$scheduler_sa" \
                 --oidc-token-audience="$core_url" \
                 --attempt-deadline=60s \
+                --quiet
+            fi
+            retention_job_name="myclient-v2-retention"
+            if gcloud scheduler jobs describe "$retention_job_name" \
+              --project="$PROJECT_ID" \
+              --location="$REGION" >/dev/null 2>&1; then
+              gcloud scheduler jobs update http "$retention_job_name" \
+                --project="$PROJECT_ID" \
+                --location="$REGION" \
+                --schedule="17 3 * * *" \
+                --time-zone="Asia/Jerusalem" \
+                --uri="${core_url}/internal/v2/retention" \
+                --http-method=POST \
+                --update-headers="Content-Type=application/json" \
+                --message-body='{}' \
+                --oidc-service-account-email="$scheduler_sa" \
+                --oidc-token-audience="$core_url" \
+                --attempt-deadline=300s \
+                --quiet
+            else
+              gcloud scheduler jobs create http "$retention_job_name" \
+                --project="$PROJECT_ID" \
+                --location="$REGION" \
+                --schedule="17 3 * * *" \
+                --time-zone="Asia/Jerusalem" \
+                --uri="${core_url}/internal/v2/retention" \
+                --http-method=POST \
+                --headers="Content-Type=application/json" \
+                --message-body='{}' \
+                --oidc-service-account-email="$scheduler_sa" \
+                --oidc-token-audience="$core_url" \
+                --attempt-deadline=300s \
                 --quiet
             fi
           }
