@@ -56,6 +56,11 @@ export {
   QuotesRepository
 } from "./repositories/scheduling.repositories.js";
 
+export {
+  ActionBatchesRepository,
+  UserPreferencesRepository
+} from "./repositories/v2-foundation.repositories.js";
+
 type CreateReminderInput = {
   businessId: string;
   customerId?: string;

@@ -33,7 +33,9 @@ import {
   NotificationsRepository,
   OwnerVoiceCommandsRepository,
   AiPendingActionsRepository,
+  ActionBatchesRepository,
   QuotesRepository,
+  UserPreferencesRepository,
   RemindersRepository
 } from "./core.repositories.js";
 import { PrismaService } from "./prisma.service.js";
@@ -426,6 +428,8 @@ const {
     DeviceTokensRepository,
     OwnerVoiceCommandsRepository,
     AiPendingActionsRepository,
+    ActionBatchesRepository,
+    UserPreferencesRepository,
     CoreAccessService,
     CoreAiInternalClient,
     CoreVoiceInternalClient,

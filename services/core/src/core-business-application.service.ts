@@ -2,6 +2,7 @@ import { BadRequestException, Inject, Injectable, NotFoundException } from "@nes
 import { Prisma } from "@prisma/client";
 import { health } from "@myclient/common";
 import {
+  capabilitiesForProductModelVersion,
   CreateBusinessMemberSchema,
   CreateBusinessPhoneNumberSchema,
   RegisterBusinessSchema,
@@ -102,7 +103,10 @@ export class CoreBusinessApplicationService {
         memberType: membership.memberType,
         status: membership.status
       } : null,
-      onboardingState: business ? "HAS_BUSINESS" : "NEEDS_CHOICE"
+      onboardingState: business ? "HAS_BUSINESS" : "NEEDS_CHOICE",
+      capabilities: business
+        ? capabilitiesForProductModelVersion(business.productModelVersion)
+        : null
     };
   }
 
