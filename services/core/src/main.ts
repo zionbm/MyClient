@@ -1,7 +1,6 @@
 import "reflect-metadata";
 import {
   BadRequestException,
-  ConflictException,
   Injectable,
   Inject,
   Module,
@@ -12,13 +11,11 @@ import { FastifyAdapter, type NestFastifyApplication } from "@nestjs/platform-fa
 import { Prisma } from "@prisma/client";
 import { ApiExceptionFilter, configureHttpObservability, getPort, log, stableIdempotencyKey } from "@myclient/common";
 import {
-  AiActionSchema,
-  CreateReminderFromCallSchema,
+  CreateTaskFromCallSchema,
   CreateCallTranscriptSchema,
   CreateIncomingCallSchema,
 } from "@myclient/contracts";
 import {
-  AppointmentsRepository,
   AuthRepository,
   AuditRepository,
   BusinessMembersRepository,
@@ -26,17 +23,12 @@ import {
   BusinessPhoneNumbersRepository,
   BusinessSettingsRepository,
   CallTranscriptsRepository,
-  NotesRepository,
-  CustomersRepository,
   DeviceTokensRepository,
-  HomeVisitsRepository,
   IncomingCallsRepository,
   NotificationsRepository,
-  OwnerVoiceCommandsRepository,
   AiPendingActionsRepository,
   ActionBatchesRepository,
   AssistantSessionsRepository,
-  QuotesRepository,
   UserPreferencesRepository,
   V2CustomerPhonesRepository,
   V2CustomersRepository,
@@ -44,25 +36,15 @@ import {
   V2TasksRepository,
   V2ActivitiesRepository,
   V2AmountsRepository,
-  RemindersRepository
 } from "./core.repositories.js";
 import { PrismaService } from "./prisma.service.js";
 import { CoreAccessService } from "./core-access.service.js";
 import { CoreNotificationsService } from "./core-notifications.service.js";
-import { CoreVoiceGatewayService } from "./core-voice-gateway.service.js";
-import { CoreWorkItemPresenter } from "./core-work-item.presenter.js";
-import { CoreActionExecutionService } from "./core-action-execution.service.js";
-import { CoreVoiceResultPresenter } from "./core-voice-result.presenter.js";
-import { CoreCustomersService } from "./core-customers.service.js";
-import { CoreWorkItemsService } from "./core-work-items.service.js";
-import { CoreSearchService } from "./core-search.service.js";
 import { CoreNotificationsApplicationService } from "./core-notifications-application.service.js";
 import { CoreAiInternalClient, CoreVoiceInternalClient } from "./core-internal-clients.service.js";
-import { CoreAiPendingActionsApplicationService } from "./core-ai-pending-actions-application.service.js";
 import { CoreBusinessApplicationService } from "./core-business-application.service.js";
 import { CoreOpenAiRealtimeClient } from "./core-openai-realtime-client.service.js";
-import { CoreVoiceActionsService } from "./core-voice-actions.service.js";
-import { CoreVoiceCommandsApplicationService } from "./core-voice-commands-application.service.js";
+import { CoreCallsService } from "./core-calls.service.js";
 import { CoreV2CustomersService } from "./core-v2-customers.service.js";
 import { CoreV2IdempotencyService } from "./core-v2-idempotency.service.js";
 import { CoreV2TasksService } from "./core-v2-tasks.service.js";
@@ -71,11 +53,11 @@ import { CoreV2ActivitiesService } from "./core-v2-activities.service.js";
 import { CoreV2SearchService } from "./core-v2-search.service.js";
 import { CoreV2AmountsService } from "./core-v2-amounts.service.js";
 import { CoreV2ActionBatchesService } from "./core-v2-action-batches.service.js";
-import { v1WriteBusinessId } from "./v1-write-guard.js";
 import {
   buildReminderFromCallDescription,
   buildReminderNotificationBody,
   buildReminderReminderBody,
+  defaultAiReminderDueAt,
   type RequestHeaders
 } from "./core-utils.js";
 
@@ -84,17 +66,13 @@ export class CoreService {
   constructor(
     @Inject(CoreAccessService) private readonly access: CoreAccessService,
     @Inject(CoreNotificationsService) private readonly notificationDelivery: CoreNotificationsService,
-    @Inject(CoreVoiceActionsService) private readonly voiceActions: CoreVoiceActionsService,
     @Inject(AuditRepository) private readonly audit: AuditRepository,
-    @Inject(BusinessesRepository) private readonly businesses: BusinessesRepository,
     @Inject(BusinessSettingsRepository) private readonly settings: BusinessSettingsRepository,
     @Inject(BusinessPhoneNumbersRepository) private readonly phoneNumbers: BusinessPhoneNumbersRepository,
     @Inject(IncomingCallsRepository) private readonly incomingCalls: IncomingCallsRepository,
     @Inject(CallTranscriptsRepository) private readonly callTranscripts: CallTranscriptsRepository,
-    @Inject(RemindersRepository) private readonly reminders: RemindersRepository,
     @Inject(V2TasksRepository) private readonly v2Tasks: V2TasksRepository,
-    @Inject(NotificationsRepository) private readonly notifications: NotificationsRepository,
-    @Inject(AiPendingActionsRepository) private readonly aiPendingActions: AiPendingActionsRepository
+    @Inject(NotificationsRepository) private readonly notifications: NotificationsRepository
   ) {}
   async createIncomingCall(headers: RequestHeaders, body: unknown) {
     this.access.requireInternalSecret(headers);
@@ -152,7 +130,7 @@ export class CoreService {
         businessId,
         incomingCall,
         mode: "CREATE_REMINDER_WITHOUT_RECORDING",
-        nextWebhook: "/plivo/reminder-request"
+        nextWebhook: "/plivo/task-request"
       };
     }
 
@@ -180,7 +158,7 @@ export class CoreService {
       urgent: command.urgent ?? incomingCall.urgent,
       recordingUrl: command.recordingUrl
     });
-    const reminderResult = await this.executeReminderFromCall({
+    const taskResult = await this.executeTaskFromCall({
       businessId: incomingCall.businessId,
       incomingCallId: incomingCall.id,
       callerPhone: incomingCall.fromNumber ?? undefined,
@@ -194,7 +172,7 @@ export class CoreService {
       businessId: incomingCall.businessId,
       incomingCallId: incomingCall.id,
       transcript: command.transcript,
-      reminderId: "reminder" in reminderResult ? reminderResult.reminder.id : undefined,
+      taskId: taskResult.task.id,
       provider: command.provider,
       confidence: command.confidence
     });
@@ -211,62 +189,25 @@ export class CoreService {
     return {
       incomingCall: updatedCall,
       transcript,
-      reminder: reminderResult
+      task: taskResult
     };
   }
-  async createReminderFromCall(headers: RequestHeaders, body: unknown) {
+  async createTaskFromCall(headers: RequestHeaders, body: unknown) {
     this.access.requireInternalSecret(headers);
-    const command = CreateReminderFromCallSchema.parse(body);
-    return this.executeReminderFromCall(command);
+    const command = CreateTaskFromCallSchema.parse(body);
+    return this.executeTaskFromCall(command);
   }
-  async processDueReminders(headers: RequestHeaders, body: unknown) {
+  async processDueTasks(headers: RequestHeaders, body: unknown) {
     await this.access.requireInternalScheduler(headers);
     const requestedLimit = Number((body as { limit?: unknown })?.limit ?? 20);
     const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 100)) : 20;
-    const dueReminders = await this.reminders.claimDueReminders(limit);
-    const remainingTaskLimit = Math.max(limit - dueReminders.length, 0);
-    const dueTasks = remainingTaskLimit > 0 ? await this.v2Tasks.claimDue(remainingTaskLimit) : [];
-    const processedReminders = [];
+    const dueTasks = await this.v2Tasks.claimDue(limit);
     const processedTasks = [];
 
     log("info", "due reminder poll started", {
       limit,
-      dueReminderCount: dueReminders.length,
       dueTaskCount: dueTasks.length
     });
-
-    for (const reminder of dueReminders) {
-      const notification = await this.notifications.create({
-        businessId: reminder.businessId,
-        reminderId: reminder.id,
-        itemType: "reminder",
-        itemId: reminder.id,
-        title: "תזכורת למשימה",
-        body: buildReminderReminderBody(reminder),
-        payload: {
-          source: "reminder_reminder",
-          reminderId: reminder.id,
-          dueAt: reminder.dueAt?.toISOString() ?? null,
-          priority: reminder.priority
-        }
-      });
-      const notificationDelivery = await this.notificationDelivery.sendNotification(notification);
-      await this.audit.record({
-        businessId: reminder.businessId,
-        actorType: "system",
-        source: "worker",
-        entityType: "reminder",
-        entityId: reminder.id,
-        action: "SEND_REMINDER_NOTIFICATION",
-        after: reminder as Prisma.InputJsonValue,
-        result: notificationDelivery.status
-      });
-      processedReminders.push({
-        reminder,
-        notification: notificationDelivery.notification,
-        notificationDelivery
-      });
-    }
 
     for (const task of dueTasks) {
       const notification = await this.notifications.create({
@@ -298,152 +239,14 @@ export class CoreService {
     }
 
     log("info", "due reminder poll finished", {
-      processed: processedReminders.length + processedTasks.length
+      processed: processedTasks.length
     });
 
     return {
-      processed: processedReminders.length + processedTasks.length,
-      reminders: processedReminders,
+      processed: processedTasks.length,
       tasks: processedTasks
     };
   }
-  async executeOwnerAction(headers: RequestHeaders, body: unknown) {
-    const request = body as { businessId?: string; action?: unknown };
-    if (!request.businessId) {
-      throw new BadRequestException("businessId is required");
-    }
-    await this.requireV1Writable(request.businessId);
-
-    const user = await this.access.requireBusinessAccess(headers, request.businessId);
-    const action = AiActionSchema.parse(request.action);
-    if (action.missingFields.length > 0) {
-      const aiPendingAction = await this.aiPendingActions.create({
-        businessId: request.businessId,
-        userId: user.id,
-        actionType: action.type,
-        payload: action.payload as Prisma.InputJsonValue,
-        missingFields: action.missingFields
-      });
-      await this.audit.record({
-        businessId: request.businessId,
-        actorType: "user",
-        actorId: user.id,
-        source: "ai_owner_command",
-        entityType: "ai_pending_action",
-        entityId: aiPendingAction.id,
-        action: "CREATE_AI_PENDING_ACTION",
-        after: aiPendingAction as Prisma.InputJsonValue
-      });
-      return { status: "PENDING_MISSING_INFORMATION", aiPendingAction };
-    }
-
-    if (action.type === "CREATE_REMINDER") {
-      const existing = await this.reminders.findByIdempotencyKey(request.businessId, action.idempotencyKey);
-      if (existing) {
-        return { status: "EXECUTED", duplicate: true, reminder: existing };
-      }
-
-      const title = typeof action.payload.title === "string" ? action.payload.title : "Owner reminder";
-      const reminder = await this.reminders.create({
-        businessId: request.businessId,
-        title,
-        description: typeof action.payload.description === "string" ? action.payload.description : undefined,
-        priority: "NORMAL",
-        dueAt: await this.voiceActions.resolveAiReminderDueAt(request.businessId, action.payload),
-        source: "ai_owner_command",
-        sourceRef: action.idempotencyKey,
-        idempotencyKey: action.idempotencyKey
-      });
-      await this.audit.record({
-        businessId: request.businessId,
-        actorType: "user",
-        actorId: user.id,
-        source: "ai_owner_command",
-        entityType: "reminder",
-        entityId: reminder.id,
-        action: "CREATE_REMINDER_FROM_OWNER_ACTION",
-        after: reminder as Prisma.InputJsonValue
-      });
-      return { status: "EXECUTED", duplicate: false, reminder };
-    }
-
-    return {
-      status: action.requiresConfirmation ? "REVIEW_REQUIRED" : "MOCK_ACCEPTED",
-      action
-    };
-  }
-  private async executeReminderFromCall(command: {
-    businessId: string;
-    incomingCallId?: string;
-    callerPhone?: string;
-    transcript?: string;
-    recordingUrl?: string;
-    priority: "NORMAL" | "URGENT";
-    sourceCallId: string;
-    idempotencyKey: string;
-  }) {
-    const business = await this.businesses.requireBusiness(command.businessId);
-    if (business.v1WriteBlockedAt) return this.executeTaskFromCall(command);
-    const existing = await this.reminders.findByIdempotencyKey(command.businessId, command.idempotencyKey);
-    if (existing) {
-      return { duplicate: true, reminder: existing };
-    }
-
-    const urgentPrefix = command.priority === "URGENT" ? "[URGENT] " : "";
-    const reminder = await this.reminders.create({
-      businessId: command.businessId,
-      title: `${urgentPrefix}לחזור ללקוח`,
-      description: buildReminderFromCallDescription(command.callerPhone, command.transcript),
-      priority: command.priority,
-      dueAt: await this.voiceActions.resolveAiReminderDueAt(command.businessId, {}),
-      source: "telephony",
-      sourceRef: command.sourceCallId,
-      idempotencyKey: command.idempotencyKey
-    });
-
-    const notification = await this.notifications.create({
-      businessId: command.businessId,
-      reminderId: reminder.id,
-      itemType: "reminder",
-      itemId: reminder.id,
-      title: command.priority === "URGENT" ? "הודעת לקוח דחופה" : "בקשת חזרה ללקוח",
-      body: buildReminderNotificationBody(command.callerPhone, command.transcript),
-      payload: {
-        source: "telephony",
-        sourceCallId: command.sourceCallId,
-        incomingCallId: command.incomingCallId ?? null,
-        callerPhone: command.callerPhone ?? null,
-        recordingUrl: command.recordingUrl ?? null,
-        priority: command.priority
-      }
-    });
-    const notificationDelivery = await this.notificationDelivery.sendNotification(notification);
-
-    await this.audit.record({
-      businessId: command.businessId,
-      actorType: "system",
-      source: "telephony",
-      entityType: "reminder",
-      entityId: reminder.id,
-      action: "CREATE_REMINDER_FROM_CALL",
-      after: reminder as Prisma.InputJsonValue
-    });
-    await this.audit.record({
-      businessId: command.businessId,
-      actorType: "system",
-      source: "telephony",
-      entityType: "notification",
-      entityId: notification.id,
-      action: "CREATE_REMINDER_NOTIFICATION",
-      after: notification as Prisma.InputJsonValue,
-      result: notificationDelivery.status
-    });
-
-    log("info", "reminder from call created", { businessId: command.businessId, reminderId: reminder.id });
-
-    return { duplicate: false, reminder, notification: notificationDelivery.notification, notificationDelivery };
-  }
-
   private async executeTaskFromCall(command: {
     businessId: string;
     incomingCallId?: string;
@@ -455,14 +258,14 @@ export class CoreService {
     idempotencyKey: string;
   }) {
     const existing = await this.v2Tasks.findByIdempotencyKey(command.businessId, command.idempotencyKey);
-    if (existing) return { duplicate: true, reminder: existing, task: existing };
+    if (existing) return { duplicate: true, task: existing };
     const urgentPrefix = command.priority === "URGENT" ? "[URGENT] " : "";
     const task = await this.v2Tasks.create({
       businessId: command.businessId,
       title: `${urgentPrefix}לחזור ללקוח`,
       description: buildReminderFromCallDescription(command.callerPhone, command.transcript),
-      dueAt: await this.voiceActions.resolveAiReminderDueAt(command.businessId, {}),
-      source: "telephony_v2",
+      dueAt: defaultAiReminderDueAt((await this.settings.getByBusiness(command.businessId)).timezone),
+      source: "telephony",
       idempotencyKey: command.idempotencyKey
     });
     if (!task) throw new BadRequestException("Could not create V2 callback task");
@@ -473,7 +276,7 @@ export class CoreService {
       title: command.priority === "URGENT" ? "הודעת לקוח דחופה" : "בקשת חזרה ללקוח",
       body: buildReminderNotificationBody(command.callerPhone, command.transcript),
       payload: {
-        source: "telephony_v2",
+        source: "telephony",
         sourceCallId: command.sourceCallId,
         incomingCallId: command.incomingCallId ?? null,
         recordingUrl: command.recordingUrl ?? null,
@@ -487,32 +290,23 @@ export class CoreService {
     await this.audit.record({
       businessId: command.businessId,
       actorType: "system",
-      source: "telephony_v2",
+      source: "telephony",
       entityType: "task",
       entityId: task.id,
       action: "CREATE_TASK_FROM_CALL",
       after: task as Prisma.InputJsonValue,
       result: notificationDelivery.status
     });
-    return { duplicate: false, reminder: task, task, notification: notificationDelivery.notification, notificationDelivery };
-  }
-
-  private async requireV1Writable(businessId: string) {
-    const business = await this.businesses.requireBusiness(businessId);
-    if (business.v1WriteBlockedAt) {
-      throw new ConflictException({ code: "V1_READ_ONLY", message: "העסק הועבר ל-V2. ממשק V1 זמין לקריאה בלבד." });
-    }
+    return { duplicate: false, task, notification: notificationDelivery.notification, notificationDelivery };
   }
 
 }
 
 const {
-  AiActionsController,
+  CallsController,
   CORE_SERVICE,
-  CustomersController,
   InternalController,
   NotificationsController,
-  SearchController,
   SystemController,
   V2CustomersController,
   V2AssistantController,
@@ -520,18 +314,14 @@ const {
   V2SearchController,
   V2AmountsController,
   V2ActionBatchesController,
-  V2TasksController,
-  VoiceCommandsController,
-  WorkItemsController
+  V2TasksController
 } = await import("./core.controllers.js");
 
 @Module({
   controllers: [
     SystemController,
     InternalController,
-    VoiceCommandsController,
-    CustomersController,
-    SearchController,
+    CallsController,
     V2CustomersController,
     V2AssistantController,
     V2ActivitiesController,
@@ -539,9 +329,7 @@ const {
     V2AmountsController,
     V2ActionBatchesController,
     V2TasksController,
-    WorkItemsController,
-    NotificationsController,
-    AiActionsController
+    NotificationsController
   ],
   providers: [
     PrismaService,
@@ -553,15 +341,8 @@ const {
     BusinessPhoneNumbersRepository,
     IncomingCallsRepository,
     CallTranscriptsRepository,
-    CustomersRepository,
-    RemindersRepository,
-    NotesRepository,
-    AppointmentsRepository,
-    HomeVisitsRepository,
-    QuotesRepository,
     NotificationsRepository,
     DeviceTokensRepository,
-    OwnerVoiceCommandsRepository,
     AiPendingActionsRepository,
     ActionBatchesRepository,
     AssistantSessionsRepository,
@@ -577,12 +358,6 @@ const {
     CoreVoiceInternalClient,
     CoreNotificationsService,
     CoreOpenAiRealtimeClient,
-    CoreVoiceGatewayService,
-    CoreVoiceActionsService,
-    CoreWorkItemPresenter,
-    CoreActionExecutionService,
-    CoreVoiceResultPresenter,
-    CoreAiPendingActionsApplicationService,
     CoreBusinessApplicationService,
     CoreV2IdempotencyService,
     CoreV2CustomersService,
@@ -592,10 +367,7 @@ const {
     CoreV2SearchService,
     CoreV2AmountsService,
     CoreV2ActionBatchesService,
-    CoreCustomersService,
-    CoreVoiceCommandsApplicationService,
-    CoreWorkItemsService,
-    CoreSearchService,
+    CoreCallsService,
     CoreNotificationsApplicationService,
     CoreService,
     { provide: CORE_SERVICE, useExisting: CoreService }
@@ -607,23 +379,6 @@ async function bootstrap() {
   const adapter = new FastifyAdapter();
   const app = await NestFactory.create<NestFastifyApplication>(CoreModule, adapter);
   configureHttpObservability(adapter.getInstance(), "core");
-  const prisma = app.get(PrismaService);
-  adapter.getInstance().addHook("preHandler", async (request) => {
-    const businessId = v1WriteBusinessId(request.method, request.url);
-    if (!businessId) return;
-    const business = await prisma.business.findUnique({ where: { id: businessId }, select: { v1WriteBlockedAt: true } });
-    if (business?.v1WriteBlockedAt) {
-      throw new ConflictException({
-        code: "V1_READ_ONLY",
-        message: "העסק הועבר ל-V2. ממשק V1 זמין לקריאה בלבד."
-      });
-    }
-  });
-  adapter.getInstance().addContentTypeParser(
-    ["audio/mp4", "audio/m4a", "audio/aac", "application/octet-stream"],
-    { parseAs: "buffer" },
-    (_request, body, done) => done(null, body)
-  );
   app.useGlobalFilters(new ApiExceptionFilter("core"));
   const port = getPort("CORE_PORT", 3000);
   await app.listen(port, "0.0.0.0");

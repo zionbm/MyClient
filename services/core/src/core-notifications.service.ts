@@ -13,10 +13,10 @@ function firebaseApp() {
 
 function notificationPayloadData(
   payload: Prisma.JsonValue | null | undefined,
-  notification: { id: string; businessId: string; itemType?: string | null; itemId?: string | null; reminderId?: string | null }
+  notification: { id: string; businessId: string; itemType?: string | null; itemId?: string | null }
 ) {
-  const itemType = notification.itemType ?? (notification.reminderId ? "reminder" : null);
-  const itemId = notification.itemId ?? notification.reminderId ?? null;
+  const itemType = notification.itemType ?? null;
+  const itemId = notification.itemId ?? null;
   const data: Record<string, string> = {
     notificationId: notification.id,
     businessId: notification.businessId,
@@ -39,7 +39,6 @@ export class CoreNotificationsService {
   async sendNotification(notification: {
     id: string;
     businessId: string;
-    reminderId?: string | null;
     itemType?: string | null;
     itemId?: string | null;
     title: string;

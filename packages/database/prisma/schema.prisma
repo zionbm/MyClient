@@ -7,40 +7,10 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-enum ReminderStatus {
-  OPEN
-  DONE
-  CANCELLED
-}
-
-enum ReminderPriority {
-  NORMAL
-  URGENT
-}
-
-enum HomeVisitStatus {
-  OPEN
-  DONE
-  CANCELLED
-}
-
-enum AppointmentStatus {
-  OPEN
-  DONE
-  CANCELLED
-}
-
 enum NoteStatus {
   OPEN
   DONE
   CANCELLED
-}
-
-enum ActionStatus {
-  PENDING
-  EXECUTED
-  FAILED
-  REVIEW_REQUIRED
 }
 
 enum NotificationStatus {
@@ -59,12 +29,6 @@ enum BusinessMemberStatus {
   PENDING
   ACTIVE
   DISABLED
-}
-
-enum QuoteStatus {
-  OPEN
-  PAID
-  CANCELLED
 }
 
 enum TaskStatus {
@@ -95,12 +59,6 @@ enum AmountEventType {
   UNDO
 }
 
-enum PendingStatus {
-  PENDING
-  COMPLETED
-  REJECTED
-}
-
 enum ActionBatchStatus {
   COMPLETED
   PARTIALLY_COMPLETED
@@ -115,25 +73,18 @@ enum AssistantResponseMode {
 }
 
 model Business {
-  id                  String   @id @default(uuid())
-  name                String
-  productModelVersion Int      @default(1)
-  v1WriteBlockedAt    DateTime?
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
+  id        String   @id @default(uuid())
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   users                 User[]
   members               BusinessMember[]
   settings              BusinessSettings?
   phoneNumbers          BusinessPhoneNumber[]
   customers             Customer[]
-  appointments          Appointment[]
-  homeVisits            HomeVisit[]
-  reminders             Reminder[]
-  quotes                Quote[]
   notes                 Note[]
   IncomingCall          IncomingCall[]
-  voiceCommands         OwnerVoiceCommand[]
   deviceTokens          DeviceToken[]
   tasks                 Task[]
   jobs                  Job[]
@@ -145,8 +96,6 @@ model Business {
   actionBatches         ActionBatch[]
   assistantSessions     AssistantSession[]
   apiIdempotencyRecords ApiIdempotencyRecord[]
-
-  @@index([v1WriteBlockedAt])
 }
 
 model BusinessSettings {
@@ -212,9 +161,7 @@ model Customer {
   id                   String    @id @default(uuid())
   businessId           String
   name                 String
-  phone                String?
   email                String?
-  address              String?
   deletedAt            DateTime?
   mergedIntoCustomerId String?
   mergedAt             DateTime?
@@ -228,10 +175,6 @@ model Customer {
   updatedAt            DateTime  @updatedAt
 
   business         Business         @relation(fields: [businessId], references: [id])
-  appointments     Appointment[]
-  homeVisits       HomeVisit[]
-  reminders        Reminder[]
-  quotes           Quote[]
   notes            Note[]
   customerPhones   CustomerPhone[]
   serviceAddresses ServiceAddress[]
@@ -435,110 +378,6 @@ model AmountEvent {
   @@index([actionBatchId])
 }
 
-model Appointment {
-  id         String            @id @default(uuid())
-  businessId String
-  customerId String?
-  title      String
-  location   String?
-  notes      String?
-  startsAt   DateTime
-  endsAt     DateTime?
-  status     AppointmentStatus @default(OPEN)
-  deletedAt  DateTime?
-  createdAt  DateTime          @default(now())
-  updatedAt  DateTime          @updatedAt
-
-  business Business  @relation(fields: [businessId], references: [id])
-  customer Customer? @relation(fields: [customerId], references: [id])
-
-  @@index([businessId])
-  @@index([businessId, createdAt])
-  @@index([businessId, startsAt])
-  @@index([businessId, deletedAt])
-}
-
-model HomeVisit {
-  id         String          @id @default(uuid())
-  businessId String
-  customerId String?
-  title      String
-  location   String?
-  notes      String?
-  startsAt   DateTime
-  endsAt     DateTime?
-  status     HomeVisitStatus @default(OPEN)
-  deletedAt  DateTime?
-  createdAt  DateTime        @default(now())
-  updatedAt  DateTime        @updatedAt
-
-  business Business  @relation(fields: [businessId], references: [id])
-  customer Customer? @relation(fields: [customerId], references: [id])
-
-  @@index([businessId])
-  @@index([businessId, createdAt])
-  @@index([businessId, startsAt])
-  @@index([businessId, deletedAt])
-}
-
-model Reminder {
-  id             String           @id @default(uuid())
-  businessId     String
-  customerId     String?
-  title          String
-  description    String?
-  status         ReminderStatus   @default(OPEN)
-  priority       ReminderPriority @default(NORMAL)
-  dueAt          DateTime?
-  reminderSentAt DateTime?
-  source         String           @default("app")
-  sourceRef      String?
-  idempotencyKey String?
-  deletedAt      DateTime?
-  createdAt      DateTime         @default(now())
-  updatedAt      DateTime         @updatedAt
-
-  business Business  @relation(fields: [businessId], references: [id])
-  customer Customer? @relation(fields: [customerId], references: [id])
-
-  @@unique([businessId, idempotencyKey])
-  @@index([businessId])
-  @@index([businessId, createdAt])
-  @@index([businessId, sourceRef])
-  @@index([businessId, dueAt])
-  @@index([businessId, deletedAt])
-  @@index([status, dueAt, reminderSentAt])
-}
-
-model Quote {
-  id              String      @id @default(uuid())
-  businessId      String
-  customerId      String?
-  title           String
-  description     String?
-  estimatedAmount Decimal?
-  status          QuoteStatus @default(OPEN)
-  dueAt           DateTime
-  reminderSentAt  DateTime?
-  source          String      @default("app")
-  sourceRef       String?
-  idempotencyKey  String?
-  deletedAt       DateTime?
-  createdAt       DateTime    @default(now())
-  updatedAt       DateTime    @updatedAt
-
-  business Business  @relation(fields: [businessId], references: [id])
-  customer Customer? @relation(fields: [customerId], references: [id])
-
-  @@unique([businessId, idempotencyKey])
-  @@index([businessId])
-  @@index([businessId, customerId])
-  @@index([businessId, createdAt])
-  @@index([businessId, dueAt])
-  @@index([businessId, deletedAt])
-  @@index([status, dueAt, reminderSentAt])
-}
-
 model Note {
   id         String     @id @default(uuid())
   businessId String
@@ -599,7 +438,7 @@ model CallTranscript {
   businessId     String
   incomingCallId String
   transcript     String
-  reminderId     String?
+  taskId         String?
   provider       String   @default("mock")
   confidence     Decimal?
   createdAt      DateTime @default(now())
@@ -608,45 +447,6 @@ model CallTranscript {
 
   @@index([businessId])
   @@index([incomingCallId])
-}
-
-model AiAction {
-  id             String       @id @default(uuid())
-  businessId     String
-  userId         String?
-  actionType     String
-  payload        Json
-  status         ActionStatus @default(PENDING)
-  idempotencyKey String
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
-
-  @@unique([businessId, idempotencyKey])
-  @@index([businessId])
-}
-
-model OwnerVoiceCommand {
-  id              String   @id @default(uuid())
-  businessId      String
-  userId          String
-  languageCode    String   @default("he-IL")
-  transcript      String?
-  sttProvider     String?
-  sttConfidence   Decimal?
-  llmProvider     String?
-  llmAction       Json?
-  executionStatus String   @default("RECEIVED")
-  executionResult Json?
-  idempotencyKey  String
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-
-  business Business @relation(fields: [businessId], references: [id])
-
-  @@unique([businessId, idempotencyKey])
-  @@index([businessId])
-  @@index([businessId, createdAt])
-  @@index([businessId, userId])
 }
 
 model ActionBatch {
@@ -825,7 +625,6 @@ model AiPendingAction {
 model Notification {
   id            String             @id @default(uuid())
   businessId    String
-  reminderId    String?
   itemType      String?
   itemId        String?
   title         String

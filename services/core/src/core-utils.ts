@@ -504,9 +504,9 @@ export function callIvrSelection(call: { selectedDigit?: string | null }) {
   return "NO_SELECTION";
 }
 
-export function callDisplayStatus(call: { selectedDigit?: string | null; transcripts?: Array<{ reminderId?: string | null }> }) {
-  if (call.transcripts?.some((transcript) => transcript.reminderId)) {
-    return "REMINDER_CREATED";
+export function callDisplayStatus(call: { selectedDigit?: string | null; transcripts?: Array<{ taskId?: string | null }> }) {
+  if (call.transcripts?.some((transcript) => transcript.taskId)) {
+    return "TASK_CREATED";
   }
   if (call.selectedDigit) {
     return "NO_ACTION";

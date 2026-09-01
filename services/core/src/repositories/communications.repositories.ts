@@ -2,7 +2,7 @@ import { Inject, Injectable } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../prisma.service.js";
 import { BusinessesRepository } from "./business.repositories.js";
-import { createdAtCursorWhere, paginationTake, type CreateCallTranscriptInput, type CreateIncomingCallInput, type CreateOwnerVoiceCommandInput, type PaginationInput, type UpdateIncomingCallInput, type UpdateOwnerVoiceCommandInput } from "./repository.shared.js";
+import { createdAtCursorWhere, paginationTake, type CreateCallTranscriptInput, type CreateIncomingCallInput, type PaginationInput, type UpdateIncomingCallInput } from "./repository.shared.js";
 
 @Injectable()
 export class IncomingCallsRepository {
@@ -76,68 +76,10 @@ export class CallTranscriptsRepository {
         businessId: input.businessId,
         incomingCallId: input.incomingCallId,
         transcript: input.transcript,
-        reminderId: input.reminderId,
+        taskId: input.taskId,
         provider: input.provider ?? "mock",
         confidence: input.confidence
       }
     });
   }
 }
-
-@Injectable()
-export class OwnerVoiceCommandsRepository {
-  constructor(
-    @Inject(PrismaService) private readonly prisma: PrismaService,
-    @Inject(BusinessesRepository) private readonly businesses: BusinessesRepository
-  ) {}
-
-  async create(input: CreateOwnerVoiceCommandInput) {
-    await this.businesses.requireBusiness(input.businessId);
-    return this.prisma.ownerVoiceCommand.create({
-      data: {
-        businessId: input.businessId,
-        userId: input.userId,
-        languageCode: input.languageCode,
-        idempotencyKey: input.idempotencyKey,
-        executionStatus: "RECEIVED"
-      }
-    });
-  }
-
-  async findByBusinessAndIdempotencyKey(businessId: string, idempotencyKey: string) {
-    return this.prisma.ownerVoiceCommand.findFirst({
-      where: {
-        businessId,
-        idempotencyKey
-      }
-    });
-  }
-
-  async listByBusiness(businessId: string, pagination?: PaginationInput) {
-    await this.businesses.requireBusiness(businessId);
-    return this.prisma.ownerVoiceCommand.findMany({
-      where: {
-        businessId,
-        ...createdAtCursorWhere(pagination?.cursor)
-      },
-      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-      take: paginationTake(pagination)
-    });
-  }
-
-  async update(input: UpdateOwnerVoiceCommandInput) {
-    return this.prisma.ownerVoiceCommand.update({
-      where: { id: input.id },
-      data: {
-        transcript: input.transcript,
-        sttProvider: input.sttProvider,
-        sttConfidence: input.sttConfidence,
-        llmProvider: input.llmProvider,
-        llmAction: input.llmAction,
-        executionStatus: input.executionStatus,
-        executionResult: input.executionResult
-      }
-    });
-  }
-}
-

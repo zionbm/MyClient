@@ -26,7 +26,7 @@ export class CoreOpenAiRealtimeClient {
               transcription: {
                 model: input.model,
                 language: "he",
-                prompt: "עברית ישראלית. פקודות קצרות לניהול לקוחות, תזכורות, ביקורי בית, הצעות מחיר והערות לקוח."
+                prompt: "עברית ישראלית. פקודות קצרות לניהול לקוחות, משימות, עבודות, ביקורים, סכומים ותשלומים."
               }
             }
           }

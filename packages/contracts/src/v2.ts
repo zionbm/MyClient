@@ -1,24 +1,5 @@
 import { z } from "zod";
 
-export const ProductModelVersionSchema = z.union([z.literal(1), z.literal(2)]);
-export type ProductModelVersion = z.infer<typeof ProductModelVersionSchema>;
-
-export const V2CapabilitiesSchema = z.object({
-  productModelVersion: ProductModelVersionSchema,
-  v2Api: z.boolean(),
-  v2Assistant: z.boolean()
-});
-export type V2Capabilities = z.infer<typeof V2CapabilitiesSchema>;
-
-export function capabilitiesForProductModelVersion(productModelVersion: number): V2Capabilities {
-  const normalizedVersion: ProductModelVersion = productModelVersion >= 2 ? 2 : 1;
-  return {
-    productModelVersion: normalizedVersion,
-    v2Api: normalizedVersion === 2,
-    v2Assistant: normalizedVersion === 2
-  };
-}
-
 export const V2TaskStatusSchema = z.enum(["OPEN", "DONE", "CANCELLED"]);
 export type V2TaskStatus = z.infer<typeof V2TaskStatusSchema>;
 

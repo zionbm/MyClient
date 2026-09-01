@@ -32,7 +32,7 @@ function positiveNumberEnv(name: string, fallback: number) {
   return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
-type ReminderPollState = {
+type TaskPollState = {
   enabled: boolean;
   intervalMs: number;
   running: boolean;
@@ -43,24 +43,24 @@ type ReminderPollState = {
   lastError?: string;
 };
 
-const reminderPollState: ReminderPollState = {
-  enabled: getEnv("WORKER_REMINDER_POLL_ENABLED", "true") === "true",
-  intervalMs: positiveNumberEnv("WORKER_REMINDER_POLL_INTERVAL_MS", 300000),
+const taskPollState: TaskPollState = {
+  enabled: getEnv("WORKER_TASK_POLL_ENABLED", "true") === "true",
+  intervalMs: positiveNumberEnv("WORKER_TASK_POLL_INTERVAL_MS", 300000),
   running: false,
   runs: 0
 };
 
-async function pollDueReminders() {
-  if (!reminderPollState.enabled || reminderPollState.running) {
+async function pollDueTasks() {
+  if (!taskPollState.enabled || taskPollState.running) {
     return;
   }
 
-  reminderPollState.running = true;
-  reminderPollState.runs += 1;
-  reminderPollState.lastRunAt = new Date().toISOString();
+  taskPollState.running = true;
+  taskPollState.runs += 1;
+  taskPollState.lastRunAt = new Date().toISOString();
   try {
     const coreBaseUrl = getEnv("CORE_BASE_URL", "http://localhost:3000");
-    const response = await fetch(`${coreBaseUrl}/internal/reminders/due`, {
+    const response = await fetch(`${coreBaseUrl}/internal/tasks/due`, {
       method: "POST",
       headers: {
         ...(await cloudRunServiceAuthHeaders(coreBaseUrl)),
@@ -68,25 +68,25 @@ async function pollDueReminders() {
         "x-internal-secret": getInternalApiSecret()
       },
       body: JSON.stringify({
-        limit: positiveNumberEnv("WORKER_REMINDER_BATCH_SIZE", 20)
+        limit: positiveNumberEnv("WORKER_TASK_BATCH_SIZE", 20)
       })
     });
     const result = (await response.json().catch(() => ({}))) as { processed?: number; error?: unknown };
     if (!response.ok) {
-      throw new Error(`Core reminder endpoint failed with ${response.status}: ${JSON.stringify(result)}`);
+      throw new Error(`Core task endpoint failed with ${response.status}: ${JSON.stringify(result)}`);
     }
-    reminderPollState.lastStatus = "SUCCESS";
-    reminderPollState.lastProcessed = result.processed ?? 0;
-    reminderPollState.lastError = undefined;
+    taskPollState.lastStatus = "SUCCESS";
+    taskPollState.lastProcessed = result.processed ?? 0;
+    taskPollState.lastError = undefined;
     if ((result.processed ?? 0) > 0) {
-      log("info", "due reminders processed", { processed: result.processed });
+      log("info", "due tasks processed", { processed: result.processed });
     }
   } catch (error) {
-    reminderPollState.lastStatus = "FAILED";
-    reminderPollState.lastError = error instanceof Error ? error.message : String(error);
-    log("error", "due reminder polling failed", { error: reminderPollState.lastError });
+    taskPollState.lastStatus = "FAILED";
+    taskPollState.lastError = error instanceof Error ? error.message : String(error);
+    log("error", "due task polling failed", { error: taskPollState.lastError });
   } finally {
-    reminderPollState.running = false;
+    taskPollState.running = false;
   }
 }
 
@@ -97,21 +97,21 @@ class WorkerController {
     return health("worker", {
       queue: "mock-in-memory",
       scheduler: "interval-polling",
-      reminders: reminderPollState.enabled ? "enabled" : "disabled"
+      tasks: taskPollState.enabled ? "enabled" : "disabled"
     });
   }
 
-  @Get("reminders/status")
-  reminderStatus(@Headers() headers: RequestHeaders) {
+  @Get("tasks/status")
+  taskStatus(@Headers() headers: RequestHeaders) {
     requireInternalSecret(headers);
-    return { reminders: reminderPollState };
+    return { tasks: taskPollState };
   }
 
-  @Post("reminders/run")
+  @Post("tasks/run")
   async runReminders(@Headers() headers: RequestHeaders) {
     requireInternalSecret(headers);
-    await pollDueReminders();
-    return { reminders: reminderPollState };
+    await pollDueTasks();
+    return { tasks: taskPollState };
   }
 
   @Post("mock-runs")
@@ -146,13 +146,13 @@ async function bootstrap() {
   app.useGlobalFilters(new ApiExceptionFilter("worker"));
   const port = getPort("WORKER_PORT", 3004);
   await app.listen(port, "0.0.0.0");
-  if (reminderPollState.enabled) {
+  if (taskPollState.enabled) {
     setInterval(() => {
-      void pollDueReminders();
-    }, reminderPollState.intervalMs);
-    void pollDueReminders();
+      void pollDueTasks();
+    }, taskPollState.intervalMs);
+    void pollDueTasks();
   }
-  log("info", "worker service listening", { port, reminderPollIntervalMs: reminderPollState.intervalMs });
+  log("info", "worker service listening", { port, taskPollIntervalMs: taskPollState.intervalMs });
 }
 
 await bootstrap();

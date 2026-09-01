@@ -1,6 +1,6 @@
 import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
-import { getInternalApiSecret, log } from "@myclient/common";
+import { getEnv, getInternalApiSecret, log } from "@myclient/common";
 import {
   AssistantPlanSchema,
   AssistantStepReferenceSchema,
@@ -18,6 +18,7 @@ import { CoreAiInternalClient } from "./core-internal-clients.service.js";
 import { CoreV2IdempotencyService } from "./core-v2-idempotency.service.js";
 import { CoreV2ActivitiesService } from "./core-v2-activities.service.js";
 import { CoreV2ActionBatchesService } from "./core-v2-action-batches.service.js";
+import { CoreOpenAiRealtimeClient } from "./core-openai-realtime-client.service.js";
 import { AssistantSessionsRepository, BusinessSettingsRepository, V2ActivitiesRepository } from "./core.repositories.js";
 import { PrismaService } from "./prisma.service.js";
 import { parseOptionalDate, requiredIdempotencyKey, type RequestHeaders } from "./core-utils.js";
@@ -63,8 +64,16 @@ export class CoreV2AssistantService {
     @Inject(CoreV2ActivitiesService) private readonly activities: CoreV2ActivitiesService,
     @Inject(V2ActivitiesRepository) private readonly activityRepository: V2ActivitiesRepository,
     @Inject(CoreV2ActionBatchesService) private readonly actionBatches: CoreV2ActionBatchesService,
+    @Inject(CoreOpenAiRealtimeClient) private readonly realtime: CoreOpenAiRealtimeClient,
     @Inject(PrismaService) private readonly prisma: PrismaService
   ) {}
+
+  async createRealtimeSession(headers: RequestHeaders, businessId: string) {
+    await this.access.requireV2BusinessAccess(headers, businessId);
+    return this.realtime.createTranscriptionClientSecret({
+      model: getEnv("OPENAI_REALTIME_TRANSCRIPTION_MODEL", "gpt-live-transcribe")
+    });
+  }
 
   async createSession(headers: RequestHeaders, businessId: string, body: unknown) {
     const user = await this.access.requireV2BusinessAccess(headers, businessId);

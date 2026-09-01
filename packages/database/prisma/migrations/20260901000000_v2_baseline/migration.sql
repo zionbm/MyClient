@@ -1,4 +1,16 @@
 -- CreateEnum
+CREATE TYPE "NoteStatus" AS ENUM ('OPEN', 'DONE', 'CANCELLED');
+
+-- CreateEnum
+CREATE TYPE "NotificationStatus" AS ENUM ('PENDING', 'SENT', 'FAILED', 'READ');
+
+-- CreateEnum
+CREATE TYPE "BusinessMemberType" AS ENUM ('OWNER', 'EMPLOYEE');
+
+-- CreateEnum
+CREATE TYPE "BusinessMemberStatus" AS ENUM ('PENDING', 'ACTIVE', 'DISABLED');
+
+-- CreateEnum
 CREATE TYPE "TaskStatus" AS ENUM ('OPEN', 'DONE', 'CANCELLED');
 
 -- CreateEnum
@@ -11,35 +23,90 @@ CREATE TYPE "PaymentStatus" AS ENUM ('UNPAID', 'PARTIALLY_PAID', 'PAID');
 CREATE TYPE "AmountEventType" AS ENUM ('CREATE', 'ADD_PAYMENT', 'SET_PAID_TOTAL', 'SETTLE_BALANCE', 'CHANGE_TOTAL', 'CORRECTION', 'UNDO');
 
 -- CreateEnum
-CREATE TYPE "PendingStatus" AS ENUM ('PENDING', 'COMPLETED', 'REJECTED');
-
--- CreateEnum
 CREATE TYPE "ActionBatchStatus" AS ENUM ('COMPLETED', 'PARTIALLY_COMPLETED', 'WAITING', 'FAILED', 'UNDONE');
 
 -- CreateEnum
 CREATE TYPE "AssistantResponseMode" AS ENUM ('TEXT_ONLY', 'TEXT_AND_VOICE');
 
--- AlterTable
-ALTER TABLE "AiPendingAction" ADD COLUMN     "actionBatchId" TEXT,
-ADD COLUMN     "actionBatchStepId" TEXT,
-ADD COLUMN     "assistantSessionId" TEXT,
-ADD COLUMN     "candidateEntities" JSONB,
-ADD COLUMN     "createdByUserId" TEXT,
-ADD COLUMN     "dependencyStepKeys" TEXT[] DEFAULT ARRAY[]::TEXT[],
-ADD COLUMN     "entityVersions" JSONB,
-ADD COLUMN     "question" TEXT,
-ADD COLUMN     "requiresExplicitConfirmation" BOOLEAN NOT NULL DEFAULT false,
-ADD COLUMN     "resolvedByUserId" TEXT;
+-- CreateTable
+CREATE TABLE "Business" (
+    "id" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
 
--- AlterTable
-ALTER TABLE "Business" ADD COLUMN     "productModelVersion" INTEGER NOT NULL DEFAULT 1;
+    CONSTRAINT "Business_pkey" PRIMARY KEY ("id")
+);
 
--- AlterTable
-ALTER TABLE "Customer" ADD COLUMN     "deleteActionBatchId" TEXT,
-ADD COLUMN     "deletedByUserId" TEXT,
-ADD COLUMN     "generalNotes" TEXT,
-ADD COLUMN     "normalizedName" TEXT,
-ADD COLUMN     "version" INTEGER NOT NULL DEFAULT 1;
+-- CreateTable
+CREATE TABLE "BusinessSettings" (
+    "id" TEXT NOT NULL,
+    "businessId" TEXT NOT NULL,
+    "locale" TEXT NOT NULL DEFAULT 'he-IL',
+    "timezone" TEXT NOT NULL DEFAULT 'Asia/Jerusalem',
+    "greetingText" TEXT,
+    "reminderPrompt" TEXT,
+    "urgentPrompt" TEXT,
+    "workingHours" JSONB,
+    "notificationPhone" TEXT,
+    "allowUrgentCalls" BOOLEAN NOT NULL DEFAULT true,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "BusinessSettings_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "User" (
+    "id" TEXT NOT NULL,
+    "businessId" TEXT,
+    "email" TEXT,
+    "phoneNumber" TEXT,
+    "displayName" TEXT,
+    "firebaseUid" TEXT NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "User_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "BusinessMember" (
+    "id" TEXT NOT NULL,
+    "businessId" TEXT NOT NULL,
+    "userId" TEXT,
+    "phoneNumber" TEXT NOT NULL,
+    "displayName" TEXT,
+    "memberType" "BusinessMemberType" NOT NULL DEFAULT 'EMPLOYEE',
+    "status" "BusinessMemberStatus" NOT NULL DEFAULT 'PENDING',
+    "addedByUserId" TEXT,
+    "linkedAt" TIMESTAMP(3),
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "BusinessMember_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "Customer" (
+    "id" TEXT NOT NULL,
+    "businessId" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "email" TEXT,
+    "deletedAt" TIMESTAMP(3),
+    "mergedIntoCustomerId" TEXT,
+    "mergedAt" TIMESTAMP(3),
+    "mergedByUserId" TEXT,
+    "normalizedName" TEXT,
+    "generalNotes" TEXT,
+    "deletedByUserId" TEXT,
+    "deleteActionBatchId" TEXT,
+    "version" INTEGER NOT NULL DEFAULT 1,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "Customer_pkey" PRIMARY KEY ("id")
+);
 
 -- CreateTable
 CREATE TABLE "CustomerPhone" (
@@ -189,6 +256,64 @@ CREATE TABLE "AmountEvent" (
 );
 
 -- CreateTable
+CREATE TABLE "Note" (
+    "id" TEXT NOT NULL,
+    "businessId" TEXT NOT NULL,
+    "customerId" TEXT NOT NULL,
+    "text" TEXT NOT NULL,
+    "status" "NoteStatus" NOT NULL DEFAULT 'OPEN',
+    "deletedAt" TIMESTAMP(3),
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "Note_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "BusinessPhoneNumber" (
+    "id" TEXT NOT NULL,
+    "businessId" TEXT NOT NULL,
+    "plivoNumber" TEXT NOT NULL,
+    "displayName" TEXT,
+    "status" TEXT NOT NULL DEFAULT 'ACTIVE',
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "BusinessPhoneNumber_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "IncomingCall" (
+    "id" TEXT NOT NULL,
+    "businessId" TEXT NOT NULL,
+    "plivoCallId" TEXT NOT NULL,
+    "fromNumber" TEXT,
+    "toNumber" TEXT NOT NULL,
+    "status" TEXT NOT NULL,
+    "selectedDigit" TEXT,
+    "urgent" BOOLEAN NOT NULL DEFAULT false,
+    "recordingUrl" TEXT,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "IncomingCall_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "CallTranscript" (
+    "id" TEXT NOT NULL,
+    "businessId" TEXT NOT NULL,
+    "incomingCallId" TEXT NOT NULL,
+    "transcript" TEXT NOT NULL,
+    "taskId" TEXT,
+    "provider" TEXT NOT NULL DEFAULT 'mock',
+    "confidence" DECIMAL(65,30),
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "CallTranscript_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
 CREATE TABLE "ActionBatch" (
     "id" TEXT NOT NULL,
     "businessId" TEXT NOT NULL,
@@ -286,6 +411,165 @@ CREATE TABLE "UserPreference" (
     CONSTRAINT "UserPreference_pkey" PRIMARY KEY ("id")
 );
 
+-- CreateTable
+CREATE TABLE "ApiIdempotencyRecord" (
+    "id" TEXT NOT NULL,
+    "businessId" TEXT NOT NULL,
+    "userId" TEXT NOT NULL,
+    "scope" TEXT NOT NULL,
+    "key" TEXT NOT NULL,
+    "requestHash" TEXT NOT NULL,
+    "status" TEXT NOT NULL DEFAULT 'PENDING',
+    "response" JSONB,
+    "expiresAt" TIMESTAMP(3) NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "ApiIdempotencyRecord_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "AiPendingAction" (
+    "id" TEXT NOT NULL,
+    "businessId" TEXT NOT NULL,
+    "userId" TEXT,
+    "actionType" TEXT NOT NULL,
+    "source" TEXT NOT NULL DEFAULT 'ai',
+    "confidence" DECIMAL(65,30),
+    "reviewReason" TEXT,
+    "payload" JSONB NOT NULL,
+    "missingFields" TEXT[],
+    "status" TEXT NOT NULL DEFAULT 'PENDING',
+    "resolution" JSONB,
+    "resolvedAt" TIMESTAMP(3),
+    "actionBatchId" TEXT,
+    "actionBatchStepId" TEXT,
+    "createdByUserId" TEXT,
+    "resolvedByUserId" TEXT,
+    "assistantSessionId" TEXT,
+    "question" TEXT,
+    "candidateEntities" JSONB,
+    "entityVersions" JSONB,
+    "dependencyStepKeys" TEXT[] DEFAULT ARRAY[]::TEXT[],
+    "requiresExplicitConfirmation" BOOLEAN NOT NULL DEFAULT false,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "AiPendingAction_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "Notification" (
+    "id" TEXT NOT NULL,
+    "businessId" TEXT NOT NULL,
+    "itemType" TEXT,
+    "itemId" TEXT,
+    "title" TEXT NOT NULL,
+    "body" TEXT NOT NULL,
+    "status" "NotificationStatus" NOT NULL DEFAULT 'PENDING',
+    "payload" JSONB,
+    "readAt" TIMESTAMP(3),
+    "sentAt" TIMESTAMP(3),
+    "failedAt" TIMESTAMP(3),
+    "failureReason" TEXT,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "Notification_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "DeviceToken" (
+    "id" TEXT NOT NULL,
+    "businessId" TEXT NOT NULL,
+    "userId" TEXT NOT NULL,
+    "token" TEXT NOT NULL,
+    "platform" TEXT,
+    "appVersion" TEXT,
+    "status" TEXT NOT NULL DEFAULT 'ACTIVE',
+    "lastSeenAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "DeviceToken_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "AuditEvent" (
+    "id" TEXT NOT NULL,
+    "businessId" TEXT NOT NULL,
+    "actorType" TEXT NOT NULL,
+    "actorId" TEXT,
+    "source" TEXT NOT NULL,
+    "entityType" TEXT NOT NULL,
+    "entityId" TEXT,
+    "action" TEXT NOT NULL,
+    "before" JSONB,
+    "after" JSONB,
+    "result" TEXT NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "AuditEvent_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "UsageEvent" (
+    "id" TEXT NOT NULL,
+    "businessId" TEXT NOT NULL,
+    "provider" TEXT NOT NULL,
+    "metric" TEXT NOT NULL,
+    "quantity" DECIMAL(65,30) NOT NULL,
+    "metadata" JSONB,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "UsageEvent_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateIndex
+CREATE UNIQUE INDEX "BusinessSettings_businessId_key" ON "BusinessSettings"("businessId");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "User_email_key" ON "User"("email");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "User_phoneNumber_key" ON "User"("phoneNumber");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "User_firebaseUid_key" ON "User"("firebaseUid");
+
+-- CreateIndex
+CREATE INDEX "User_businessId_idx" ON "User"("businessId");
+
+-- CreateIndex
+CREATE INDEX "User_phoneNumber_idx" ON "User"("phoneNumber");
+
+-- CreateIndex
+CREATE INDEX "BusinessMember_businessId_idx" ON "BusinessMember"("businessId");
+
+-- CreateIndex
+CREATE INDEX "BusinessMember_businessId_status_idx" ON "BusinessMember"("businessId", "status");
+
+-- CreateIndex
+CREATE INDEX "BusinessMember_phoneNumber_idx" ON "BusinessMember"("phoneNumber");
+
+-- CreateIndex
+CREATE INDEX "BusinessMember_userId_idx" ON "BusinessMember"("userId");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "BusinessMember_businessId_phoneNumber_key" ON "BusinessMember"("businessId", "phoneNumber");
+
+-- CreateIndex
+CREATE INDEX "Customer_businessId_idx" ON "Customer"("businessId");
+
+-- CreateIndex
+CREATE INDEX "Customer_businessId_createdAt_idx" ON "Customer"("businessId", "createdAt");
+
+-- CreateIndex
+CREATE INDEX "Customer_businessId_deletedAt_idx" ON "Customer"("businessId", "deletedAt");
+
+-- CreateIndex
+CREATE INDEX "Customer_businessId_mergedIntoCustomerId_idx" ON "Customer"("businessId", "mergedIntoCustomerId");
+
 -- CreateIndex
 CREATE INDEX "CustomerPhone_businessId_customerId_idx" ON "CustomerPhone"("businessId", "customerId");
 
@@ -368,6 +652,45 @@ CREATE INDEX "AmountEvent_amountId_occurredAt_idx" ON "AmountEvent"("amountId", 
 CREATE INDEX "AmountEvent_actionBatchId_idx" ON "AmountEvent"("actionBatchId");
 
 -- CreateIndex
+CREATE INDEX "Note_businessId_idx" ON "Note"("businessId");
+
+-- CreateIndex
+CREATE INDEX "Note_businessId_customerId_idx" ON "Note"("businessId", "customerId");
+
+-- CreateIndex
+CREATE INDEX "Note_businessId_status_idx" ON "Note"("businessId", "status");
+
+-- CreateIndex
+CREATE INDEX "Note_businessId_deletedAt_idx" ON "Note"("businessId", "deletedAt");
+
+-- CreateIndex
+CREATE INDEX "Note_businessId_createdAt_idx" ON "Note"("businessId", "createdAt");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "BusinessPhoneNumber_plivoNumber_key" ON "BusinessPhoneNumber"("plivoNumber");
+
+-- CreateIndex
+CREATE INDEX "BusinessPhoneNumber_businessId_idx" ON "BusinessPhoneNumber"("businessId");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "IncomingCall_plivoCallId_key" ON "IncomingCall"("plivoCallId");
+
+-- CreateIndex
+CREATE INDEX "IncomingCall_businessId_idx" ON "IncomingCall"("businessId");
+
+-- CreateIndex
+CREATE INDEX "IncomingCall_businessId_createdAt_idx" ON "IncomingCall"("businessId", "createdAt");
+
+-- CreateIndex
+CREATE INDEX "IncomingCall_businessId_toNumber_idx" ON "IncomingCall"("businessId", "toNumber");
+
+-- CreateIndex
+CREATE INDEX "CallTranscript_businessId_idx" ON "CallTranscript"("businessId");
+
+-- CreateIndex
+CREATE INDEX "CallTranscript_incomingCallId_idx" ON "CallTranscript"("incomingCallId");
+
+-- CreateIndex
 CREATE INDEX "ActionBatch_businessId_createdAt_idx" ON "ActionBatch"("businessId", "createdAt");
 
 -- CreateIndex
@@ -410,10 +733,76 @@ CREATE INDEX "AssistantTurn_expiresAt_idx" ON "AssistantTurn"("expiresAt");
 CREATE UNIQUE INDEX "UserPreference_userId_key" ON "UserPreference"("userId");
 
 -- CreateIndex
+CREATE INDEX "ApiIdempotencyRecord_expiresAt_idx" ON "ApiIdempotencyRecord"("expiresAt");
+
+-- CreateIndex
+CREATE INDEX "ApiIdempotencyRecord_businessId_createdAt_idx" ON "ApiIdempotencyRecord"("businessId", "createdAt");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "ApiIdempotencyRecord_businessId_userId_scope_key_key" ON "ApiIdempotencyRecord"("businessId", "userId", "scope", "key");
+
+-- CreateIndex
+CREATE INDEX "AiPendingAction_businessId_idx" ON "AiPendingAction"("businessId");
+
+-- CreateIndex
+CREATE INDEX "AiPendingAction_businessId_createdAt_idx" ON "AiPendingAction"("businessId", "createdAt");
+
+-- CreateIndex
+CREATE INDEX "AiPendingAction_businessId_status_idx" ON "AiPendingAction"("businessId", "status");
+
+-- CreateIndex
 CREATE INDEX "AiPendingAction_actionBatchId_idx" ON "AiPendingAction"("actionBatchId");
 
 -- CreateIndex
 CREATE INDEX "AiPendingAction_assistantSessionId_idx" ON "AiPendingAction"("assistantSessionId");
+
+-- CreateIndex
+CREATE INDEX "Notification_businessId_idx" ON "Notification"("businessId");
+
+-- CreateIndex
+CREATE INDEX "Notification_businessId_createdAt_idx" ON "Notification"("businessId", "createdAt");
+
+-- CreateIndex
+CREATE INDEX "Notification_businessId_status_idx" ON "Notification"("businessId", "status");
+
+-- CreateIndex
+CREATE INDEX "Notification_businessId_itemType_itemId_idx" ON "Notification"("businessId", "itemType", "itemId");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "DeviceToken_token_key" ON "DeviceToken"("token");
+
+-- CreateIndex
+CREATE INDEX "DeviceToken_businessId_idx" ON "DeviceToken"("businessId");
+
+-- CreateIndex
+CREATE INDEX "DeviceToken_businessId_status_idx" ON "DeviceToken"("businessId", "status");
+
+-- CreateIndex
+CREATE INDEX "DeviceToken_userId_idx" ON "DeviceToken"("userId");
+
+-- CreateIndex
+CREATE INDEX "AuditEvent_businessId_idx" ON "AuditEvent"("businessId");
+
+-- CreateIndex
+CREATE INDEX "AuditEvent_businessId_createdAt_idx" ON "AuditEvent"("businessId", "createdAt");
+
+-- CreateIndex
+CREATE INDEX "UsageEvent_businessId_idx" ON "UsageEvent"("businessId");
+
+-- AddForeignKey
+ALTER TABLE "BusinessSettings" ADD CONSTRAINT "BusinessSettings_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "Business"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "User" ADD CONSTRAINT "User_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "Business"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "BusinessMember" ADD CONSTRAINT "BusinessMember_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "Business"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "BusinessMember" ADD CONSTRAINT "BusinessMember_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "Customer" ADD CONSTRAINT "Customer_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "Business"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "CustomerPhone" ADD CONSTRAINT "CustomerPhone_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "Business"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
@@ -470,6 +859,21 @@ ALTER TABLE "AmountEvent" ADD CONSTRAINT "AmountEvent_amountId_fkey" FOREIGN KEY
 ALTER TABLE "AmountEvent" ADD CONSTRAINT "AmountEvent_actionBatchId_fkey" FOREIGN KEY ("actionBatchId") REFERENCES "ActionBatch"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
+ALTER TABLE "Note" ADD CONSTRAINT "Note_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "Business"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "Note" ADD CONSTRAINT "Note_customerId_fkey" FOREIGN KEY ("customerId") REFERENCES "Customer"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "BusinessPhoneNumber" ADD CONSTRAINT "BusinessPhoneNumber_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "Business"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "IncomingCall" ADD CONSTRAINT "IncomingCall_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "Business"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "CallTranscript" ADD CONSTRAINT "CallTranscript_incomingCallId_fkey" FOREIGN KEY ("incomingCallId") REFERENCES "IncomingCall"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
 ALTER TABLE "ActionBatch" ADD CONSTRAINT "ActionBatch_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "Business"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
@@ -496,7 +900,19 @@ ALTER TABLE "AssistantTurn" ADD CONSTRAINT "AssistantTurn_actionBatchId_fkey" FO
 -- AddForeignKey
 ALTER TABLE "UserPreference" ADD CONSTRAINT "UserPreference_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
--- V2 domain invariants that Prisma cannot express directly.
+-- AddForeignKey
+ALTER TABLE "ApiIdempotencyRecord" ADD CONSTRAINT "ApiIdempotencyRecord_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "Business"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "DeviceToken" ADD CONSTRAINT "DeviceToken_businessId_fkey" FOREIGN KEY ("businessId") REFERENCES "Business"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "DeviceToken" ADD CONSTRAINT "DeviceToken_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+-- Domain invariants that Prisma cannot express directly.
+ALTER TABLE "BusinessMember"
+ADD CONSTRAINT "BusinessMember_owner_must_be_active"
+CHECK ("memberType" <> 'OWNER' OR "status" = 'ACTIVE');
+
 CREATE UNIQUE INDEX "CustomerPhone_businessId_normalizedPhone_active_key"
 ON "CustomerPhone"("businessId", "normalizedPhone")
 WHERE "deletedAt" IS NULL;
@@ -524,3 +940,4 @@ CHECK ("endsAt" IS NULL OR ("startsAt" IS NOT NULL AND "endsAt" > "startsAt"));
 ALTER TABLE "Visit"
 ADD CONSTRAINT "Visit_valid_time_range_check"
 CHECK ("endsAt" IS NULL OR ("startsAt" IS NOT NULL AND "endsAt" > "startsAt"));
+

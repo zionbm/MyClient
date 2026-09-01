@@ -1,53 +1,9 @@
 import { z } from "zod";
 
-export const ACTION_TYPES = [
-  "CREATE_CUSTOMER",
-  "UPDATE_CUSTOMER",
-  "CREATE_REMINDER",
-  "UPDATE_REMINDER",
-  "COMPLETE_REMINDER",
-  "CREATE_APPOINTMENT",
-  "UPDATE_APPOINTMENT",
-  "COMPLETE_APPOINTMENT",
-  "CANCEL_APPOINTMENT",
-  "CREATE_HOME_VISIT",
-  "UPDATE_HOME_VISIT",
-  "COMPLETE_HOME_VISIT",
-  "CREATE_QUOTE",
-  "UPDATE_QUOTE",
-  "MARK_QUOTE_PAID",
-  "CANCEL_QUOTE",
-  "CREATE_NOTE",
-  "UPDATE_NOTE",
-  "DELETE_WORK_ITEM",
-  "MERGE_CUSTOMERS"
-] as const;
-
-export const ActionTypeSchema = z.enum(ACTION_TYPES);
-
-export type ActionType = z.infer<typeof ActionTypeSchema>;
-
-export const AiActionSchema = z.object({
-  type: ActionTypeSchema,
-  idempotencyKey: z.string().min(8),
-  confidence: z.number().min(0).max(1),
-  requiresConfirmation: z.boolean().default(false),
-  missingFields: z.array(z.string()).default([]),
-  payload: z.record(z.unknown())
-});
-
-export type AiAction = z.infer<typeof AiActionSchema>;
-
-export const AiActionBatchSchema = z.object({
-  actions: z.array(AiActionSchema).min(1).max(5)
-});
-
-export type AiActionBatch = z.infer<typeof AiActionBatchSchema>;
-
 export const ReminderPrioritySchema = z.enum(["NORMAL", "URGENT"]);
 export type ReminderPriority = z.infer<typeof ReminderPrioritySchema>;
 
-export const CreateReminderFromCallSchema = z.object({
+export const CreateTaskFromCallSchema = z.object({
   businessId: z.string().min(1),
   incomingCallId: z.string().min(1).optional(),
   callerPhone: z.string().optional(),
@@ -59,7 +15,7 @@ export const CreateReminderFromCallSchema = z.object({
   idempotencyKey: z.string().min(8)
 });
 
-export type CreateReminderFromCall = z.infer<typeof CreateReminderFromCallSchema>;
+export type CreateTaskFromCall = z.infer<typeof CreateTaskFromCallSchema>;
 
 export const CreateIncomingCallSchema = z.object({
   businessId: z.string().min(1).optional(),

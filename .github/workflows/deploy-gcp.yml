@@ -269,7 +269,7 @@ jobs:
               --min-instances=0 \
               --max-instances=1 \
               --cpu-throttling \
-              --set-env-vars=NODE_ENV=production,DEFAULT_LOCALE=he-IL,CORE_BASE_URL="$core_url",WORKER_REMINDER_POLL_ENABLED=false,WORKER_REMINDER_POLL_INTERVAL_MS=300000,WORKER_REMINDER_BATCH_SIZE=20,CLOUD_RUN_SERVICE_AUTH=google \
+              --set-env-vars=NODE_ENV=production,DEFAULT_LOCALE=he-IL,CORE_BASE_URL="$core_url",WORKER_TASK_POLL_ENABLED=false,WORKER_TASK_POLL_INTERVAL_MS=300000,WORKER_TASK_BATCH_SIZE=20,CLOUD_RUN_SERVICE_AUTH=google \
               --set-secrets=INTERNAL_API_SECRET=INTERNAL_API_SECRET:latest \
               --quiet
             gcloud run services add-iam-policy-binding myclient-worker \
@@ -284,7 +284,7 @@ jobs:
             local core_url scheduler_sa job_name retention_job_name
             core_url="$(service_url core)"
             scheduler_sa="$(scheduler_service_account_email)"
-            job_name="myclient-due-reminders"
+            job_name="myclient-due-tasks"
             ensure_scheduler_service_account
             gcloud run services add-iam-policy-binding myclient-core \
               --project="$PROJECT_ID" \
@@ -300,7 +300,7 @@ jobs:
                 --location="$REGION" \
                 --schedule="* * * * *" \
                 --time-zone="Asia/Jerusalem" \
-                --uri="${core_url}/internal/reminders/due" \
+                --uri="${core_url}/internal/tasks/due" \
                 --http-method=POST \
                 --update-headers="Content-Type=application/json" \
                 --message-body='{"limit":20}' \
@@ -314,7 +314,7 @@ jobs:
                 --location="$REGION" \
                 --schedule="* * * * *" \
                 --time-zone="Asia/Jerusalem" \
-                --uri="${core_url}/internal/reminders/due" \
+                --uri="${core_url}/internal/tasks/due" \
                 --http-method=POST \
                 --headers="Content-Type=application/json" \
                 --message-body='{"limit":20}' \

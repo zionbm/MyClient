@@ -16,7 +16,6 @@ export class NotificationsRepository {
     return this.prisma.notification.create({
       data: {
         businessId: input.businessId,
-        reminderId: input.reminderId,
         itemType: input.itemType,
         itemId: input.itemId,
         title: input.title,

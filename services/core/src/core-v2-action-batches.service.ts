@@ -126,12 +126,11 @@ export class CoreV2ActionBatchesService {
     const cutoff = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000);
     const transcriptCutoff = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
     return this.prisma.$transaction(async (tx) => {
-      const [redactedBatchTranscripts, redactedTurnTranscripts, redactedLegacyTranscripts] = await Promise.all([
+      const [redactedBatchTranscripts, redactedTurnTranscripts] = await Promise.all([
         tx.actionBatch.updateMany({ where: { createdAt: { lt: transcriptCutoff }, approvedTranscript: { not: null } }, data: { approvedTranscript: null } }),
-        tx.assistantTurn.updateMany({ where: { createdAt: { lt: transcriptCutoff }, approvedTranscript: { not: null } }, data: { approvedTranscript: null } }),
-        tx.ownerVoiceCommand.updateMany({ where: { createdAt: { lt: transcriptCutoff }, transcript: { not: null } }, data: { transcript: null } })
+        tx.assistantTurn.updateMany({ where: { createdAt: { lt: transcriptCutoff }, approvedTranscript: { not: null } }, data: { approvedTranscript: null } })
       ]);
-      const redactedTranscripts = redactedBatchTranscripts.count + redactedTurnTranscripts.count + redactedLegacyTranscripts.count;
+      const redactedTranscripts = redactedBatchTranscripts.count + redactedTurnTranscripts.count;
       const [customers, tasks, jobs, visits, phones, addresses, amounts] = await Promise.all([
         tx.customer.findMany({ where: { deletedAt: { lt: cutoff } }, select: { id: true } }),
         tx.task.findMany({ where: { deletedAt: { lt: cutoff } }, select: { id: true } }),
@@ -223,7 +222,7 @@ export class CoreV2ActionBatchesService {
     if (mutation.operation === "MERGE") return this.reverseMerge(tx, before);
     if (mutation.operation === "RESTORE") return this.reverseRestore(tx, before);
     if (mutation.operation === "DELETE_CASCADE") return this.reverseDeleteCascade(tx, mutation.entityType, mutation.entityId, before);
-    if (mutation.entityType === "customer") return tx.customer.update({ where: { id: mutation.entityId }, data: { name: String(before.name), phone: before.phone as string | null, email: before.email as string | null, address: before.address as string | null, normalizedName: before.normalizedName as string | null, generalNotes: before.generalNotes as string | null, deletedAt: date(before.deletedAt), deletedByUserId: before.deletedByUserId as string | null, deleteActionBatchId: before.deleteActionBatchId as string | null, mergedIntoCustomerId: before.mergedIntoCustomerId as string | null, mergedAt: date(before.mergedAt), mergedByUserId: before.mergedByUserId as string | null, version: { increment: 1 } } });
+    if (mutation.entityType === "customer") return tx.customer.update({ where: { id: mutation.entityId }, data: { name: String(before.name), email: before.email as string | null, normalizedName: before.normalizedName as string | null, generalNotes: before.generalNotes as string | null, deletedAt: date(before.deletedAt), deletedByUserId: before.deletedByUserId as string | null, deleteActionBatchId: before.deleteActionBatchId as string | null, mergedIntoCustomerId: before.mergedIntoCustomerId as string | null, mergedAt: date(before.mergedAt), mergedByUserId: before.mergedByUserId as string | null, version: { increment: 1 } } });
     if (mutation.entityType === "task") return tx.task.update({ where: { id: mutation.entityId }, data: { customerId: before.customerId as string | null, title: String(before.title), description: before.description as string | null, status: before.status as "OPEN" | "DONE" | "CANCELLED", dueAt: date(before.dueAt), reminderSentAt: date(before.reminderSentAt), source: String(before.source), sourceRef: before.sourceRef as string | null, idempotencyKey: before.idempotencyKey as string | null, deletedAt: date(before.deletedAt), deletedByUserId: before.deletedByUserId as string | null, deleteActionBatchId: before.deleteActionBatchId as string | null, version: { increment: 1 } } });
     if (mutation.entityType === "job" || mutation.entityType === "visit") {
       const data = { customerId: String(before.customerId), title: String(before.title), description: before.description as string | null, startsAt: date(before.startsAt), endsAt: date(before.endsAt), serviceAddressId: before.serviceAddressId as string | null, locationSnapshot: before.locationSnapshot as string | null, status: before.status as "OPEN" | "CLOSED" | "CANCELLED", executionCompletedAt: date(before.executionCompletedAt), executionCompletedByUserId: before.executionCompletedByUserId as string | null, idempotencyKey: before.idempotencyKey as string | null, deletedAt: date(before.deletedAt), deletedByUserId: before.deletedByUserId as string | null, deleteActionBatchId: before.deleteActionBatchId as string | null, version: { increment: 1 } };

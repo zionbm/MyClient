@@ -1,7 +1,7 @@
 import { BadRequestException, Inject, Injectable, NotFoundException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { NotificationListQuerySchema, RegisterDeviceTokenSchema, SnoozeNotificationSchema, UpdateNotificationSchema } from "@myclient/contracts";
-import { AuditRepository, BusinessSettingsRepository, DeviceTokensRepository, NotificationsRepository, QuotesRepository, RemindersRepository } from "./core.repositories.js";
+import { AuditRepository, BusinessSettingsRepository, DeviceTokensRepository, NotificationsRepository, V2TasksRepository } from "./core.repositories.js";
 import { CoreAccessService } from "./core-access.service.js";
 import { paginatedResponse, paginationFromParsedQuery, publicDeviceToken, snoozeDueAt, type RequestHeaders } from "./core-utils.js";
 
@@ -13,8 +13,7 @@ export class CoreNotificationsApplicationService {
     @Inject(BusinessSettingsRepository) private readonly settings: BusinessSettingsRepository,
     @Inject(NotificationsRepository) private readonly notifications: NotificationsRepository,
     @Inject(DeviceTokensRepository) private readonly deviceTokens: DeviceTokensRepository,
-    @Inject(RemindersRepository) private readonly reminders: RemindersRepository,
-    @Inject(QuotesRepository) private readonly quotes: QuotesRepository
+    @Inject(V2TasksRepository) private readonly tasks: V2TasksRepository
   ) {}
   async listNotifications(headers: RequestHeaders, businessId: string, query: unknown) {
     await this.access.requireBusinessAccess(headers, businessId);
@@ -130,20 +129,10 @@ export class CoreNotificationsApplicationService {
     }
     const settings = await this.settings.getByBusiness(businessId);
     const dueAt = snoozeDueAt(command.preset, settings.timezone);
-    const itemType = notification.itemType ?? (notification.reminderId ? "reminder" : null);
-    const itemId = notification.itemId ?? notification.reminderId;
-    if (!itemType || !itemId) {
+    if (notification.itemType !== "task" || !notification.itemId) {
       throw new BadRequestException("Notification is not linked to a snoozable item");
     }
-
-    let item: unknown;
-    if (itemType === "reminder") {
-      item = await this.reminders.snooze(businessId, itemId, dueAt);
-    } else if (itemType === "quote") {
-      item = await this.quotes.snooze(businessId, itemId, dueAt);
-    } else {
-      throw new BadRequestException("Notification item is not snoozable");
-    }
+    const item = await this.tasks.update({ businessId, taskId: notification.itemId, dueAt });
     if (!item) {
       throw new NotFoundException("Snoozable item not found");
     }

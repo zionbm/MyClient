@@ -52,6 +52,22 @@ export class V2CustomersRepository {
     });
   }
 
+  async findByNormalizedPhone(businessId: string, normalizedPhone: string) {
+    if (!normalizedPhone) return null;
+    return this.prisma.customer.findFirst({
+      where: {
+        businessId,
+        deletedAt: null,
+        mergedIntoCustomerId: null,
+        customerPhones: { some: { normalizedPhone, deletedAt: null } }
+      },
+      include: {
+        customerPhones: { where: { deletedAt: null }, orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }] },
+        serviceAddresses: { where: { deletedAt: null }, orderBy: { createdAt: "asc" } }
+      }
+    });
+  }
+
   async timeline(businessId: string, customerId: string) {
     const customer = await this.prisma.customer.findFirst({
       where: { id: customerId, businessId, deletedAt: null, mergedIntoCustomerId: null },

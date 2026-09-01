@@ -1,4 +1,4 @@
-import { ConflictException, ForbiddenException, Inject, Injectable, UnauthorizedException } from "@nestjs/common";
+import { ForbiddenException, Inject, Injectable, UnauthorizedException } from "@nestjs/common";
 import { type Business, type User } from "@prisma/client";
 import { applicationDefault, getApps, initializeApp } from "firebase-admin/app";
 import { getAuth, type DecodedIdToken } from "firebase-admin/auth";
@@ -96,18 +96,7 @@ export class CoreAccessService {
   }
 
   async requireV2BusinessAccess(headers: RequestHeaders, businessId: string): Promise<AuthenticatedUser> {
-    const user = await this.requireBusinessAccess(headers, businessId);
-    const membershipBusiness = user.memberships?.find(
-      (membership) => membership.businessId === businessId
-    )?.business;
-    const business = user.business?.id === businessId ? user.business : membershipBusiness;
-    if (!business || business.productModelVersion < 2) {
-      throw new ConflictException({
-        code: "V2_NOT_ENABLED",
-        message: "Product model V2 is not enabled for this business"
-      });
-    }
-    return user;
+    return this.requireBusinessAccess(headers, businessId);
   }
 
   requireInternalSecret(headers: RequestHeaders): void {
