@@ -147,3 +147,13 @@ export const V2UpdateTaskSchema = z.object({
   message: "At least one task field is required"
 });
 export type V2UpdateTask = z.infer<typeof V2UpdateTaskSchema>;
+
+export const V2ConfirmedMutationSchema = z.object({
+  confirmed: z.literal(true)
+});
+export type V2ConfirmedMutation = z.infer<typeof V2ConfirmedMutationSchema>;
+
+export const V2MergeCustomerSchema = V2ConfirmedMutationSchema.extend({
+  targetCustomerId: z.string().trim().min(1)
+});
+export type V2MergeCustomer = z.infer<typeof V2MergeCustomerSchema>;

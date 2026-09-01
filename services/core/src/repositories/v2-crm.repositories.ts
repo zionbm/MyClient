@@ -1,4 +1,5 @@
 import { Inject, Injectable } from "@nestjs/common";
+import { randomUUID } from "node:crypto";
 import { type TaskStatus } from "@prisma/client";
 import { PrismaService } from "../prisma.service.js";
 import { BusinessesRepository } from "./business.repositories.js";
@@ -77,6 +78,127 @@ export class V2CustomersRepository {
       }
     });
     return updated.count === 1 ? this.findById(input.businessId, input.customerId) : null;
+  }
+
+  async softDelete(input: { businessId: string; customerId: string; deletedByUserId: string }) {
+    return this.prisma.$transaction(async (tx) => {
+      const customer = await tx.customer.findFirst({
+        where: { id: input.customerId, businessId: input.businessId, deletedAt: null, mergedIntoCustomerId: null }
+      });
+      if (!customer) return null;
+      const deletedAt = new Date();
+      const batchId = randomUUID();
+      const marker = { deletedAt, deletedByUserId: input.deletedByUserId, deleteActionBatchId: batchId };
+      await Promise.all([
+        tx.customerPhone.updateMany({ where: { businessId: input.businessId, customerId: input.customerId, deletedAt: null }, data: { ...marker, isPrimary: false } }),
+        tx.serviceAddress.updateMany({ where: { businessId: input.businessId, customerId: input.customerId, deletedAt: null }, data: marker }),
+        tx.task.updateMany({ where: { businessId: input.businessId, customerId: input.customerId, deletedAt: null }, data: marker }),
+        tx.job.updateMany({ where: { businessId: input.businessId, customerId: input.customerId, deletedAt: null }, data: marker }),
+        tx.visit.updateMany({ where: { businessId: input.businessId, customerId: input.customerId, deletedAt: null }, data: marker })
+      ]);
+      await tx.amount.updateMany({
+        where: {
+          businessId: input.businessId,
+          deletedAt: null,
+          OR: [{ job: { customerId: input.customerId } }, { visit: { customerId: input.customerId } }]
+        },
+        data: marker
+      });
+      return tx.customer.update({
+        where: { id: customer.id },
+        data: { ...marker, version: { increment: 1 } }
+      });
+    });
+  }
+
+  async restore(input: { businessId: string; customerId: string }) {
+    return this.prisma.$transaction(async (tx) => {
+      const customer = await tx.customer.findFirst({
+        where: { id: input.customerId, businessId: input.businessId, deletedAt: { not: null }, deleteActionBatchId: { not: null } }
+      });
+      if (!customer?.deleteActionBatchId) return null;
+      const batchId = customer.deleteActionBatchId;
+      const where = { businessId: input.businessId, deleteActionBatchId: batchId };
+      await Promise.all([
+        tx.customerPhone.updateMany({ where, data: { deletedAt: null, deletedByUserId: null, deleteActionBatchId: null } }),
+        tx.serviceAddress.updateMany({ where, data: { deletedAt: null, deletedByUserId: null, deleteActionBatchId: null } }),
+        tx.task.updateMany({ where, data: { deletedAt: null, deletedByUserId: null, deleteActionBatchId: null } }),
+        tx.job.updateMany({ where, data: { deletedAt: null, deletedByUserId: null, deleteActionBatchId: null } }),
+        tx.visit.updateMany({ where, data: { deletedAt: null, deletedByUserId: null, deleteActionBatchId: null } }),
+        tx.amount.updateMany({ where, data: { deletedAt: null, deletedByUserId: null, deleteActionBatchId: null } })
+      ]);
+      const phones = await tx.customerPhone.findMany({
+        where: { businessId: input.businessId, customerId: input.customerId, deletedAt: null },
+        orderBy: { createdAt: "asc" }
+      });
+      if (phones.length > 0 && !phones.some((phone) => phone.isPrimary)) {
+        await tx.customerPhone.update({ where: { id: phones[0]!.id }, data: { isPrimary: true } });
+      }
+      return tx.customer.update({
+        where: { id: customer.id },
+        data: { deletedAt: null, deletedByUserId: null, deleteActionBatchId: null, version: { increment: 1 } }
+      });
+    });
+  }
+
+  async merge(input: { businessId: string; sourceCustomerId: string; targetCustomerId: string; actorUserId: string }) {
+    if (input.sourceCustomerId === input.targetCustomerId) return null;
+    return this.prisma.$transaction(async (tx) => {
+      const [source, target] = await Promise.all([
+        tx.customer.findFirst({ where: { id: input.sourceCustomerId, businessId: input.businessId, deletedAt: null, mergedIntoCustomerId: null } }),
+        tx.customer.findFirst({ where: { id: input.targetCustomerId, businessId: input.businessId, deletedAt: null, mergedIntoCustomerId: null } })
+      ]);
+      if (!source || !target) return null;
+      const sourcePhones = await tx.customerPhone.findMany({
+        where: { businessId: input.businessId, customerId: source.id, deletedAt: null }
+      });
+      for (const phone of sourcePhones) {
+        const duplicate = await tx.customerPhone.findFirst({
+          where: { businessId: input.businessId, customerId: target.id, normalizedPhone: phone.normalizedPhone, deletedAt: null }
+        });
+        if (duplicate) {
+          await tx.customerPhone.update({ where: { id: phone.id }, data: { deletedAt: new Date(), deletedByUserId: input.actorUserId, isPrimary: false } });
+        } else {
+          await tx.customerPhone.update({ where: { id: phone.id }, data: { customerId: target.id, isPrimary: false } });
+        }
+      }
+      const sourceAddresses = await tx.serviceAddress.findMany({
+        where: { businessId: input.businessId, customerId: source.id, deletedAt: null }
+      });
+      for (const address of sourceAddresses) {
+        const duplicate = address.normalizedAddress
+          ? await tx.serviceAddress.findFirst({
+              where: { businessId: input.businessId, customerId: target.id, normalizedAddress: address.normalizedAddress, deletedAt: null }
+            })
+          : null;
+        await tx.serviceAddress.update({
+          where: { id: address.id },
+          data: duplicate
+            ? { deletedAt: new Date(), deletedByUserId: input.actorUserId }
+            : { customerId: target.id }
+        });
+      }
+      await Promise.all([
+        tx.task.updateMany({ where: { businessId: input.businessId, customerId: source.id }, data: { customerId: target.id } }),
+        tx.job.updateMany({ where: { businessId: input.businessId, customerId: source.id }, data: { customerId: target.id } }),
+        tx.visit.updateMany({ where: { businessId: input.businessId, customerId: source.id }, data: { customerId: target.id } }),
+        tx.note.updateMany({ where: { businessId: input.businessId, customerId: source.id }, data: { customerId: target.id } })
+      ]);
+      const mergedSource = await tx.customer.update({
+        where: { id: source.id },
+        data: {
+          mergedIntoCustomerId: target.id,
+          mergedAt: new Date(),
+          mergedByUserId: input.actorUserId,
+          version: { increment: 1 }
+        }
+      });
+      const updatedTarget = await tx.customer.update({
+        where: { id: target.id },
+        data: { version: { increment: 1 } }
+      });
+      return { source: mergedSource, target: updatedTarget };
+    });
   }
 }
 

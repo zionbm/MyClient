@@ -4,6 +4,8 @@ import {
   V2CreateCustomerPhoneSchema,
   V2CreateCustomerSchema,
   V2CreateServiceAddressSchema,
+  V2ConfirmedMutationSchema,
+  V2MergeCustomerSchema,
   V2UpdateCustomerPhoneSchema,
   V2UpdateCustomerSchema,
   V2UpdateServiceAddressSchema
@@ -98,6 +100,65 @@ export class CoreV2CustomersService {
         if (!customer) await this.throwCustomerUpdateFailure(businessId, customerId, command.version);
         await this.recordAudit(businessId, user.id, customer!.id, "UPDATE_V2_CUSTOMER", customer!);
         return { customer: customer! };
+      }
+    });
+  }
+
+  async deleteCustomer(headers: RequestHeaders, businessId: string, customerId: string, body: unknown) {
+    const user = await this.access.requireV2BusinessAccess(headers, businessId);
+    const command = V2ConfirmedMutationSchema.parse(body);
+    return this.idempotency.execute({
+      businessId,
+      userId: user.id,
+      scope: `v2.customer.delete.${customerId}`,
+      key: requiredIdempotencyKey(headers),
+      request: command,
+      execute: async () => {
+        const customer = await this.customers.softDelete({ businessId, customerId, deletedByUserId: user.id });
+        if (!customer) throw new NotFoundException("Customer not found");
+        await this.recordAudit(businessId, user.id, customer.id, "DELETE_V2_CUSTOMER", customer);
+        return { customer };
+      }
+    });
+  }
+
+  async restoreCustomer(headers: RequestHeaders, businessId: string, customerId: string, body: unknown) {
+    const user = await this.access.requireV2BusinessAccess(headers, businessId);
+    const command = V2ConfirmedMutationSchema.parse(body);
+    return this.idempotency.execute({
+      businessId,
+      userId: user.id,
+      scope: `v2.customer.restore.${customerId}`,
+      key: requiredIdempotencyKey(headers),
+      request: command,
+      execute: async () => {
+        const customer = await this.customers.restore({ businessId, customerId });
+        if (!customer) throw new NotFoundException("Deleted customer not found");
+        await this.recordAudit(businessId, user.id, customer.id, "RESTORE_V2_CUSTOMER", customer);
+        return { customer };
+      }
+    });
+  }
+
+  async mergeCustomer(headers: RequestHeaders, businessId: string, sourceCustomerId: string, body: unknown) {
+    const user = await this.access.requireV2BusinessAccess(headers, businessId);
+    const command = V2MergeCustomerSchema.parse(body);
+    return this.idempotency.execute({
+      businessId,
+      userId: user.id,
+      scope: `v2.customer.merge.${sourceCustomerId}`,
+      key: requiredIdempotencyKey(headers),
+      request: command,
+      execute: async () => {
+        const merge = await this.customers.merge({
+          businessId,
+          sourceCustomerId,
+          targetCustomerId: command.targetCustomerId,
+          actorUserId: user.id
+        });
+        if (!merge) throw new NotFoundException("Source or target customer not found");
+        await this.recordAudit(businessId, user.id, sourceCustomerId, "MERGE_V2_CUSTOMER", merge);
+        return { merge };
       }
     });
   }
