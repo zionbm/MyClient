@@ -708,8 +708,25 @@ export class CoreV2AssistantService {
       const customerId = this.resolveEntityId(input.step.input.customerId, input.step.input.customerRef, input.outputs);
       const existing = customerId ? await tx.customer.findFirst({ where: { id: customerId, businessId: input.businessId, deletedAt: { not: null } } }) : null;
       if (!existing) return { waiting: true as const, question: "לא מצאתי לקוח שניתן לשחזר.", missingFields: ["customerId"] };
+      const restoreSnapshot = {
+        customer: existing,
+        phones: [] as unknown[],
+        addresses: [] as unknown[],
+        tasks: [] as unknown[],
+        jobs: [] as unknown[],
+        visits: [] as unknown[],
+        amounts: [] as unknown[]
+      };
       if (existing.deleteActionBatchId) {
         const where = { businessId: input.businessId, deleteActionBatchId: existing.deleteActionBatchId };
+        [restoreSnapshot.phones, restoreSnapshot.addresses, restoreSnapshot.tasks, restoreSnapshot.jobs, restoreSnapshot.visits, restoreSnapshot.amounts] = await Promise.all([
+          tx.customerPhone.findMany({ where }),
+          tx.serviceAddress.findMany({ where }),
+          tx.task.findMany({ where }),
+          tx.job.findMany({ where }),
+          tx.visit.findMany({ where }),
+          tx.amount.findMany({ where })
+        ]);
         await Promise.all([
           tx.customerPhone.updateMany({ where, data: { deletedAt: null, deletedByUserId: null, deleteActionBatchId: null } }),
           tx.serviceAddress.updateMany({ where, data: { deletedAt: null, deletedByUserId: null, deleteActionBatchId: null } }),
@@ -720,7 +737,7 @@ export class CoreV2AssistantService {
         ]);
       }
       const entity = await tx.customer.update({ where: { id: existing.id }, data: { deletedAt: null, deletedByUserId: null, deleteActionBatchId: null, version: { increment: 1 } } });
-      return { entityType: "customer", entityId: entity.id, entity, before: existing, operation: "RESTORE" };
+      return { entityType: "customer", entityId: entity.id, entity, before: { restoreSnapshot }, operation: "RESTORE" };
     }
     if (input.step.tool === "MERGE_CUSTOMERS") {
       const sourceId = typeof input.step.input.sourceCustomerId === "string" ? input.step.input.sourceCustomerId : undefined;
@@ -728,15 +745,25 @@ export class CoreV2AssistantService {
       if (!sourceId || !targetId || sourceId === targetId) return { waiting: true as const, question: "צריך לבחור לקוח מקור ולקוח יעד שונים.", missingFields: ["sourceCustomerId", "targetCustomerId"] };
       const [source, target] = await Promise.all([tx.customer.findFirst({ where: { id: sourceId, businessId: input.businessId, deletedAt: null, mergedIntoCustomerId: null } }), tx.customer.findFirst({ where: { id: targetId, businessId: input.businessId, deletedAt: null, mergedIntoCustomerId: null } })]);
       if (!source || !target) return { waiting: true as const, question: "אחד הלקוחות למיזוג לא נמצא.", missingFields: ["customers"] };
-      const sourcePhones = await tx.customerPhone.findMany({ where: { businessId: input.businessId, customerId: source.id, deletedAt: null } });
+      const [sourcePhones, sourceAddresses, tasks, jobs, visits, notes] = await Promise.all([
+        tx.customerPhone.findMany({ where: { businessId: input.businessId, customerId: source.id, deletedAt: null } }),
+        tx.serviceAddress.findMany({ where: { businessId: input.businessId, customerId: source.id, deletedAt: null } }),
+        tx.task.findMany({ where: { businessId: input.businessId, customerId: source.id }, select: { id: true, version: true } }),
+        tx.job.findMany({ where: { businessId: input.businessId, customerId: source.id }, select: { id: true, version: true } }),
+        tx.visit.findMany({ where: { businessId: input.businessId, customerId: source.id }, select: { id: true, version: true } }),
+        tx.note.findMany({ where: { businessId: input.businessId, customerId: source.id }, select: { id: true } })
+      ]);
+      const phoneChanges: Array<{ before: unknown; after: unknown }> = [];
       for (const phone of sourcePhones) {
         const duplicate = await tx.customerPhone.findFirst({ where: { businessId: input.businessId, customerId: target.id, normalizedPhone: phone.normalizedPhone, deletedAt: null } });
-        await tx.customerPhone.update({ where: { id: phone.id }, data: duplicate ? { deletedAt: new Date(), deletedByUserId: input.userId, isPrimary: false } : { customerId: target.id, isPrimary: false } });
+        const after = await tx.customerPhone.update({ where: { id: phone.id }, data: duplicate ? { deletedAt: new Date(), deletedByUserId: input.userId, isPrimary: false } : { customerId: target.id, isPrimary: false } });
+        phoneChanges.push({ before: phone, after });
       }
-      const sourceAddresses = await tx.serviceAddress.findMany({ where: { businessId: input.businessId, customerId: source.id, deletedAt: null } });
+      const addressChanges: Array<{ before: unknown; after: unknown }> = [];
       for (const address of sourceAddresses) {
         const duplicate = address.normalizedAddress ? await tx.serviceAddress.findFirst({ where: { businessId: input.businessId, customerId: target.id, normalizedAddress: address.normalizedAddress, deletedAt: null } }) : null;
-        await tx.serviceAddress.update({ where: { id: address.id }, data: duplicate ? { deletedAt: new Date(), deletedByUserId: input.userId } : { customerId: target.id } });
+        const after = await tx.serviceAddress.update({ where: { id: address.id }, data: duplicate ? { deletedAt: new Date(), deletedByUserId: input.userId } : { customerId: target.id } });
+        addressChanges.push({ before: address, after });
       }
       await Promise.all([
         tx.task.updateMany({ where: { businessId: input.businessId, customerId: source.id }, data: { customerId: target.id } }),
@@ -744,8 +771,27 @@ export class CoreV2AssistantService {
         tx.visit.updateMany({ where: { businessId: input.businessId, customerId: source.id }, data: { customerId: target.id } }),
         tx.note.updateMany({ where: { businessId: input.businessId, customerId: source.id }, data: { customerId: target.id } })
       ]);
+      const updatedTarget = await tx.customer.update({ where: { id: target.id }, data: { version: { increment: 1 } } });
       const entity = await tx.customer.update({ where: { id: source.id }, data: { mergedIntoCustomerId: target.id, mergedAt: new Date(), mergedByUserId: input.userId, version: { increment: 1 } } });
-      return { entityType: "customer", entityId: entity.id, entity, before: source, operation: "MERGE" };
+      return {
+        entityType: "customer",
+        entityId: entity.id,
+        entity,
+        before: {
+          mergeSnapshot: {
+            source,
+            target,
+            targetAfterVersion: updatedTarget.version,
+            phones: phoneChanges,
+            addresses: addressChanges,
+            tasks,
+            jobs,
+            visits,
+            notes
+          }
+        },
+        operation: "MERGE"
+      };
     }
     if (["COMPLETE_TASK", "CANCEL_TASK", "REOPEN_TASK", "DELETE_TASK"].includes(input.step.tool)) {
       const taskId = this.resolveEntityId(input.step.input.taskId, input.step.input.entityRef, input.outputs);

@@ -4,6 +4,18 @@ import { AiActionBatchSchema, AiActionSchema, AssistantPlanSchema } from "@mycli
 
 @Injectable()
 export class CoreVoiceInternalClient {
+  async synthesizeAssistantSummary(text: string) {
+    const voiceBaseUrl = getEnv("VOICE_BASE_URL", "http://localhost:3002");
+    const response = await fetch(`${voiceBaseUrl}/tts`, {
+      method: "POST",
+      headers: { ...(await cloudRunServiceAuthHeaders(voiceBaseUrl)), "content-type": "application/json", "x-internal-secret": getInternalApiSecret() },
+      body: JSON.stringify({ text })
+    });
+    const result = (await response.json().catch(() => ({}))) as { provider?: string; audioObjectUri?: string; audioBase64?: string; contentType?: string; text?: string };
+    if (!response.ok) throw new BadRequestException("Voice TTS failed");
+    return result;
+  }
+
   async transcribeOwnerCommandAudio(input: {
     audio: Buffer;
     contentType: string;

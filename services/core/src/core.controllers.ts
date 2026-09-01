@@ -14,6 +14,7 @@ import { CoreV2AssistantService } from "./core-v2-assistant.service.js";
 import { CoreV2ActivitiesService } from "./core-v2-activities.service.js";
 import { CoreV2SearchService } from "./core-v2-search.service.js";
 import { CoreV2AmountsService } from "./core-v2-amounts.service.js";
+import { CoreV2ActionBatchesService } from "./core-v2-action-batches.service.js";
 
 export const CORE_SERVICE = Symbol("CORE_SERVICE");
 
@@ -233,6 +234,22 @@ defineRoutes(V2AmountsController, [
   { name: "payVisitAmount", method: "post", path: "v2/businesses/:businessId/visits/:visitId/amount/payments", delegate: (core, request) => core.payment("visit", headers(request), params(request).businessId, params(request).visitId, request.body) },
   { name: "paymentReport", method: "get", path: "v2/businesses/:businessId/reports/payments", delegate: (core, request) => core.paymentReport(headers(request), params(request).businessId, request.query) },
   { name: "openBalances", method: "get", path: "v2/businesses/:businessId/reports/open-balances", delegate: (core, request) => core.openBalances(headers(request), params(request).businessId) }
+]);
+
+@Controller()
+export class V2ActionBatchesController {
+  constructor(@Inject(CoreV2ActionBatchesService) readonly core: CoreV2ActionBatchesService) {}
+}
+
+defineRoutes(V2ActionBatchesController, [
+  { name: "list", method: "get", path: "v2/businesses/:businessId/action-batches", delegate: (core, request) => core.list(headers(request), params(request).businessId) },
+  { name: "get", method: "get", path: "v2/businesses/:businessId/action-batches/:actionBatchId", delegate: (core, request) => core.get(headers(request), params(request).businessId, params(request).actionBatchId) },
+  { name: "undoPreview", method: "post", path: "v2/businesses/:businessId/action-batches/:actionBatchId/undo-preview", delegate: (core, request) => core.undoPreview(headers(request), params(request).businessId, params(request).actionBatchId) },
+  { name: "undo", method: "post", path: "v2/businesses/:businessId/action-batches/:actionBatchId/undo", delegate: (core, request) => core.undo(headers(request), params(request).businessId, params(request).actionBatchId, request.body) },
+  { name: "speech", method: "post", path: "v2/businesses/:businessId/action-batches/:actionBatchId/speech", delegate: (core, request) => core.speech(headers(request), params(request).businessId, params(request).actionBatchId) },
+  { name: "getPreferences", method: "get", path: "v2/users/me/preferences", delegate: (core, request) => core.getPreferences(headers(request)) },
+  { name: "updatePreferences", method: "patch", path: "v2/users/me/preferences", delegate: (core, request) => core.updatePreferences(headers(request), request.body) },
+  { name: "retention", method: "post", path: "internal/v2/retention", delegate: (core, request) => core.runRetention(headers(request)) }
 ]);
 
 @Controller()

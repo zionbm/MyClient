@@ -69,6 +69,7 @@ import { CoreV2AssistantService } from "./core-v2-assistant.service.js";
 import { CoreV2ActivitiesService } from "./core-v2-activities.service.js";
 import { CoreV2SearchService } from "./core-v2-search.service.js";
 import { CoreV2AmountsService } from "./core-v2-amounts.service.js";
+import { CoreV2ActionBatchesService } from "./core-v2-action-batches.service.js";
 import {
   buildReminderFromCallDescription,
   buildReminderNotificationBody,
@@ -452,6 +453,7 @@ const {
   V2ActivitiesController,
   V2SearchController,
   V2AmountsController,
+  V2ActionBatchesController,
   V2TasksController,
   VoiceCommandsController,
   WorkItemsController
@@ -469,6 +471,7 @@ const {
     V2ActivitiesController,
     V2SearchController,
     V2AmountsController,
+    V2ActionBatchesController,
     V2TasksController,
     WorkItemsController,
     NotificationsController,
@@ -522,6 +525,7 @@ const {
     CoreV2ActivitiesService,
     CoreV2SearchService,
     CoreV2AmountsService,
+    CoreV2ActionBatchesService,
     CoreCustomersService,
     CoreVoiceCommandsApplicationService,
     CoreWorkItemsService,

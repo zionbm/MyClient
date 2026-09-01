@@ -31,7 +31,7 @@ function requireInternalSecret(headers: RequestHeaders): void {
 class VoiceController {
   @Get("health")
   health() {
-    return health("voice", { stt: "openai", tts: "mock-google-tts-hebrew-chirp3-hd" });
+    return health("voice", { stt: "openai", tts: getEnv("MOCK_TTS_PROVIDER", "true") === "true" ? "mock" : "openai" });
   }
 
   @Post("stt/mock")
@@ -129,6 +129,28 @@ class VoiceController {
       text,
       audioObjectUri: `mock://tts/${stableIdempotencyKey("tts", text)}`
     };
+  }
+
+  @Post("tts")
+  synthesizeConfigured(@Headers() headers: RequestHeaders, @Body() body: { text?: string; voice?: string }) {
+    return getEnv("MOCK_TTS_PROVIDER", "true") === "true"
+      ? this.synthesize(headers, body)
+      : this.synthesizeOpenAi(headers, body);
+  }
+
+  @Post("tts/openai")
+  async synthesizeOpenAi(@Headers() headers: RequestHeaders, @Body() body: { text?: string; voice?: string }) {
+    requireInternalSecret(headers);
+    const text = body.text?.trim();
+    if (!text) throw new BadRequestException("TTS text is required");
+    const response = await fetch("https://api.openai.com/v1/audio/speech", {
+      method: "POST",
+      headers: { authorization: `Bearer ${getEnv("OPENAI_API_KEY")}`, "content-type": "application/json" },
+      body: JSON.stringify({ model: getEnv("OPENAI_TTS_MODEL", "gpt-4o-mini-tts"), voice: body.voice ?? getEnv("OPENAI_TTS_VOICE", "coral"), input: text, instructions: "דבר בעברית ישראלית טבעית, ברורה וקצרה." })
+    });
+    if (!response.ok) throw new BadGatewayException(`OpenAI TTS failed with ${response.status}`);
+    const bytes = Buffer.from(await response.arrayBuffer());
+    return { provider: "openai", text, contentType: "audio/mpeg", audioBase64: bytes.toString("base64") };
   }
 }
 

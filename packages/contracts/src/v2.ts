@@ -387,3 +387,11 @@ export const V2ResolvePendingActionSchema = z.object({
   selectedEntityId: z.string().trim().min(1).optional(),
   confirmed: z.boolean().optional()
 });
+
+export const V2UpdateUserPreferencesSchema = z.object({
+  assistantResponseMode: AssistantResponseModeSchema
+});
+
+export const V2UndoSchema = z.object({
+  confirmed: z.literal(true)
+});
