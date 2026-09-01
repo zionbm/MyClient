@@ -1,4 +1,4 @@
-import { BadRequestException, Inject, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import {
   AssistantPlanSchema,
@@ -7,6 +7,9 @@ import {
   V2CreateAssistantSessionSchema,
   V2CreateCustomerSchema,
   V2CreateTaskSchema,
+  V2PendingActionsQuerySchema,
+  V2ResolvePendingActionSchema,
+  V2UpdatePendingActionSchema,
   type AssistantPlanStep
 } from "@myclient/contracts";
 import { CoreAccessService } from "./core-access.service.js";
@@ -16,7 +19,10 @@ import { CoreV2ActivitiesService } from "./core-v2-activities.service.js";
 import { AssistantSessionsRepository } from "./core.repositories.js";
 import { PrismaService } from "./prisma.service.js";
 import { parseOptionalDate, requiredIdempotencyKey, type RequestHeaders } from "./core-utils.js";
+import { paginationFromParsedQuery, paginatedResponse } from "./core-utils.js";
 import { normalizeCustomerName } from "./v2-normalization.js";
+import { stepsBlockedByPlannedClarification, summaryIsGrounded } from "./v2-assistant-plan.js";
+import { assertAmountInvariant, money, nextPaidAmount, paymentStatus } from "./v2-money.js";
 
 function jsonValue(value: unknown): Prisma.InputJsonValue {
   return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
@@ -90,9 +96,30 @@ export class CoreV2AssistantService {
           transcript: command.transcript,
           context: session.context
         });
-        const plan = AssistantPlanSchema.parse(planned.plan);
+        let plan = AssistantPlanSchema.parse(planned.plan);
+        const initialReadSteps = orderedSteps(plan.steps).filter((step) => step.kind === "READ");
+        if (initialReadSteps.length > 0) {
+          const readOutputs = await this.prisma.$transaction(async (tx) => {
+            const outputs = new Map<string, Record<string, unknown>>();
+            for (const step of initialReadSteps) {
+              if (!step.dependsOn.every((dependency) => outputs.has(dependency) || !plan.steps.some((candidate) => candidate.stepId === dependency && candidate.kind === "READ"))) continue;
+              const output = await this.executeBasicWrite(tx, { businessId, userId: user.id, key, headers, step, outputs });
+              if (output.waiting) return null;
+              outputs.set(step.stepId, output);
+            }
+            return Object.fromEntries(outputs);
+          });
+          if (readOutputs && Object.keys(readOutputs).length > 0) {
+            const replanned = await this.ai.planV2AssistantCommand({
+              transcript: command.transcript,
+              context: { session: session.context, readResults: readOutputs, instruction: "זהו סבב התכנון השני והאחרון. השתמש בתוצאות הקריאה ואל תבקש סבב נוסף." }
+            });
+            plan = AssistantPlanSchema.parse(replanned.plan);
+          }
+        }
         const steps = orderedSteps(plan.steps);
-        return this.prisma.$transaction(async (tx) => {
+        const plannedClarificationChain = stepsBlockedByPlannedClarification(steps);
+        const execution = await this.prisma.$transaction(async (tx) => {
           const actionBatch = await tx.actionBatch.create({
             data: {
               businessId,
@@ -111,6 +138,14 @@ export class CoreV2AssistantService {
           let sequence = 0;
 
           for (const step of steps) {
+            if (plannedClarificationChain.has(step.stepId) && step.kind === "WRITE") {
+              statuses.set(step.stepId, "BLOCKED");
+              await tx.actionBatchStep.create({
+                data: { actionBatchId: actionBatch.id, stepKey: step.stepId, stepType: step.kind, dependsOn: step.dependsOn, status: "BLOCKED", toolName: step.tool, input: jsonValue(step.input), errorCode: "CLARIFICATION_REQUIRED" }
+              });
+              receiptSteps.push({ stepId: step.stepId, tool: step.tool, status: "BLOCKED" });
+              continue;
+            }
             const dependencyWaiting = step.dependsOn.some((dependency) => statuses.get(dependency) !== "COMPLETED");
             if (dependencyWaiting) {
               statuses.set(step.stepId, "BLOCKED");
@@ -130,8 +165,10 @@ export class CoreV2AssistantService {
               continue;
             }
 
-            if (step.kind === "CLARIFY" || step.tool === "ASK_CLARIFICATION") {
-              const question = typeof step.input.question === "string" ? step.input.question : "נדרש מידע נוסף";
+            if (step.kind === "CLARIFY" || step.tool === "ASK_CLARIFICATION" || step.requiresExplicitConfirmation) {
+              const question = typeof step.input.question === "string"
+                ? step.input.question
+                : step.requiresExplicitConfirmation ? "הפעולה דורשת אישור מפורש. לבצע?" : "נדרש מידע נוסף";
               const pending = await tx.aiPendingAction.create({
                 data: {
                   businessId,
@@ -144,6 +181,12 @@ export class CoreV2AssistantService {
                   assistantSessionId: session.id,
                   question,
                   dependencyStepKeys: step.dependsOn,
+                  entityVersions: jsonValue(Object.fromEntries(step.dependsOn.flatMap((dependency) => {
+                    const output = outputs.get(dependency);
+                    return typeof output?.entityId === "string" && typeof output.entityVersion === "number"
+                      ? [[output.entityId, output.entityVersion]]
+                      : [];
+                  }))),
                   requiresExplicitConfirmation: step.requiresExplicitConfirmation
                 }
               });
@@ -184,6 +227,33 @@ export class CoreV2AssistantService {
               step,
               outputs
             });
+            if (output.waiting) {
+              const pending = await tx.aiPendingAction.create({
+                data: {
+                  businessId,
+                  userId: user.id,
+                  actionType: step.tool,
+                  payload: jsonValue({ tool: step.tool, input: step.input }),
+                  missingFields: output.missingFields ?? [],
+                  actionBatchId: actionBatch.id,
+                  actionBatchStepId: batchStep.id,
+                  createdByUserId: user.id,
+                  assistantSessionId: session.id,
+                  question: output.question,
+                  candidateEntities: output.candidates ? jsonValue(output.candidates) : undefined,
+                  entityVersions: output.entityVersions ? jsonValue(output.entityVersions) : undefined,
+                  dependencyStepKeys: step.dependsOn,
+                  requiresExplicitConfirmation: step.requiresExplicitConfirmation
+                }
+              });
+              await tx.actionBatchStep.update({
+                where: { id: batchStep.id },
+                data: { status: "WAITING", output: jsonValue({ pendingActionId: pending.id }) }
+              });
+              statuses.set(step.stepId, "WAITING");
+              receiptSteps.push({ stepId: step.stepId, tool: step.tool, status: "WAITING", question: output.question, pendingActionId: pending.id });
+              continue;
+            }
             if (output.entityType && output.entityId && output.entity) {
               sequence += 1;
               await tx.actionMutation.create({
@@ -193,7 +263,8 @@ export class CoreV2AssistantService {
                   sequence,
                   entityType: output.entityType,
                   entityId: output.entityId,
-                  operation: "CREATE",
+                  operation: output.operation ?? "CREATE",
+                  before: output.before ? jsonValue(output.before) : undefined,
                   after: jsonValue(output.entity)
                 }
               });
@@ -271,8 +342,152 @@ export class CoreV2AssistantService {
             }
           };
         });
+        try {
+          const grounded = await this.ai.summarizeV2AssistantReceipt({ transcript: command.transcript, receipt: execution.receipt });
+          if (!summaryIsGrounded(grounded.textSummary, execution.receipt) || !summaryIsGrounded(grounded.spokenSummary, execution.receipt)) return execution;
+          await this.prisma.actionBatch.update({ where: { id: execution.actionBatch.id }, data: { finalSummary: grounded.textSummary, spokenSummary: grounded.spokenSummary } });
+          return {
+            ...execution,
+            actionBatch: { ...execution.actionBatch, finalSummary: grounded.textSummary, spokenSummary: grounded.spokenSummary },
+            receipt: { ...execution.receipt, textSummary: grounded.textSummary, spokenSummary: grounded.spokenSummary },
+            voiceResult: { ...execution.voiceResult, summary: grounded.textSummary }
+          };
+        } catch {
+          return execution;
+        }
       }
     });
+  }
+
+  async listPending(headers: RequestHeaders, businessId: string, query: unknown) {
+    await this.access.requireV2BusinessAccess(headers, businessId);
+    const command = V2PendingActionsQuerySchema.parse(query);
+    const pagination = paginationFromParsedQuery(command);
+    const items = await this.prisma.aiPendingAction.findMany({
+      where: {
+        businessId,
+        ...(command.status === "ALL" ? {} : { status: command.status }),
+        ...(pagination.cursor ? { OR: [{ createdAt: { lt: pagination.cursor.createdAt } }, { createdAt: pagination.cursor.createdAt, id: { lt: pagination.cursor.id } }] } : {})
+      },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: command.limit + 1
+    });
+    const page = paginatedResponse(items, command.limit);
+    return { actions: page.items, pageInfo: page.pageInfo, totalCount: await this.prisma.aiPendingAction.count({ where: { businessId, status: "PENDING" } }) };
+  }
+
+  async updatePending(headers: RequestHeaders, businessId: string, pendingActionId: string, body: unknown) {
+    const user = await this.access.requireV2BusinessAccess(headers, businessId);
+    const command = V2UpdatePendingActionSchema.parse(body);
+    return this.idempotency.execute({
+      businessId,
+      userId: user.id,
+      scope: `v2.assistant.pending.update.${pendingActionId}`,
+      key: requiredIdempotencyKey(headers),
+      request: command,
+      execute: async () => {
+        const existing = await this.prisma.aiPendingAction.findFirst({ where: { id: pendingActionId, businessId, status: "PENDING" } });
+        if (!existing) throw new NotFoundException("Pending action not found");
+        const action = await this.prisma.aiPendingAction.update({ where: { id: existing.id }, data: { payload: command.payload ? jsonValue(command.payload) : undefined, question: command.question } });
+        return { action };
+      }
+    });
+  }
+
+  async rejectPending(headers: RequestHeaders, businessId: string, pendingActionId: string) {
+    const user = await this.access.requireV2BusinessAccess(headers, businessId);
+    return this.idempotency.execute({
+      businessId,
+      userId: user.id,
+      scope: `v2.assistant.pending.reject.${pendingActionId}`,
+      key: requiredIdempotencyKey(headers),
+      request: { pendingActionId },
+      execute: async () => {
+        const action = await this.prisma.aiPendingAction.findFirst({ where: { id: pendingActionId, businessId, status: "PENDING" } });
+        if (!action) throw new NotFoundException("Pending action not found");
+        const rejected = await this.prisma.aiPendingAction.update({ where: { id: action.id }, data: { status: "REJECTED", resolvedAt: new Date(), resolvedByUserId: user.id } });
+        if (action.actionBatchStepId) await this.prisma.actionBatchStep.update({ where: { id: action.actionBatchStepId }, data: { status: "REJECTED" } });
+        if (action.actionBatchId) await this.prisma.actionBatch.update({ where: { id: action.actionBatchId }, data: { status: "PARTIALLY_COMPLETED", finalSummary: "הפעולה הממתינה נדחתה." } });
+        return { action: rejected };
+      }
+    });
+  }
+
+  async resolvePending(headers: RequestHeaders, businessId: string, pendingActionId: string, body: unknown) {
+    const user = await this.access.requireV2BusinessAccess(headers, businessId);
+    const command = V2ResolvePendingActionSchema.parse(body);
+    return this.idempotency.execute({
+      businessId,
+      userId: user.id,
+      scope: `v2.assistant.pending.resolve.${pendingActionId}`,
+      key: requiredIdempotencyKey(headers),
+      request: command,
+      execute: async () => this.prisma.$transaction(async (tx) => {
+        const pending = await tx.aiPendingAction.findFirst({ where: { id: pendingActionId, businessId, status: "PENDING" } });
+        if (!pending?.actionBatchId || !pending.actionBatchStepId) throw new NotFoundException("Pending action not found");
+        if (pending.requiresExplicitConfirmation && command.confirmed !== true) throw new ConflictException({ code: "CONFIRMATION_REQUIRED", message: "Explicit confirmation is required" });
+        await this.revalidatePendingEntities(tx, pending.entityVersions);
+        const batch = await tx.actionBatch.findFirst({ where: { id: pending.actionBatchId, businessId } });
+        if (!batch?.proposedPlan) throw new NotFoundException("Assistant plan not found");
+        const plan = AssistantPlanSchema.parse(batch.proposedPlan);
+        const allSteps = await tx.actionBatchStep.findMany({ where: { actionBatchId: batch.id } });
+        const outputs = new Map<string, Record<string, unknown>>();
+        for (const step of allSteps) {
+          if (step.status === "COMPLETED" && step.output) outputs.set(step.stepKey, step.output as Record<string, unknown>);
+        }
+        const currentStep = allSteps.find((step) => step.id === pending.actionBatchStepId)!;
+        let sequence = await tx.actionMutation.count({ where: { actionBatchId: batch.id } });
+        const plannedCurrentStep = plan.steps.find((step) => step.stepId === currentStep.stepKey)!;
+        let selectedOutput: Record<string, unknown> = { entityId: command.selectedEntityId, ...(command.payload ?? {}) };
+        if (pending.requiresExplicitConfirmation && plannedCurrentStep.kind === "WRITE") {
+          const confirmedStep = {
+            ...plannedCurrentStep,
+            requiresExplicitConfirmation: false,
+            input: { ...plannedCurrentStep.input, ...(command.payload ?? {}), ...(command.selectedEntityId ? { entityId: command.selectedEntityId } : {}) }
+          };
+          const executed = await this.executeBasicWrite(tx, { businessId, userId: user.id, key: requiredIdempotencyKey(headers), headers, step: confirmedStep, outputs });
+          if (executed.waiting) throw new ConflictException({ code: "PENDING_ACTION_NEEDS_REVIEW", message: executed.question });
+          selectedOutput = executed;
+          if (executed.entityType && executed.entityId && executed.entity) {
+            sequence += 1;
+            await tx.actionMutation.create({ data: { actionBatchId: batch.id, actionBatchStepId: currentStep.id, sequence, entityType: executed.entityType, entityId: executed.entityId, operation: executed.operation ?? "CREATE", before: executed.before ? jsonValue(executed.before) : undefined, after: jsonValue(executed.entity) } });
+          }
+        }
+        await tx.actionBatchStep.update({ where: { id: currentStep.id }, data: { status: "COMPLETED", output: jsonValue(selectedOutput) } });
+        outputs.set(currentStep.stepKey, selectedOutput);
+        await tx.aiPendingAction.update({ where: { id: pending.id }, data: { status: "COMPLETED", resolution: jsonValue(command), resolvedAt: new Date(), resolvedByUserId: user.id } });
+        for (const step of orderedSteps(plan.steps)) {
+          const stored = allSteps.find((item) => item.stepKey === step.stepId);
+          if (!stored || stored.status !== "BLOCKED" || !step.dependsOn.every((dependency) => outputs.has(dependency))) continue;
+          const output = await this.executeBasicWrite(tx, { businessId, userId: user.id, key: requiredIdempotencyKey(headers), headers, step, outputs });
+          if (output.waiting) continue;
+          await tx.actionBatchStep.update({ where: { id: stored.id }, data: { status: "COMPLETED", output: jsonValue(output) } });
+          outputs.set(step.stepId, output);
+          if (output.entityType && output.entityId && output.entity) {
+            sequence += 1;
+            await tx.actionMutation.create({ data: { actionBatchId: batch.id, actionBatchStepId: stored.id, sequence, entityType: output.entityType, entityId: output.entityId, operation: output.operation ?? "CREATE", before: output.before ? jsonValue(output.before) : undefined, after: jsonValue(output.entity) } });
+          }
+        }
+        const remaining = await tx.actionBatchStep.count({ where: { actionBatchId: batch.id, status: { in: ["WAITING", "BLOCKED"] } } });
+        const summary = remaining === 0 ? "השלמתי את הפעולה הממתינה." : "שמרתי את התשובה, אך עדיין חסר מידע לפעולה נוספת.";
+        await tx.actionBatch.update({ where: { id: batch.id }, data: { status: remaining === 0 ? "COMPLETED" : "PARTIALLY_COMPLETED", finalSummary: summary } });
+        return { actionBatchId: batch.id, summary, remaining };
+      })
+    });
+  }
+
+  private async revalidatePendingEntities(tx: Prisma.TransactionClient, entityVersions: Prisma.JsonValue | null) {
+    if (!entityVersions || typeof entityVersions !== "object" || Array.isArray(entityVersions)) return;
+    for (const [id, expected] of Object.entries(entityVersions)) {
+      const [customer, task, job, visit] = await Promise.all([
+        tx.customer.findUnique({ where: { id }, select: { version: true } }),
+        tx.task.findUnique({ where: { id }, select: { version: true } }),
+        tx.job.findUnique({ where: { id }, select: { version: true } }),
+        tx.visit.findUnique({ where: { id }, select: { version: true } })
+      ]);
+      const actual = customer?.version ?? task?.version ?? job?.version ?? visit?.version;
+      if (actual !== expected) throw new ConflictException({ code: "PENDING_ACTION_STALE", message: "The selected entity changed; review the action again" });
+    }
   }
 
   private async executeBasicWrite(
@@ -286,6 +501,58 @@ export class CoreV2AssistantService {
       outputs: Map<string, Record<string, unknown>>;
     }
   ) {
+    if (input.step.tool === "FIND_CUSTOMERS") {
+      const query = typeof input.step.input.query === "string"
+        ? input.step.input.query
+        : typeof input.step.input.name === "string" ? input.step.input.name : "";
+      const normalizedName = normalizeCustomerName(query);
+      const candidates = await tx.customer.findMany({
+        where: {
+          businessId: input.businessId,
+          deletedAt: null,
+          mergedIntoCustomerId: null,
+          OR: [
+            { normalizedName },
+            { email: { equals: query, mode: "insensitive" } },
+            { customerPhones: { some: { rawPhone: query, deletedAt: null } } }
+          ]
+        },
+        select: { id: true, name: true, email: true, version: true },
+        take: 10
+      });
+      if (candidates.length !== 1) {
+        return {
+          waiting: true as const,
+          question: candidates.length === 0 ? `לא מצאתי לקוח יחיד שמתאים ל״${query}״.` : "מצאתי כמה לקוחות מתאימים. במי לבחור?",
+          candidates,
+          entityVersions: Object.fromEntries(candidates.map((customer) => [customer.id, customer.version])),
+          missingFields: candidates.length === 0 ? ["customerId"] : []
+        };
+      }
+      return { result: { customers: candidates }, entityId: candidates[0]!.id, customerId: candidates[0]!.id, entityVersion: candidates[0]!.version, message: `מצאתי את ${candidates[0]!.name}.` };
+    }
+    if (["FIND_TASKS", "FIND_JOBS", "FIND_VISITS"].includes(input.step.tool)) {
+      const customerId = typeof input.step.input.customerId === "string"
+        ? input.step.input.customerId
+        : this.resolveCustomerReference(input.step.input.customerRef, input.outputs);
+      const title = typeof input.step.input.title === "string" ? input.step.input.title : undefined;
+      const commonWhere = { businessId: input.businessId, deletedAt: null, ...(customerId ? { customerId } : {}), ...(title ? { title: { contains: title, mode: "insensitive" as const } } : {}) };
+      const candidates = input.step.tool === "FIND_TASKS"
+        ? await tx.task.findMany({ where: commonWhere, take: 10 })
+        : input.step.tool === "FIND_JOBS"
+          ? await tx.job.findMany({ where: commonWhere, take: 10 })
+          : await tx.visit.findMany({ where: commonWhere, take: 10 });
+      if (candidates.length !== 1) {
+        return {
+          waiting: true as const,
+          question: candidates.length === 0 ? "לא מצאתי פעילות יחידה שמתאימה לבקשה." : "מצאתי כמה פעילויות מתאימות. באיזו לבחור?",
+          candidates: candidates.map((item) => ({ id: item.id, title: item.title, status: item.status })),
+          entityVersions: Object.fromEntries(candidates.map((item) => [item.id, item.version])),
+          missingFields: candidates.length === 0 ? ["entityId"] : []
+        };
+      }
+      return { result: { items: candidates }, entityId: candidates[0]!.id, entityVersion: candidates[0]!.version, message: `מצאתי את ${candidates[0]!.title}.` };
+    }
     if (input.step.tool === "GET_AVAILABILITY") {
       const result = await this.activities.availability(input.headers, input.businessId, input.step.input);
       const slots = result.freeSlots.slice(0, 3);
@@ -311,6 +578,39 @@ export class CoreV2AssistantService {
           ? `הפעילות הבאה היא ${items[0]!.title}.`
           : "לא מצאתי פעילות מתוזמנת בטווח המבוקש."
       };
+    }
+    if (input.step.tool === "GET_CUSTOMER_TIMELINE") {
+      const customerId = this.resolveEntityId(input.step.input.customerId, input.step.input.customerRef, input.outputs);
+      if (!customerId) return { waiting: true as const, question: "על איזה לקוח להציג פעילות?", missingFields: ["customerId"] };
+      const [tasks, jobs, visits, notes] = await Promise.all([
+        tx.task.findMany({ where: { businessId: input.businessId, customerId, deletedAt: null }, orderBy: { updatedAt: "desc" }, take: 10 }),
+        tx.job.findMany({ where: { businessId: input.businessId, customerId, deletedAt: null }, orderBy: { updatedAt: "desc" }, take: 10 }),
+        tx.visit.findMany({ where: { businessId: input.businessId, customerId, deletedAt: null }, orderBy: { updatedAt: "desc" }, take: 10 }),
+        tx.note.findMany({ where: { businessId: input.businessId, customerId, deletedAt: null }, orderBy: { updatedAt: "desc" }, take: 10 })
+      ]);
+      const count = tasks.length + jobs.length + visits.length + notes.length;
+      return { result: { tasks, jobs, visits, notes }, message: count === 0 ? "לא מצאתי פעילות קודמת ללקוח." : `מצאתי ${count} פריטים בציר הזמן של הלקוח.` };
+    }
+    if (input.step.tool === "GET_ACTIVITY_AMOUNT") {
+      const entityId = this.resolveEntityId(input.step.input.entityId, input.step.input.entityRef, input.outputs);
+      const amount = entityId ? await tx.amount.findFirst({ where: { businessId: input.businessId, deletedAt: null, OR: [{ jobId: entityId }, { visitId: entityId }] } }) : null;
+      if (!amount) return { result: { amount: null }, message: "לא מוגדר סכום לפעילות." };
+      return { result: { amount }, entityId: amount.id, message: `הסכום הוא ${amount.totalAmount.toString()} שקלים, ומתוכם שולמו ${amount.paidAmount.toString()} שקלים.` };
+    }
+    if (input.step.tool === "GET_PAYMENT_SUMMARY") {
+      const from = typeof input.step.input.from === "string" ? new Date(input.step.input.from) : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+      const to = typeof input.step.input.to === "string" ? new Date(input.step.input.to) : new Date();
+      const events = await tx.amountEvent.findMany({ where: { businessId: input.businessId, occurredAt: { gte: from, lt: to }, amount: { OR: [{ job: { status: { not: "CANCELLED" }, deletedAt: null } }, { visit: { status: { not: "CANCELLED" }, deletedAt: null } }] } } });
+      const total = events.reduce((sum, event) => sum.plus(event.paidDelta), money(0));
+      return { result: { totalPaid: total, eventCount: events.length }, message: `בתקופה המבוקשת התקבלו ${total.toString()} שקלים.` };
+    }
+    if (input.step.tool === "GET_OPEN_BALANCES") {
+      const amounts = await tx.amount.findMany({ where: { businessId: input.businessId, deletedAt: null, paymentStatus: { not: "PAID" }, OR: [{ job: { status: { not: "CANCELLED" }, deletedAt: null } }, { visit: { status: { not: "CANCELLED" }, deletedAt: null } }] } });
+      const balance = amounts.reduce((sum, amount) => sum.plus(amount.totalAmount.minus(amount.paidAmount)), money(0));
+      return { result: { totalBalance: balance, count: amounts.length }, message: `היתרה הפתוחה היא ${balance.toString()} שקלים ב-${amounts.length} פעילויות.` };
+    }
+    if (input.step.tool === "RESPOND") {
+      return { result: input.step.input, message: typeof input.step.input.text === "string" ? input.step.input.text : "הבקשה נבדקה." };
     }
     if (input.step.tool === "CREATE_CUSTOMER") {
       const command = V2CreateCustomerSchema.parse(input.step.input);
@@ -343,6 +643,191 @@ export class CoreV2AssistantService {
       });
       return { entityType: "task", entityId: task.id, entity: task };
     }
+    if (input.step.tool === "UPDATE_TASK") {
+      const taskId = this.resolveEntityId(input.step.input.taskId, input.step.input.entityRef, input.outputs);
+      const existing = taskId ? await tx.task.findFirst({ where: { id: taskId, businessId: input.businessId, deletedAt: null } }) : null;
+      if (!existing) return { waiting: true as const, question: "לא מצאתי את המשימה לעדכון.", missingFields: ["taskId"] };
+      const entity = await tx.task.update({ where: { id: existing.id }, data: { title: typeof input.step.input.title === "string" ? input.step.input.title : undefined, description: typeof input.step.input.description === "string" ? input.step.input.description : undefined, dueAt: typeof input.step.input.dueAt === "string" ? new Date(input.step.input.dueAt) : undefined, version: { increment: 1 } } });
+      return { entityType: "task", entityId: entity.id, entity, before: existing, operation: "UPDATE" };
+    }
+    if (input.step.tool === "UPDATE_CUSTOMER") {
+      const customerId = this.resolveEntityId(input.step.input.customerId, input.step.input.customerRef, input.outputs);
+      const existing = await tx.customer.findFirst({ where: { id: customerId, businessId: input.businessId, deletedAt: null, mergedIntoCustomerId: null } });
+      if (!existing) return { waiting: true as const, question: "לא מצאתי את הלקוח לעדכון.", missingFields: ["customerId"] };
+      const name = typeof input.step.input.name === "string" ? input.step.input.name.trim() : undefined;
+      const entity = await tx.customer.update({
+        where: { id: existing.id },
+        data: {
+          name,
+          normalizedName: name ? normalizeCustomerName(name) : undefined,
+          email: typeof input.step.input.email === "string" ? input.step.input.email : undefined,
+          generalNotes: typeof input.step.input.generalNotes === "string" ? input.step.input.generalNotes : undefined,
+          version: { increment: 1 }
+        }
+      });
+      return { entityType: "customer", entityId: entity.id, entity, before: existing, operation: "UPDATE" };
+    }
+    if (input.step.tool === "ADD_CUSTOMER_PHONE") {
+      const customerId = this.resolveEntityId(input.step.input.customerId, input.step.input.customerRef, input.outputs);
+      const phone = typeof input.step.input.phone === "string" ? input.step.input.phone.trim() : "";
+      if (!customerId || !phone) return { waiting: true as const, question: "צריך לקוח ומספר טלפון.", missingFields: [!customerId ? "customerId" : "phone"] };
+      const digits = phone.replace(/\D/g, "");
+      const normalizedPhone = digits.startsWith("972") ? `+${digits}` : digits.startsWith("0") ? `+972${digits.slice(1)}` : `+972${digits}`;
+      const activeCount = await tx.customerPhone.count({ where: { businessId: input.businessId, customerId, deletedAt: null } });
+      const entity = await tx.customerPhone.create({ data: { businessId: input.businessId, customerId, rawPhone: phone, normalizedPhone, label: typeof input.step.input.label === "string" ? input.step.input.label : undefined, isPrimary: activeCount === 0 } });
+      return { entityType: "customer_phone", entityId: entity.id, entity };
+    }
+    if (input.step.tool === "UPDATE_CUSTOMER_PHONE" || input.step.tool === "DELETE_CUSTOMER_PHONE") {
+      const phoneId = this.resolveEntityId(input.step.input.phoneId, input.step.input.entityRef, input.outputs);
+      const existing = phoneId ? await tx.customerPhone.findFirst({ where: { id: phoneId, businessId: input.businessId, deletedAt: null } }) : null;
+      if (!existing) return { waiting: true as const, question: "לא מצאתי את מספר הטלפון לעדכון.", missingFields: ["phoneId"] };
+      const deleting = input.step.tool === "DELETE_CUSTOMER_PHONE";
+      const rawPhone = typeof input.step.input.phone === "string" ? input.step.input.phone.trim() : undefined;
+      const digits = rawPhone?.replace(/\D/g, "");
+      const normalizedPhone = digits ? digits.startsWith("972") ? `+${digits}` : digits.startsWith("0") ? `+972${digits.slice(1)}` : `+972${digits}` : undefined;
+      const entity = await tx.customerPhone.update({ where: { id: existing.id }, data: deleting ? { deletedAt: new Date(), deletedByUserId: input.userId, isPrimary: false } : { rawPhone, normalizedPhone, label: typeof input.step.input.label === "string" ? input.step.input.label : undefined, isPrimary: typeof input.step.input.isPrimary === "boolean" ? input.step.input.isPrimary : undefined } });
+      return { entityType: "customer_phone", entityId: entity.id, entity, before: existing, operation: deleting ? "DELETE" : "UPDATE" };
+    }
+    if (input.step.tool === "ADD_SERVICE_ADDRESS") {
+      const customerId = this.resolveEntityId(input.step.input.customerId, input.step.input.customerRef, input.outputs);
+      const addressText = typeof input.step.input.addressText === "string" ? input.step.input.addressText.trim() : "";
+      if (!customerId || !addressText) return { waiting: true as const, question: "צריך לקוח וכתובת שירות.", missingFields: [!customerId ? "customerId" : "addressText"] };
+      const entity = await tx.serviceAddress.create({ data: { businessId: input.businessId, customerId, addressText, normalizedAddress: addressText.toLowerCase().replace(/\s+/g, " "), label: typeof input.step.input.label === "string" ? input.step.input.label : undefined } });
+      return { entityType: "service_address", entityId: entity.id, entity };
+    }
+    if (input.step.tool === "UPDATE_SERVICE_ADDRESS" || input.step.tool === "DELETE_SERVICE_ADDRESS") {
+      const addressId = this.resolveEntityId(input.step.input.addressId, input.step.input.entityRef, input.outputs);
+      const existing = addressId ? await tx.serviceAddress.findFirst({ where: { id: addressId, businessId: input.businessId, deletedAt: null } }) : null;
+      if (!existing) return { waiting: true as const, question: "לא מצאתי את כתובת השירות לעדכון.", missingFields: ["addressId"] };
+      const deleting = input.step.tool === "DELETE_SERVICE_ADDRESS";
+      const addressText = typeof input.step.input.addressText === "string" ? input.step.input.addressText.trim() : undefined;
+      const entity = await tx.serviceAddress.update({ where: { id: existing.id }, data: deleting ? { deletedAt: new Date(), deletedByUserId: input.userId } : { addressText, normalizedAddress: addressText?.toLowerCase().replace(/\s+/g, " "), label: typeof input.step.input.label === "string" ? input.step.input.label : undefined } });
+      return { entityType: "service_address", entityId: entity.id, entity, before: existing, operation: deleting ? "DELETE" : "UPDATE" };
+    }
+    if (input.step.tool === "RESTORE_CUSTOMER") {
+      const customerId = this.resolveEntityId(input.step.input.customerId, input.step.input.customerRef, input.outputs);
+      const existing = customerId ? await tx.customer.findFirst({ where: { id: customerId, businessId: input.businessId, deletedAt: { not: null } } }) : null;
+      if (!existing) return { waiting: true as const, question: "לא מצאתי לקוח שניתן לשחזר.", missingFields: ["customerId"] };
+      if (existing.deleteActionBatchId) {
+        const where = { businessId: input.businessId, deleteActionBatchId: existing.deleteActionBatchId };
+        await Promise.all([
+          tx.customerPhone.updateMany({ where, data: { deletedAt: null, deletedByUserId: null, deleteActionBatchId: null } }),
+          tx.serviceAddress.updateMany({ where, data: { deletedAt: null, deletedByUserId: null, deleteActionBatchId: null } }),
+          tx.task.updateMany({ where, data: { deletedAt: null, deletedByUserId: null, deleteActionBatchId: null } }),
+          tx.job.updateMany({ where, data: { deletedAt: null, deletedByUserId: null, deleteActionBatchId: null } }),
+          tx.visit.updateMany({ where, data: { deletedAt: null, deletedByUserId: null, deleteActionBatchId: null } }),
+          tx.amount.updateMany({ where, data: { deletedAt: null, deletedByUserId: null, deleteActionBatchId: null } })
+        ]);
+      }
+      const entity = await tx.customer.update({ where: { id: existing.id }, data: { deletedAt: null, deletedByUserId: null, deleteActionBatchId: null, version: { increment: 1 } } });
+      return { entityType: "customer", entityId: entity.id, entity, before: existing, operation: "RESTORE" };
+    }
+    if (input.step.tool === "MERGE_CUSTOMERS") {
+      const sourceId = typeof input.step.input.sourceCustomerId === "string" ? input.step.input.sourceCustomerId : undefined;
+      const targetId = typeof input.step.input.targetCustomerId === "string" ? input.step.input.targetCustomerId : undefined;
+      if (!sourceId || !targetId || sourceId === targetId) return { waiting: true as const, question: "צריך לבחור לקוח מקור ולקוח יעד שונים.", missingFields: ["sourceCustomerId", "targetCustomerId"] };
+      const [source, target] = await Promise.all([tx.customer.findFirst({ where: { id: sourceId, businessId: input.businessId, deletedAt: null, mergedIntoCustomerId: null } }), tx.customer.findFirst({ where: { id: targetId, businessId: input.businessId, deletedAt: null, mergedIntoCustomerId: null } })]);
+      if (!source || !target) return { waiting: true as const, question: "אחד הלקוחות למיזוג לא נמצא.", missingFields: ["customers"] };
+      const sourcePhones = await tx.customerPhone.findMany({ where: { businessId: input.businessId, customerId: source.id, deletedAt: null } });
+      for (const phone of sourcePhones) {
+        const duplicate = await tx.customerPhone.findFirst({ where: { businessId: input.businessId, customerId: target.id, normalizedPhone: phone.normalizedPhone, deletedAt: null } });
+        await tx.customerPhone.update({ where: { id: phone.id }, data: duplicate ? { deletedAt: new Date(), deletedByUserId: input.userId, isPrimary: false } : { customerId: target.id, isPrimary: false } });
+      }
+      const sourceAddresses = await tx.serviceAddress.findMany({ where: { businessId: input.businessId, customerId: source.id, deletedAt: null } });
+      for (const address of sourceAddresses) {
+        const duplicate = address.normalizedAddress ? await tx.serviceAddress.findFirst({ where: { businessId: input.businessId, customerId: target.id, normalizedAddress: address.normalizedAddress, deletedAt: null } }) : null;
+        await tx.serviceAddress.update({ where: { id: address.id }, data: duplicate ? { deletedAt: new Date(), deletedByUserId: input.userId } : { customerId: target.id } });
+      }
+      await Promise.all([
+        tx.task.updateMany({ where: { businessId: input.businessId, customerId: source.id }, data: { customerId: target.id } }),
+        tx.job.updateMany({ where: { businessId: input.businessId, customerId: source.id }, data: { customerId: target.id } }),
+        tx.visit.updateMany({ where: { businessId: input.businessId, customerId: source.id }, data: { customerId: target.id } }),
+        tx.note.updateMany({ where: { businessId: input.businessId, customerId: source.id }, data: { customerId: target.id } })
+      ]);
+      const entity = await tx.customer.update({ where: { id: source.id }, data: { mergedIntoCustomerId: target.id, mergedAt: new Date(), mergedByUserId: input.userId, version: { increment: 1 } } });
+      return { entityType: "customer", entityId: entity.id, entity, before: source, operation: "MERGE" };
+    }
+    if (["COMPLETE_TASK", "CANCEL_TASK", "REOPEN_TASK", "DELETE_TASK"].includes(input.step.tool)) {
+      const taskId = this.resolveEntityId(input.step.input.taskId, input.step.input.entityRef, input.outputs);
+      const existing = taskId ? await tx.task.findFirst({ where: { id: taskId, businessId: input.businessId, deletedAt: null } }) : null;
+      if (!existing) return { waiting: true as const, question: "לא מצאתי את המשימה לעדכון.", missingFields: ["taskId"] };
+      const data = input.step.tool === "DELETE_TASK" ? { deletedAt: new Date(), deletedByUserId: input.userId, version: { increment: 1 } }
+        : { status: input.step.tool === "COMPLETE_TASK" ? "DONE" as const : input.step.tool === "CANCEL_TASK" ? "CANCELLED" as const : "OPEN" as const, version: { increment: 1 } };
+      const entity = await tx.task.update({ where: { id: existing.id }, data });
+      return { entityType: "task", entityId: entity.id, entity, before: existing, operation: input.step.tool === "DELETE_TASK" ? "DELETE" : "UPDATE" };
+    }
+    if (input.step.tool === "CREATE_JOB" || input.step.tool === "CREATE_VISIT") {
+      const customerId = this.resolveEntityId(input.step.input.customerId, input.step.input.customerRef, input.outputs);
+      const title = typeof input.step.input.title === "string" ? input.step.input.title.trim() : "";
+      if (!customerId || !title) return { waiting: true as const, question: "צריך לקוח וכותרת לפעילות.", missingFields: [!customerId ? "customerId" : "title"] };
+      const startsAt = typeof input.step.input.startsAt === "string" ? new Date(input.step.input.startsAt) : undefined;
+      const endsAt = typeof input.step.input.endsAt === "string" ? new Date(input.step.input.endsAt) : undefined;
+      const data = { businessId: input.businessId, customerId, title, description: typeof input.step.input.description === "string" ? input.step.input.description : undefined, startsAt, endsAt, locationSnapshot: typeof input.step.input.locationSnapshot === "string" ? input.step.input.locationSnapshot : undefined, sourceRef: undefined, idempotencyKey: `${input.key}:${input.step.stepId}` };
+      const entity = input.step.tool === "CREATE_JOB" ? await tx.job.create({ data }) : await tx.visit.create({ data });
+      return { entityType: input.step.tool === "CREATE_JOB" ? "job" : "visit", entityId: entity.id, entity };
+    }
+    if (input.step.tool === "UPDATE_JOB" || input.step.tool === "UPDATE_VISIT") {
+      const kind = input.step.tool === "UPDATE_JOB" ? "job" : "visit";
+      const entityId = this.resolveEntityId(input.step.input.entityId, input.step.input.entityRef, input.outputs);
+      const existing = entityId ? kind === "job" ? await tx.job.findFirst({ where: { id: entityId, businessId: input.businessId, deletedAt: null } }) : await tx.visit.findFirst({ where: { id: entityId, businessId: input.businessId, deletedAt: null } }) : null;
+      if (!existing) return { waiting: true as const, question: "לא מצאתי את הפעילות לעדכון.", missingFields: ["entityId"] };
+      const data = { title: typeof input.step.input.title === "string" ? input.step.input.title : undefined, description: typeof input.step.input.description === "string" ? input.step.input.description : undefined, startsAt: typeof input.step.input.startsAt === "string" ? new Date(input.step.input.startsAt) : undefined, endsAt: typeof input.step.input.endsAt === "string" ? new Date(input.step.input.endsAt) : undefined, locationSnapshot: typeof input.step.input.locationSnapshot === "string" ? input.step.input.locationSnapshot : undefined, version: { increment: 1 } };
+      const entity = kind === "job" ? await tx.job.update({ where: { id: existing.id }, data }) : await tx.visit.update({ where: { id: existing.id }, data });
+      return { entityType: kind, entityId: entity.id, entity, before: existing, operation: "UPDATE" };
+    }
+    if (["REPORT_JOB_COMPLETED", "CANCEL_JOB", "REOPEN_JOB", "DELETE_JOB", "REPORT_VISIT_COMPLETED", "CANCEL_VISIT", "REOPEN_VISIT", "DELETE_VISIT"].includes(input.step.tool)) {
+      const kind = input.step.tool.includes("VISIT") ? "visit" : "job";
+      const entityId = this.resolveEntityId(input.step.input.entityId, input.step.input.entityRef, input.outputs);
+      const existing = entityId
+        ? kind === "job" ? await tx.job.findFirst({ where: { id: entityId, businessId: input.businessId, deletedAt: null }, include: { amounts: { where: { deletedAt: null } } } }) : await tx.visit.findFirst({ where: { id: entityId, businessId: input.businessId, deletedAt: null }, include: { amounts: { where: { deletedAt: null } } } })
+        : null;
+      if (!existing) return { waiting: true as const, question: "לא מצאתי את הפעילות לעדכון.", missingFields: ["entityId"] };
+      const isDelete = input.step.tool.startsWith("DELETE_");
+      const isCancel = input.step.tool.startsWith("CANCEL_");
+      const isReopen = input.step.tool.startsWith("REOPEN_");
+      const completedAt = input.step.tool.startsWith("REPORT_") ? new Date() : undefined;
+      const paid = existing.amounts[0]?.paymentStatus === "PAID";
+      const noCharge = input.step.input.noCharge === true;
+      if (completedAt && existing.amounts.length === 0 && !noCharge) {
+        return { waiting: true as const, question: "האם היה חיוב עבור הפעילות?", missingFields: ["noChargeOrAmount"] };
+      }
+      const data = isDelete ? { deletedAt: new Date(), deletedByUserId: input.userId, version: { increment: 1 } }
+        : isCancel ? { status: "CANCELLED" as const, version: { increment: 1 } }
+        : isReopen ? { status: "OPEN" as const, executionCompletedAt: null, executionCompletedByUserId: null, version: { increment: 1 } }
+        : { executionCompletedAt: completedAt, executionCompletedByUserId: input.userId, status: paid || noCharge ? "CLOSED" as const : "OPEN" as const, version: { increment: 1 } };
+      const entity = kind === "job" ? await tx.job.update({ where: { id: existing.id }, data }) : await tx.visit.update({ where: { id: existing.id }, data });
+      return { entityType: kind, entityId: entity.id, entity, before: existing, operation: isDelete ? "DELETE" : "UPDATE" };
+    }
+    if (["SET_ACTIVITY_AMOUNT", "ADD_PAYMENT", "SET_PAID_TOTAL", "SETTLE_BALANCE"].includes(input.step.tool)) {
+      const entityId = this.resolveEntityId(input.step.input.entityId, input.step.input.entityRef, input.outputs);
+      if (!entityId) return { waiting: true as const, question: "לאיזו פעילות לעדכן את הסכום?", missingFields: ["entityId"] };
+      const existing = await tx.amount.findFirst({ where: { businessId: input.businessId, deletedAt: null, OR: [{ jobId: entityId }, { visitId: entityId }] } });
+      if (input.step.tool !== "SET_ACTIVITY_AMOUNT" && !existing) return { waiting: true as const, question: "צריך להגדיר סכום כולל לפני עדכון תשלום.", missingFields: ["totalAmount"] };
+      const job = await tx.job.findFirst({ where: { id: entityId, businessId: input.businessId, deletedAt: null } });
+      const visit = job ? null : await tx.visit.findFirst({ where: { id: entityId, businessId: input.businessId, deletedAt: null } });
+      if (!job && !visit) return { waiting: true as const, question: "לא מצאתי את הפעילות.", missingFields: ["entityId"] };
+      const previousTotal = existing?.totalAmount ?? money(0);
+      const previousPaid = existing?.paidAmount ?? money(0);
+      const nextTotal = input.step.tool === "SET_ACTIVITY_AMOUNT" ? money(Number(input.step.input.totalAmount)) : previousTotal;
+      const mode = input.step.tool === "ADD_PAYMENT" ? "ADD" : input.step.tool === "SET_PAID_TOTAL" ? "SET_PAID_TOTAL" : "SETTLE_BALANCE";
+      const nextPaid = input.step.tool === "SET_ACTIVITY_AMOUNT"
+        ? (typeof input.step.input.paidAmount === "number" ? money(input.step.input.paidAmount) : previousPaid)
+        : nextPaidAmount(mode, previousPaid, nextTotal, typeof input.step.input.amount === "number" ? input.step.input.amount : undefined);
+      try { assertAmountInvariant(nextTotal, nextPaid); } catch { return { waiting: true as const, question: "הסכום ששולם אינו יכול להיות גבוה מהסכום הכולל. איך לתקן?", missingFields: ["totalAmountOrPaidAmount"] }; }
+      const status = paymentStatus(nextTotal, nextPaid);
+      const entity = existing ? await tx.amount.update({ where: { id: existing.id }, data: { totalAmount: nextTotal, paidAmount: nextPaid, paymentStatus: status, version: { increment: 1 } } }) : await tx.amount.create({ data: { businessId: input.businessId, ...(job ? { jobId: entityId } : { visitId: entityId }), totalAmount: nextTotal, paidAmount: nextPaid, paymentStatus: status } });
+      const eventType = input.step.tool === "SET_ACTIVITY_AMOUNT" ? existing ? "CHANGE_TOTAL" as const : "CREATE" as const
+        : input.step.tool === "ADD_PAYMENT" ? "ADD_PAYMENT" as const
+        : input.step.tool === "SET_PAID_TOTAL" ? "SET_PAID_TOTAL" as const
+        : "SETTLE_BALANCE" as const;
+      await tx.amountEvent.create({ data: { businessId: input.businessId, amountId: entity.id, actorUserId: input.userId, eventType, previousTotal, nextTotal, previousPaid, nextPaid, paidDelta: nextPaid.minus(previousPaid), source: "assistant_v2" } });
+      const activity = job ?? visit!;
+      if (activity.status !== "CANCELLED") {
+        const nextStatus = activity.executionCompletedAt && status === "PAID" ? "CLOSED" : "OPEN";
+        if (job) await tx.job.update({ where: { id: job.id }, data: { status: nextStatus } }); else await tx.visit.update({ where: { id: visit!.id }, data: { status: nextStatus } });
+      }
+      return { entityType: "amount", entityId: entity.id, entity, before: existing ?? undefined, operation: existing ? "UPDATE" : "CREATE" };
+    }
     throw new BadRequestException(`Assistant tool is not executable in the current vertical slice: ${input.step.tool}`);
   }
 
@@ -354,5 +839,13 @@ export class CoreV2AssistantService {
       throw new BadRequestException("Assistant step reference could not be resolved");
     }
     return resolved;
+  }
+
+  private resolveEntityId(direct: unknown, referenceValue: unknown, outputs: Map<string, Record<string, unknown>>) {
+    if (typeof direct === "string" && direct) return direct;
+    if (referenceValue === undefined) return undefined;
+    const reference = AssistantStepReferenceSchema.parse(referenceValue);
+    const resolved = outputs.get(reference.stepId)?.[reference.outputField];
+    return typeof resolved === "string" && resolved ? resolved : undefined;
   }
 }

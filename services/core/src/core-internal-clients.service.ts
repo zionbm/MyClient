@@ -90,4 +90,16 @@ export class CoreAiInternalClient {
     }
     return { provider: result.provider ?? "openai", plan: AssistantPlanSchema.parse(result.plan) };
   }
+
+  async summarizeV2AssistantReceipt(input: { transcript: string; receipt: unknown }) {
+    const aiBaseUrl = getEnv("AI_BASE_URL", "http://localhost:3001");
+    const response = await fetch(`${aiBaseUrl}/v2/assistant/summarize`, {
+      method: "POST",
+      headers: { ...(await cloudRunServiceAuthHeaders(aiBaseUrl)), "content-type": "application/json", "x-internal-secret": getInternalApiSecret() },
+      body: JSON.stringify(input)
+    });
+    const result = (await response.json().catch(() => ({}))) as { textSummary?: string; spokenSummary?: string };
+    if (!response.ok || !result.textSummary || !result.spokenSummary) throw new BadRequestException("AI V2 summary failed");
+    return result as { textSummary: string; spokenSummary: string };
+  }
 }

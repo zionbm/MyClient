@@ -86,6 +86,31 @@ class AiController {
     };
   }
 
+  @Post("v2/assistant/summarize")
+  async summarizeV2(@Headers() headers: RequestHeaders, @Body() body: { transcript?: string; receipt?: unknown }) {
+    requireInternalSecret(headers);
+    if (getEnv("MOCK_LLM_PROVIDER", "false") === "true") {
+      return { textSummary: "הבקשה טופלה לפי התוצאה המוצגת.", spokenSummary: "הבקשה טופלה." };
+    }
+    const response = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: { authorization: `Bearer ${getEnv("OPENAI_API_KEY")}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        model: getEnv("OPENAI_LLM_MODEL", "gpt-5-mini"),
+        input: [
+          { role: "system", content: "נסח סיכום עברי טבעי וקצר אך ורק לפי קבלת הביצוע. אסור להוסיף פעולה, ישות, סכום או תוצאה שאינם בקבלה." },
+          { role: "user", content: `תמלול: ${body.transcript ?? ""}\nקבלה: ${JSON.stringify(body.receipt ?? {})}` }
+        ],
+        text: { format: { type: "json_schema", name: "assistant_summary_v2", strict: true, schema: { type: "object", additionalProperties: false, required: ["textSummary", "spokenSummary"], properties: { textSummary: { type: "string" }, spokenSummary: { type: "string" } } } } }
+      })
+    });
+    const result = (await response.json().catch(() => ({}))) as { output_text?: string; output?: Array<{ content?: Array<{ text?: string }> }> };
+    if (!response.ok) throw new BadGatewayException(`OpenAI V2 summary failed with ${response.status}`);
+    const text = result.output_text ?? result.output?.flatMap((item) => item.content ?? []).find((content) => content.text)?.text;
+    if (!text) throw new BadGatewayException("OpenAI V2 summary returned empty output");
+    return JSON.parse(text) as { textSummary: string; spokenSummary: string };
+  }
+
   private mockV2Plan(transcript: string): AssistantPlan {
     if (transcript.includes("זמינ") || transcript.includes("פנוי")) {
       return {
@@ -185,7 +210,9 @@ class AiController {
             role: "system",
             content:
               "אתה מתכנן פעולות עבור MyClient V2. החזר AssistantPlan בעברית he-IL בלבד. " +
-              "בשלב הנוכחי מותר לבצע CREATE_CUSTOMER ו-CREATE_TASK, ולענות באמצעות GET_AVAILABILITY או GET_SCHEDULE. לקוח דורש שם בלבד ומשימה דורשת title בלבד. " +
+              "תכנן רק כלים מתוך ה-allowlist. לפני שינוי ישות קיימת השתמש ב-FIND_CUSTOMERS וב-FIND_TASKS/FIND_JOBS/FIND_VISITS לפי הצורך, ואז העבר entityRef מובנה לשלב הכתיבה. " +
+              "יצירה רגילה, עדכון, השלמה, ביטול ודיווח סיום אינם דורשים אישור נוסף. מחיקה, מיזוג, Undo ועקיפת התנגשות דורשים requiresExplicitConfirmation=true. " +
+              "לקוח חדש דורש שם בלבד; Task דורשת title בלבד; Job/Visit דורשים לקוח וכותרת. אל תניח שהיה או לא היה חיוב בסיום פעילות. " +
               "GET_AVAILABILITY דורש date בפורמט YYYY-MM-DD ו-durationMinutes. GET_SCHEDULE דורש from ו-to כ-ISO datetime; לשאלת הפעילות הבאה הוסף limit=1. " +
               "אם משימה תלויה בלקוח שנוצר קודם, השתמש ב-customerRef עם stepId ו-outputField=entityId. " +
               "אל תמציא מזהים. מידע חסר הופך ל-ASK_CLARIFICATION. עד 10 צעדים וללא מעגלים."

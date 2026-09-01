@@ -370,3 +370,20 @@ export const V2DateRangeQuerySchema = z.object({
   from: z.string().datetime({ offset: true }),
   to: z.string().datetime({ offset: true })
 }).refine((value) => new Date(value.to) > new Date(value.from), { message: "to must be after from" });
+
+export const V2PendingActionsQuerySchema = V2PaginationQuerySchema.extend({
+  status: z.enum(["PENDING", "COMPLETED", "REJECTED", "ALL"]).default("PENDING")
+});
+
+export const V2UpdatePendingActionSchema = z.object({
+  payload: z.record(z.unknown()).optional(),
+  question: z.string().trim().min(1).optional()
+}).refine((value) => value.payload !== undefined || value.question !== undefined, {
+  message: "At least one pending action field is required"
+});
+
+export const V2ResolvePendingActionSchema = z.object({
+  payload: z.record(z.unknown()).optional(),
+  selectedEntityId: z.string().trim().min(1).optional(),
+  confirmed: z.boolean().optional()
+});

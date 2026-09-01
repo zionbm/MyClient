@@ -174,7 +174,11 @@ export class V2AssistantController {
 
 defineRoutes(V2AssistantController, [
   { name: "createSession", method: "post", path: "v2/businesses/:businessId/assistant/sessions", delegate: (core, request) => core.createSession(headers(request), params(request).businessId, request.body) },
-  { name: "command", method: "post", path: "v2/businesses/:businessId/assistant/sessions/:sessionId/commands", delegate: (core, request) => core.command(headers(request), params(request).businessId, params(request).sessionId, request.body) }
+  { name: "command", method: "post", path: "v2/businesses/:businessId/assistant/sessions/:sessionId/commands", delegate: (core, request) => core.command(headers(request), params(request).businessId, params(request).sessionId, request.body) },
+  { name: "listPending", method: "get", path: "v2/businesses/:businessId/assistant/pending-actions", delegate: (core, request) => core.listPending(headers(request), params(request).businessId, request.query) },
+  { name: "updatePending", method: "patch", path: "v2/businesses/:businessId/assistant/pending-actions/:pendingActionId", delegate: (core, request) => core.updatePending(headers(request), params(request).businessId, params(request).pendingActionId, request.body) },
+  { name: "resolvePending", method: "post", path: "v2/businesses/:businessId/assistant/pending-actions/:pendingActionId/resolve", delegate: (core, request) => core.resolvePending(headers(request), params(request).businessId, params(request).pendingActionId, request.body) },
+  { name: "rejectPending", method: "post", path: "v2/businesses/:businessId/assistant/pending-actions/:pendingActionId/reject", delegate: (core, request) => core.rejectPending(headers(request), params(request).businessId, params(request).pendingActionId) }
 ]);
 
 @Controller()
