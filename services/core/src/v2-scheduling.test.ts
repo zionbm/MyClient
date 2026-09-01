@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { WorkingHoursSchema } from "@myclient/contracts";
+import { V2CreateJobSchema, V2UpdateActivitySchema, WorkingHoursSchema } from "@myclient/contracts";
 import { DEFAULT_WORKING_HOURS, freeSlots, localDateTimeToUtc, workingWindow } from "./v2-scheduling.js";
 
 test("default Israeli work week uses the product-defined hours", () => {
@@ -38,4 +38,11 @@ test("working-hours settings reject malformed or reversed open windows", () => {
   assert.equal(WorkingHoursSchema.safeParse({ sunday: { open: "8:00", close: "18:00" } }).success, false);
   assert.equal(WorkingHoursSchema.safeParse({ sunday: { open: "18:00", close: "08:00" } }).success, false);
   assert.equal(WorkingHoursSchema.safeParse({ saturday: { open: "00:00", close: "00:00", closed: true } }).success, true);
+});
+
+test("public activity contracts accept confirmation tokens and reject the legacy override flag", () => {
+  const create = { customerId: "customer-1", title: "התקנה", startsAt: "2026-09-02T10:00:00+03:00" };
+  assert.equal(V2CreateJobSchema.safeParse({ ...create, scheduleConflictToken: "signed-token" }).success, true);
+  assert.equal(V2CreateJobSchema.safeParse({ ...create, allowScheduleConflict: true }).success, false);
+  assert.equal(V2UpdateActivitySchema.safeParse({ startsAt: "2026-09-02T10:00:00+03:00", allowScheduleConflict: true }).success, false);
 });

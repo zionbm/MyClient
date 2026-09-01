@@ -1,6 +1,6 @@
 import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from "@nestjs/common";
 import { Prisma, type ActivityStatus } from "@prisma/client";
-import { log } from "@myclient/common";
+import { getInternalApiSecret, log } from "@myclient/common";
 import {
   V2AvailabilityQuerySchema,
   V2CreateJobSchema,
@@ -32,6 +32,7 @@ import {
   workingWindow,
   type WorkingHours
 } from "./v2-scheduling.js";
+import { effectiveScheduleEnd, issueScheduleConflictToken, scheduleConflictFingerprint, verifyScheduleConflictToken, type ScheduleConflictOperation } from "./v2-schedule-confirmation.js";
 
 type ActivityUpdate = Partial<V2ActivityWrite> & { version?: number };
 
@@ -79,7 +80,7 @@ export class CoreV2ActivitiesService {
       locationSnapshot: command.locationSnapshot,
       status: command.status,
       version: command.version
-    }, command.allowScheduleConflict ?? false);
+    }, command.scheduleConflictToken);
   }
 
   reportCompleted(kind: V2ActivityKind, headers: RequestHeaders, businessId: string, entityId: string, body: unknown) {
@@ -173,6 +174,9 @@ export class CoreV2ActivitiesService {
       execute: async () => {
         const startsAt = parseOptionalDate(command.startsAt) ?? undefined;
         const endsAt = parseOptionalDate(command.endsAt) ?? undefined;
+        const approvedConflictFingerprint = startsAt && command.scheduleConflictToken
+          ? this.approvedConflictFingerprint(command.scheduleConflictToken, { businessId, userId: user.id, operation: "CREATE", kind, entityId: null, startsAt, endsAt })
+          : undefined;
         const result = await this.activities.create({
           kind,
           businessId,
@@ -185,12 +189,13 @@ export class CoreV2ActivitiesService {
           locationSnapshot: command.locationSnapshot,
           status: command.status,
           idempotencyKey: key,
-          allowScheduleConflict: command.allowScheduleConflict ?? false
+          allowScheduleConflict: false,
+          approvedConflictFingerprint
         });
         if ("missingLink" in result) throw new NotFoundException("Customer or service address not found");
         if (!("entity" in result)) {
           if (!startsAt) throw new ConflictException({ code: "SCHEDULE_CONFLICT", conflicts: result.conflicts });
-          await this.throwConflict(businessId, startsAt, endsAt, kind, result.conflicts);
+          await this.throwConflict(businessId, user.id, "CREATE", null, startsAt, endsAt, kind, result.conflicts);
         }
         const entity = result.entity;
         if (!entity) throw new NotFoundException(`${kind} was not created`);
@@ -222,7 +227,8 @@ export class CoreV2ActivitiesService {
     action: string,
     request: unknown,
     update: ActivityUpdate,
-    allowScheduleConflict = true
+    scheduleConflictToken?: string,
+    allowScheduleConflict = false
   ) {
     const user = await this.access.requireV2BusinessAccess(headers, businessId);
     return this.idempotency.execute({
@@ -232,7 +238,13 @@ export class CoreV2ActivitiesService {
       key: requiredIdempotencyKey(headers),
       request,
       execute: async () => {
-        const result = await this.activities.update({ kind, businessId, entityId, ...update, allowScheduleConflict });
+        const existingForToken = scheduleConflictToken ? await this.activities.findById(kind, businessId, entityId) : undefined;
+        const tokenStartsAt = update.startsAt === undefined ? existingForToken?.startsAt : update.startsAt;
+        const tokenEndsAt = update.endsAt === undefined ? existingForToken?.endsAt : update.endsAt;
+        const approvedConflictFingerprint = scheduleConflictToken && tokenStartsAt
+          ? this.approvedConflictFingerprint(scheduleConflictToken, { businessId, userId: user.id, operation: "UPDATE", kind, entityId, startsAt: tokenStartsAt, endsAt: tokenEndsAt })
+          : undefined;
+        const result = await this.activities.update({ kind, businessId, entityId, ...update, allowScheduleConflict, approvedConflictFingerprint });
         if ("missingLink" in result) throw new NotFoundException("Customer or service address not found");
         if ("notFound" in result) throw new ConflictException({ code: "ENTITY_VERSION_CONFLICT", message: `${kind} changed or was not found` });
         if ("invalidSchedule" in result) throw new BadRequestException("endsAt must be after startsAt");
@@ -240,7 +252,7 @@ export class CoreV2ActivitiesService {
           const existing = await this.activities.findById(kind, businessId, entityId);
           const conflictStart = update.startsAt ?? existing?.startsAt;
           if (!conflictStart) throw new ConflictException({ code: "SCHEDULE_CONFLICT", conflicts: result.conflicts });
-          await this.throwConflict(businessId, conflictStart, update.endsAt ?? existing?.endsAt, kind, result.conflicts);
+          await this.throwConflict(businessId, user.id, "UPDATE", entityId, conflictStart, update.endsAt ?? existing?.endsAt, kind, result.conflicts);
         }
         if (!result.entity) throw new NotFoundException(`${kind} was not updated`);
         await this.recordAudit(kind, businessId, user.id, entityId, action.toUpperCase(), result.entity);
@@ -262,22 +274,47 @@ export class CoreV2ActivitiesService {
     if (!existing) throw new NotFoundException(`${kind} not found`);
     const user = await this.access.requireV2BusinessAccess(headers, businessId);
     const next = await change(existing, user.id);
-    const result = await this.write(kind, headers, businessId, entityId, action, { entityId }, next.update);
+    const result = await this.write(kind, headers, businessId, entityId, action, { entityId }, next.update, undefined, true);
     return { ...result, clarification: next.clarification };
   }
 
-  private async throwConflict(businessId: string, startsAt: Date, endsAt: Date | null | undefined, kind: V2ActivityKind, conflicts: unknown[]): Promise<never> {
-    const preview = await this.conflictPreview(businessId, startsAt, endsAt, kind, conflicts);
+  private async throwConflict(businessId: string, userId: string, operation: ScheduleConflictOperation, entityId: string | null, startsAt: Date, endsAt: Date | null | undefined, kind: V2ActivityKind, conflicts: unknown[]): Promise<never> {
+    const preview = await this.conflictPreview(businessId, startsAt, endsAt, kind, conflicts, { userId, operation, entityId });
     log("info", "v2 schedule conflict", { businessId, kind, conflictCount: conflicts.length, alternativeCount: preview.alternativeSlots.length });
-    throw new ConflictException(preview);
+    throw new ConflictException({ message: preview.message, details: preview });
   }
 
-  async conflictPreview(businessId: string, startsAt: Date, endsAt: Date | null | undefined, kind: V2ActivityKind, conflicts: unknown[]) {
+  async conflictPreview(businessId: string, startsAt: Date, endsAt: Date | null | undefined, kind: V2ActivityKind, conflicts: unknown[], confirmation?: { userId: string; operation: ScheduleConflictOperation; entityId: string | null }) {
     const durationMinutes = Math.max(15, Math.round(((endsAt?.getTime() ?? startsAt.getTime() + (kind === "job" ? 120 : 60) * 60_000) - startsAt.getTime()) / 60_000));
     const settings = await this.settings.getByBusiness(businessId);
     const date = new Intl.DateTimeFormat("en-CA", { timeZone: settings.timezone }).format(startsAt);
     const availability = await this.availabilityForConflict(businessId, date, durationMinutes, settings);
-    return { code: "SCHEDULE_CONFLICT", message: "The requested time overlaps another activity", kind, conflicts, alternativeSlots: availability.slice(0, 3) };
+    const effectiveEndsAt = effectiveScheduleEnd(kind, startsAt, endsAt);
+    const scheduleConflictToken = confirmation ? issueScheduleConflictToken({
+      businessId,
+      userId: confirmation.userId,
+      operation: confirmation.operation,
+      kind,
+      entityId: confirmation.entityId,
+      startsAt: startsAt.toISOString(),
+      endsAt: effectiveEndsAt.toISOString(),
+      conflictFingerprint: scheduleConflictFingerprint(conflicts)
+    }, getInternalApiSecret()) : undefined;
+    return { code: "SCHEDULE_CONFLICT", message: "The requested time overlaps another activity", kind, conflicts, alternativeSlots: availability.slice(0, 3), scheduleConflictToken };
+  }
+
+  private approvedConflictFingerprint(token: string, input: { businessId: string; userId: string; operation: ScheduleConflictOperation; kind: V2ActivityKind; entityId: string | null; startsAt: Date; endsAt?: Date | null }) {
+    const claims = verifyScheduleConflictToken(token, {
+      businessId: input.businessId,
+      userId: input.userId,
+      operation: input.operation,
+      kind: input.kind,
+      entityId: input.entityId,
+      startsAt: input.startsAt.toISOString(),
+      endsAt: effectiveScheduleEnd(input.kind, input.startsAt, input.endsAt).toISOString()
+    }, getInternalApiSecret());
+    if (!claims) log("warn", "v2 schedule confirmation token rejected", { businessId: input.businessId, kind: input.kind, operation: input.operation });
+    return claims?.conflictFingerprint;
   }
 
   private async availabilityForConflict(businessId: string, date: string, durationMinutes: number, settings: Awaited<ReturnType<BusinessSettingsRepository["getByBusiness"]>>) {

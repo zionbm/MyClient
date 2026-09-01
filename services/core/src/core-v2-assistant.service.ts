@@ -1,6 +1,6 @@
 import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
-import { log } from "@myclient/common";
+import { getInternalApiSecret, log } from "@myclient/common";
 import {
   AssistantPlanSchema,
   AssistantStepReferenceSchema,
@@ -26,6 +26,7 @@ import { normalizeCustomerName } from "./v2-normalization.js";
 import { stepsBlockedByPlannedClarification, summaryIsGrounded } from "./v2-assistant-plan.js";
 import { assertAmountInvariant, money, nextPaidAmount, paymentStatus } from "./v2-money.js";
 import { DEFAULT_WORKING_HOURS, freeSlots, isWithinWorkingHours, localDate, workingWindow, type WorkingHours } from "./v2-scheduling.js";
+import { effectiveScheduleEnd, verifyScheduleConflictToken, type ScheduleConflictOperation } from "./v2-schedule-confirmation.js";
 
 function jsonValue(value: unknown): Prisma.InputJsonValue {
   return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
@@ -485,7 +486,21 @@ export class CoreV2AssistantService {
             input: { ...plannedCurrentStep.input, ...confirmationOverrides, ...(command.payload ?? {}), ...(command.selectedEntityId ? { entityId: command.selectedEntityId } : {}) }
           };
           const executed = await this.executeBasicWrite(tx, { businessId, userId: user.id, key: requiredIdempotencyKey(headers), headers, step: confirmedStep, outputs });
-          if (executed.waiting) throw new ConflictException({ code: "PENDING_ACTION_NEEDS_REVIEW", message: executed.question });
+          if (executed.waiting) {
+            const refreshed = objectValue(executed);
+            await tx.aiPendingAction.update({
+              where: { id: pending.id },
+              data: {
+                payload: jsonValue({ tool: plannedCurrentStep.tool, input: plannedCurrentStep.input, confirmationOverrides: refreshed.confirmationOverrides }),
+                question: executed.question,
+                candidateEntities: refreshed.candidates ? jsonValue(refreshed.candidates) : Prisma.JsonNull,
+                entityVersions: refreshed.entityVersions ? jsonValue(refreshed.entityVersions) : Prisma.JsonNull,
+                requiresExplicitConfirmation: refreshed.requiresExplicitConfirmation === true
+              }
+            });
+            log("info", "v2 pending action refreshed", { businessId, actionType: pending.actionType, reason: "SCHEDULE_CHANGED" });
+            return { actionBatchId: batch.id, summary: "לוח הזמנים השתנה. צריך לאשר מחדש את ההתנגשות העדכנית.", remaining: 1, needsReview: true };
+          }
           selectedOutput = executed;
           if (executed.entityType && executed.entityId && executed.entity) {
             sequence += 1;
@@ -861,10 +876,11 @@ export class CoreV2AssistantService {
         serviceAddressId: typeof input.step.input.serviceAddressId === "string" ? input.step.input.serviceAddressId : undefined,
         locationSnapshot: typeof input.step.input.locationSnapshot === "string" ? input.step.input.locationSnapshot : undefined,
         idempotencyKey: `${input.key}:${input.step.stepId}`,
-        allowScheduleConflict: input.step.input.allowScheduleConflict === true
+        allowScheduleConflict: false,
+        approvedConflictFingerprint: startsAt ? this.assistantApprovedConflictFingerprint(input.step.input.scheduleConflictToken, { businessId: input.businessId, userId: input.userId, operation: "CREATE", kind, entityId: null, startsAt, endsAt }) : undefined
       });
       if ("missingLink" in result) return { waiting: true as const, question: "הלקוח או כתובת השירות אינם זמינים עוד.", missingFields: ["customerOrAddress"] };
-      if (!("entity" in result)) return this.scheduleConflictPending(input.businessId, startsAt!, endsAt, kind, result.conflicts);
+      if (!("entity" in result)) return this.scheduleConflictPending(input.businessId, input.userId, "CREATE", null, startsAt!, endsAt, kind, result.conflicts);
       const entity = result.entity;
       if (!entity) throw new ConflictException("Activity creation did not return an entity");
       return { entityType: kind, entityId: entity.id, entity, warnings: await this.activities.scheduleWarnings(input.businessId, startsAt, endsAt, kind) };
@@ -886,12 +902,13 @@ export class CoreV2AssistantService {
         endsAt,
         serviceAddressId: typeof input.step.input.serviceAddressId === "string" ? input.step.input.serviceAddressId : undefined,
         locationSnapshot: typeof input.step.input.locationSnapshot === "string" ? input.step.input.locationSnapshot : undefined,
-        allowScheduleConflict: input.step.input.allowScheduleConflict === true
+        allowScheduleConflict: false,
+        approvedConflictFingerprint: (startsAt ?? existing.startsAt) ? this.assistantApprovedConflictFingerprint(input.step.input.scheduleConflictToken, { businessId: input.businessId, userId: input.userId, operation: "UPDATE", kind, entityId: existing.id, startsAt: (startsAt ?? existing.startsAt)!, endsAt: endsAt ?? existing.endsAt }) : undefined
       });
       if ("invalidSchedule" in result) return { waiting: true as const, question: "שעת הסיום חייבת להיות אחרי שעת ההתחלה.", missingFields: ["schedule"] };
       if ("missingLink" in result) return { waiting: true as const, question: "הלקוח או כתובת השירות אינם זמינים עוד.", missingFields: ["customerOrAddress"] };
       if ("notFound" in result) return { waiting: true as const, question: "הפעילות השתנתה מאז הבדיקה. צריך לבדוק שוב.", missingFields: ["entityVersion"] };
-      if (!("entity" in result)) return this.scheduleConflictPending(input.businessId, startsAt ?? existing.startsAt!, endsAt ?? existing.endsAt, kind, result.conflicts);
+      if (!("entity" in result)) return this.scheduleConflictPending(input.businessId, input.userId, "UPDATE", existing.id, startsAt ?? existing.startsAt!, endsAt ?? existing.endsAt, kind, result.conflicts);
       const entity = result.entity;
       if (!entity) throw new ConflictException("Activity update did not return an entity");
       return { entityType: kind, entityId: entity.id, entity, before: existing, operation: "UPDATE", warnings: await this.activities.scheduleWarnings(input.businessId, entity.startsAt ?? undefined, entity.endsAt ?? undefined, kind) };
@@ -971,22 +988,25 @@ export class CoreV2AssistantService {
 
   private async scheduleConflictPending(
     businessId: string,
+    userId: string,
+    operation: ScheduleConflictOperation,
+    entityId: string | null,
     startsAt: Date,
     endsAt: Date | null | undefined,
     kind: "job" | "visit",
     conflicts: unknown[]
   ) {
-    const preview = await this.activities.conflictPreview(businessId, startsAt, endsAt, kind, conflicts);
+    const preview = await this.activities.conflictPreview(businessId, startsAt, endsAt, kind, conflicts, { userId, operation, entityId });
     const candidates = [
       {
         id: "keep-conflicting-time",
         title: "לקבוע בכל זאת במועד שביקשת",
-        payload: { allowScheduleConflict: true }
+        payload: { scheduleConflictToken: preview.scheduleConflictToken }
       },
       ...preview.alternativeSlots.map((slot, index) => ({
         id: `alternative-${index + 1}`,
         title: `חלופה ${index + 1}: ${slot.startsAt.toISOString()}`,
-        payload: { startsAt: slot.startsAt.toISOString(), endsAt: slot.endsAt.toISOString(), allowScheduleConflict: false }
+        payload: { startsAt: slot.startsAt.toISOString(), endsAt: slot.endsAt.toISOString() }
       }))
     ];
     return {
@@ -994,12 +1014,22 @@ export class CoreV2AssistantService {
       question: "המועד מתנגש בפעילות קיימת. אפשר לבחור חלופה או לאשר קביעה בכל זאת.",
       candidates,
       requiresExplicitConfirmation: true,
-      confirmationOverrides: { allowScheduleConflict: true },
-      entityVersions: Object.fromEntries(conflicts.flatMap((value) => {
-        const conflict = objectValue(value);
-        return typeof conflict.id === "string" && typeof conflict.version === "number" ? [[conflict.id, conflict.version]] : [];
-      }))
+      confirmationOverrides: { scheduleConflictToken: preview.scheduleConflictToken },
+      entityVersions: {}
     };
+  }
+
+  private assistantApprovedConflictFingerprint(token: unknown, input: { businessId: string; userId: string; operation: ScheduleConflictOperation; kind: "job" | "visit"; entityId: string | null; startsAt: Date; endsAt?: Date | null }) {
+    if (typeof token !== "string" || !token) return undefined;
+    return verifyScheduleConflictToken(token, {
+      businessId: input.businessId,
+      userId: input.userId,
+      operation: input.operation,
+      kind: input.kind,
+      entityId: input.entityId,
+      startsAt: input.startsAt.toISOString(),
+      endsAt: effectiveScheduleEnd(input.kind, input.startsAt, input.endsAt).toISOString()
+    }, getInternalApiSecret())?.conflictFingerprint;
   }
 
   private resolveCustomerReference(value: unknown, outputs: Map<string, Record<string, unknown>>) {

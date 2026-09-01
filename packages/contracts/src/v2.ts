@@ -315,8 +315,8 @@ const V2ActivityFieldsSchema = z.object({
   serviceAddressId: OptionalTrimmedStringSchema,
   locationSnapshot: OptionalTrimmedStringSchema,
   status: V2ActivityStatusSchema.optional(),
-  allowScheduleConflict: z.boolean().optional()
-}).superRefine((value, context) => {
+  scheduleConflictToken: z.string().trim().min(1).max(4096).optional()
+}).strict().superRefine((value, context) => {
   if (value.endsAt && !value.startsAt) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["endsAt"], message: "endsAt requires startsAt" });
   }
@@ -339,9 +339,9 @@ export const V2UpdateActivitySchema = z.object({
   serviceAddressId: z.string().trim().min(1).nullable().optional(),
   locationSnapshot: NullableTrimmedStringSchema,
   status: V2ActivityStatusSchema.optional(),
-  allowScheduleConflict: z.boolean().optional(),
+  scheduleConflictToken: z.string().trim().min(1).max(4096).optional(),
   version: V2EntityVersionSchema.optional()
-}).refine((value) => Object.keys(value).some((key) => !["version", "allowScheduleConflict"].includes(key)), {
+}).strict().refine((value) => Object.keys(value).some((key) => !["version", "scheduleConflictToken"].includes(key)), {
   message: "At least one activity field is required"
 });
 export type V2UpdateActivity = z.infer<typeof V2UpdateActivitySchema>;

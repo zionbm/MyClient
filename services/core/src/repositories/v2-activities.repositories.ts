@@ -1,6 +1,7 @@
 import { Inject, Injectable } from "@nestjs/common";
 import { type ActivityStatus, Prisma } from "@prisma/client";
 import { PrismaService } from "../prisma.service.js";
+import { sameConflictFingerprint, scheduleConflictFingerprint } from "../v2-schedule-confirmation.js";
 import { createdAtCursorWhere, paginationTake, type PaginationInput } from "./repository.shared.js";
 
 export type V2ActivityKind = "job" | "visit";
@@ -47,11 +48,11 @@ export class V2ActivitiesRepository {
     return kind === "job" ? this.prisma.job.findFirst(args) : this.prisma.visit.findFirst(args);
   }
 
-  async create(input: V2ActivityWrite & { kind: V2ActivityKind; allowScheduleConflict: boolean }) {
+  async create(input: V2ActivityWrite & { kind: V2ActivityKind; allowScheduleConflict: boolean; approvedConflictFingerprint?: string[] }) {
     return this.prisma.$transaction((tx) => this.createInTransaction(tx, input));
   }
 
-  async createInTransaction(tx: Prisma.TransactionClient, input: V2ActivityWrite & { kind: V2ActivityKind; allowScheduleConflict: boolean }) {
+  async createInTransaction(tx: Prisma.TransactionClient, input: V2ActivityWrite & { kind: V2ActivityKind; allowScheduleConflict: boolean; approvedConflictFingerprint?: string[] }) {
     await this.lockSchedule(tx, input.businessId);
     const linked = await this.validateLinks(tx, input.businessId, input.customerId, input.serviceAddressId);
     if (!linked.valid) return { missingLink: true as const };
@@ -59,8 +60,8 @@ export class V2ActivitiesRepository {
     const conflicts = input.startsAt
       ? await this.conflictsInTransaction(tx, input.businessId, input.startsAt, input.endsAt, input.kind)
       : [];
-    if (conflicts.length > 0 && !input.allowScheduleConflict) return { conflicts };
-    const { kind: _kind, allowScheduleConflict: _allowScheduleConflict, ...activityInput } = input;
+    if (conflicts.length > 0 && !input.allowScheduleConflict && !sameConflictFingerprint(input.approvedConflictFingerprint, scheduleConflictFingerprint(conflicts))) return { conflicts };
+    const { kind: _kind, allowScheduleConflict: _allowScheduleConflict, approvedConflictFingerprint: _approvedConflictFingerprint, ...activityInput } = input;
     const data = { ...activityInput, locationSnapshot };
     const entity = input.kind === "job"
       ? await tx.job.create({ data })
@@ -74,11 +75,12 @@ export class V2ActivitiesRepository {
     businessId: string;
     version?: number;
     allowScheduleConflict: boolean;
+    approvedConflictFingerprint?: string[];
   }) {
     return this.prisma.$transaction((tx) => this.updateInTransaction(tx, input));
   }
 
-  async updateInTransaction(tx: Prisma.TransactionClient, input: Partial<V2ActivityWrite> & { kind: V2ActivityKind; entityId: string; businessId: string; version?: number; allowScheduleConflict: boolean }) {
+  async updateInTransaction(tx: Prisma.TransactionClient, input: Partial<V2ActivityWrite> & { kind: V2ActivityKind; entityId: string; businessId: string; version?: number; allowScheduleConflict: boolean; approvedConflictFingerprint?: string[] }) {
     await this.lockSchedule(tx, input.businessId);
     const existing = input.kind === "job"
       ? await tx.job.findFirst({ where: { id: input.entityId, businessId: input.businessId, deletedAt: null } })
@@ -94,7 +96,7 @@ export class V2ActivitiesRepository {
     const conflicts = startsAt
       ? await this.conflictsInTransaction(tx, input.businessId, startsAt, endsAt, input.kind, input.entityId)
       : [];
-    if (conflicts.length > 0 && !input.allowScheduleConflict) return { conflicts };
+    if (conflicts.length > 0 && !input.allowScheduleConflict && !sameConflictFingerprint(input.approvedConflictFingerprint, scheduleConflictFingerprint(conflicts))) return { conflicts };
     const data = {
       customerId: input.customerId,
       title: input.title,
@@ -176,8 +178,8 @@ export class V2ActivitiesRepository {
       ...(excludeEntityId ? { id: { not: excludeEntityId } } : {})
     };
     const [jobs, visits] = await Promise.all([
-      tx.job.findMany({ where, select: { id: true, title: true, startsAt: true, endsAt: true } }),
-      tx.visit.findMany({ where, select: { id: true, title: true, startsAt: true, endsAt: true } })
+      tx.job.findMany({ where, select: { id: true, title: true, startsAt: true, endsAt: true, version: true } }),
+      tx.visit.findMany({ where, select: { id: true, title: true, startsAt: true, endsAt: true, version: true } })
     ]);
     return [
       ...jobs.filter((item) => effectiveEnd(item, "job")! > startsAt).map((item) => ({ ...item, kind: "job", effectiveEndsAt: effectiveEnd(item, "job") })),
