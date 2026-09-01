@@ -147,11 +147,11 @@ class VoiceController {
     const response = await fetch("https://api.openai.com/v1/audio/speech", {
       method: "POST",
       headers: { authorization: `Bearer ${getEnv("OPENAI_API_KEY")}`, "content-type": "application/json" },
-      body: JSON.stringify({ model: getEnv("OPENAI_TTS_MODEL", "gpt-4o-mini-tts"), voice: body.voice ?? getEnv("OPENAI_TTS_VOICE", "coral"), input: text, instructions: "דבר בעברית ישראלית טבעית, ברורה וקצרה." })
+      body: JSON.stringify({ model: getEnv("OPENAI_TTS_MODEL", "gpt-4o-mini-tts"), voice: body.voice ?? getEnv("OPENAI_TTS_VOICE", "marin"), input: text, instructions: "דבר בעברית ישראלית טבעית, ברורה וקצרה." })
     });
     if (!response.ok) throw new BadGatewayException(`OpenAI TTS failed with ${response.status}`);
     const bytes = Buffer.from(await response.arrayBuffer());
-    log("info", "openai tts completed", { model: getEnv("OPENAI_TTS_MODEL", "gpt-4o-mini-tts"), voice: body.voice ?? getEnv("OPENAI_TTS_VOICE", "coral"), bytes: bytes.byteLength, durationMs: Date.now() - startedAt });
+    log("info", "openai tts completed", { model: getEnv("OPENAI_TTS_MODEL", "gpt-4o-mini-tts"), voice: body.voice ?? getEnv("OPENAI_TTS_VOICE", "marin"), bytes: bytes.byteLength, durationMs: Date.now() - startedAt });
     return { provider: "openai", text, contentType: "audio/mpeg", audioBase64: bytes.toString("base64") };
   }
 }

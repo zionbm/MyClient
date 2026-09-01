@@ -205,7 +205,7 @@ jobs:
               --image="$(image_for voice)" \
               --service-account="$RUNTIME_SERVICE_ACCOUNT" \
               --no-allow-unauthenticated \
-              --set-env-vars=NODE_ENV=production,DEFAULT_LOCALE=he-IL,MOCK_STT_PROVIDER=false,MOCK_TTS_PROVIDER=false,OPENAI_STT_MODEL=gpt-4o-mini-transcribe,OPENAI_TTS_MODEL=gpt-4o-mini-tts,OPENAI_TTS_VOICE=coral \
+              --set-env-vars=NODE_ENV=production,DEFAULT_LOCALE=he-IL,MOCK_STT_PROVIDER=false,MOCK_TTS_PROVIDER=false,OPENAI_STT_MODEL=gpt-4o-mini-transcribe,OPENAI_TTS_MODEL=gpt-4o-mini-tts,OPENAI_TTS_VOICE=marin \
               --set-secrets=INTERNAL_API_SECRET=INTERNAL_API_SECRET:latest,OPENAI_API_KEY=OPENAI_API_KEY:latest \
               --quiet
             gcloud run services add-iam-policy-binding myclient-voice \
