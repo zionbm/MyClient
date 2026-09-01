@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable } from "@nestjs/common";
 import { cloudRunServiceAuthHeaders, getEnv, getInternalApiSecret } from "@myclient/common";
-import { AiActionBatchSchema, AiActionSchema } from "@myclient/contracts";
+import { AiActionBatchSchema, AiActionSchema, AssistantPlanSchema } from "@myclient/contracts";
 
 @Injectable()
 export class CoreVoiceInternalClient {
@@ -71,5 +71,23 @@ export class CoreAiInternalClient {
       ? AiActionBatchSchema.parse({ actions: result.actions }).actions
       : [AiActionSchema.parse(result.action)];
     return { provider: result.provider ?? "openai", action: actions[0], actions };
+  }
+
+  async planV2AssistantCommand(input: { transcript: string; context: unknown }) {
+    const aiBaseUrl = getEnv("AI_BASE_URL", "http://localhost:3001");
+    const response = await fetch(`${aiBaseUrl}/v2/assistant/plan`, {
+      method: "POST",
+      headers: {
+        ...(await cloudRunServiceAuthHeaders(aiBaseUrl)),
+        "content-type": "application/json",
+        "x-internal-secret": getInternalApiSecret()
+      },
+      body: JSON.stringify(input)
+    });
+    const result = (await response.json().catch(() => ({}))) as { provider?: string; plan?: unknown };
+    if (!response.ok) {
+      throw new BadRequestException({ message: `AI V2 planning failed with ${response.status}`, details: result });
+    }
+    return { provider: result.provider ?? "openai", plan: AssistantPlanSchema.parse(result.plan) };
   }
 }

@@ -34,6 +34,7 @@ import {
   OwnerVoiceCommandsRepository,
   AiPendingActionsRepository,
   ActionBatchesRepository,
+  AssistantSessionsRepository,
   QuotesRepository,
   UserPreferencesRepository,
   V2CustomerPhonesRepository,
@@ -62,6 +63,7 @@ import { CoreVoiceCommandsApplicationService } from "./core-voice-commands-appli
 import { CoreV2CustomersService } from "./core-v2-customers.service.js";
 import { CoreV2IdempotencyService } from "./core-v2-idempotency.service.js";
 import { CoreV2TasksService } from "./core-v2-tasks.service.js";
+import { CoreV2AssistantService } from "./core-v2-assistant.service.js";
 import {
   buildReminderFromCallDescription,
   buildReminderNotificationBody,
@@ -441,6 +443,7 @@ const {
   SearchController,
   SystemController,
   V2CustomersController,
+  V2AssistantController,
   V2TasksController,
   VoiceCommandsController,
   WorkItemsController
@@ -454,6 +457,7 @@ const {
     CustomersController,
     SearchController,
     V2CustomersController,
+    V2AssistantController,
     V2TasksController,
     WorkItemsController,
     NotificationsController,
@@ -480,6 +484,7 @@ const {
     OwnerVoiceCommandsRepository,
     AiPendingActionsRepository,
     ActionBatchesRepository,
+    AssistantSessionsRepository,
     UserPreferencesRepository,
     V2CustomersRepository,
     V2CustomerPhonesRepository,
@@ -500,6 +505,7 @@ const {
     CoreV2IdempotencyService,
     CoreV2CustomersService,
     CoreV2TasksService,
+    CoreV2AssistantService,
     CoreCustomersService,
     CoreVoiceCommandsApplicationService,
     CoreWorkItemsService,

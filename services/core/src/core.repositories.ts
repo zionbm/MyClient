@@ -58,6 +58,7 @@ export {
 
 export {
   ActionBatchesRepository,
+  AssistantSessionsRepository,
   UserPreferencesRepository
 } from "./repositories/v2-foundation.repositories.js";
 

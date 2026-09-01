@@ -3,7 +3,14 @@ import { BadGatewayException, Body, Controller, Get, Headers, Module, Post, Unau
 import { NestFactory } from "@nestjs/core";
 import { FastifyAdapter, type NestFastifyApplication } from "@nestjs/platform-fastify";
 import { ApiExceptionFilter, configureHttpObservability, getEnv, getInternalApiSecret, getPort, health, log, stableIdempotencyKey } from "@myclient/common";
-import { ACTION_TYPES, AiActionBatchSchema, type AiAction } from "@myclient/contracts";
+import {
+  ACTION_TYPES,
+  AiActionBatchSchema,
+  AssistantPlanSchema,
+  ASSISTANT_TOOL_NAMES,
+  type AiAction,
+  type AssistantPlan
+} from "@myclient/contracts";
 
 type RequestHeaders = Record<string, string | string[] | undefined>;
 
@@ -64,6 +71,140 @@ class AiController {
       action: actions[0],
       actions
     };
+  }
+
+  @Post("v2/assistant/plan")
+  async planV2(@Headers() headers: RequestHeaders, @Body() body: { transcript?: string; context?: unknown }) {
+    requireInternalSecret(headers);
+    const transcript = (body.transcript ?? "").trim();
+    const plan = getEnv("MOCK_LLM_PROVIDER", "false") === "true"
+      ? this.mockV2Plan(transcript)
+      : await this.openAiV2Plan(transcript, body.context);
+    return {
+      provider: getEnv("MOCK_LLM_PROVIDER", "false") === "true" ? "mock" : "openai",
+      plan: AssistantPlanSchema.parse(plan)
+    };
+  }
+
+  private mockV2Plan(transcript: string): AssistantPlan {
+    const customerName = transcript.match(/(?:לקוח\s+)?בשם\s+(.+?)(?=\s+ו(?:תזכיר|תוסיף|תיצר|תיצור)|[,.;]|$)/)?.[1]?.trim();
+    const taskText = transcript.match(/(?:תזכירי?\s+לי|תוסיף(?:י)?\s+משימה)\s+(.+?)(?:[.;]|$)/)?.[1]?.trim();
+    const steps: AssistantPlan["steps"] = [];
+    if (customerName) {
+      steps.push({
+        stepId: "create_customer",
+        kind: "WRITE",
+        tool: "CREATE_CUSTOMER",
+        dependsOn: [],
+        input: { name: customerName },
+        confidence: 0.95,
+        requiresExplicitConfirmation: false
+      });
+    }
+    if (taskText) {
+      steps.push({
+        stepId: "create_task",
+        kind: "WRITE",
+        tool: "CREATE_TASK",
+        dependsOn: customerName ? ["create_customer"] : [],
+        input: {
+          title: taskText,
+          ...(customerName ? { customerRef: { stepId: "create_customer", outputField: "entityId" } } : {})
+        },
+        confidence: 0.9,
+        requiresExplicitConfirmation: false
+      });
+    }
+    if (steps.length === 0) {
+      steps.push({
+        stepId: "clarify_request",
+        kind: "CLARIFY",
+        tool: "ASK_CLARIFICATION",
+        dependsOn: [],
+        input: { question: "מה תרצה שאוסיף?" },
+        confidence: 1,
+        requiresExplicitConfirmation: false
+      });
+    }
+    return {
+      version: "2",
+      requestKind: "ACTION",
+      language: "he-IL",
+      extractedFacts: { ...(customerName ? { customerName } : {}), ...(taskText ? { taskText } : {}) },
+      steps
+    };
+  }
+
+  private async openAiV2Plan(transcript: string, context: unknown): Promise<AssistantPlan> {
+    const response = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${getEnv("OPENAI_API_KEY")}`,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        model: getEnv("OPENAI_LLM_MODEL", "gpt-5-mini"),
+        input: [
+          {
+            role: "system",
+            content:
+              "אתה מתכנן פעולות עבור MyClient V2. החזר AssistantPlan בעברית he-IL בלבד. " +
+              "בשלב הנוכחי בצע רק CREATE_CUSTOMER ו-CREATE_TASK. לקוח דורש שם בלבד ומשימה דורשת title בלבד. " +
+              "אם משימה תלויה בלקוח שנוצר קודם, השתמש ב-customerRef עם stepId ו-outputField=entityId. " +
+              "אל תמציא מזהים. מידע חסר הופך ל-ASK_CLARIFICATION. עד 10 צעדים וללא מעגלים."
+          },
+          { role: "user", content: `context: ${JSON.stringify(context ?? {})}\nתמלול מאושר: ${transcript}` }
+        ],
+        text: {
+          format: {
+            type: "json_schema",
+            name: "assistant_plan_v2",
+            strict: false,
+            schema: {
+              type: "object",
+              additionalProperties: false,
+              required: ["version", "requestKind", "language", "extractedFacts", "steps"],
+              properties: {
+                version: { type: "string", enum: ["2"] },
+                requestKind: { type: "string", enum: ["QUESTION", "ACTION", "MIXED"] },
+                language: { type: "string", enum: ["he-IL"] },
+                extractedFacts: { type: "object", additionalProperties: true },
+                steps: {
+                  type: "array",
+                  minItems: 1,
+                  maxItems: 10,
+                  items: {
+                    type: "object",
+                    additionalProperties: false,
+                    required: ["stepId", "kind", "tool", "dependsOn", "input", "confidence", "requiresExplicitConfirmation"],
+                    properties: {
+                      stepId: { type: "string" },
+                      kind: { type: "string", enum: ["READ", "WRITE", "CLARIFY", "RESPOND"] },
+                      tool: { type: "string", enum: ASSISTANT_TOOL_NAMES },
+                      dependsOn: { type: "array", items: { type: "string" } },
+                      input: { type: "object", additionalProperties: true },
+                      confidence: { type: "number", minimum: 0, maximum: 1 },
+                      requiresExplicitConfirmation: { type: "boolean" }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      })
+    });
+    const result = (await response.json().catch(() => ({}))) as {
+      output_text?: string;
+      error?: { message?: string };
+      output?: Array<{ content?: Array<{ text?: string }> }>;
+    };
+    if (!response.ok) {
+      throw new BadGatewayException({ message: `OpenAI V2 planning failed with ${response.status}`, details: result });
+    }
+    const outputText = result.output_text ?? result.output?.flatMap((item) => item.content ?? []).find((content) => content.text)?.text;
+    if (!outputText) throw new BadGatewayException("OpenAI V2 planning returned empty output");
+    return AssistantPlanSchema.parse(JSON.parse(outputText));
   }
 
   private async openAiActions(text: string, idempotencyKey: string): Promise<AiAction[]> {

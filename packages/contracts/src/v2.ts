@@ -157,3 +157,123 @@ export const V2MergeCustomerSchema = V2ConfirmedMutationSchema.extend({
   targetCustomerId: z.string().trim().min(1)
 });
 export type V2MergeCustomer = z.infer<typeof V2MergeCustomerSchema>;
+
+export const ASSISTANT_TOOL_NAMES = [
+  "FIND_CUSTOMERS",
+  "GET_CUSTOMER_TIMELINE",
+  "FIND_TASKS",
+  "FIND_JOBS",
+  "FIND_VISITS",
+  "GET_ACTIVITY_AMOUNT",
+  "GET_SCHEDULE",
+  "GET_AVAILABILITY",
+  "GET_PAYMENT_SUMMARY",
+  "GET_OPEN_BALANCES",
+  "CREATE_CUSTOMER",
+  "UPDATE_CUSTOMER",
+  "ADD_CUSTOMER_PHONE",
+  "UPDATE_CUSTOMER_PHONE",
+  "DELETE_CUSTOMER_PHONE",
+  "ADD_SERVICE_ADDRESS",
+  "UPDATE_SERVICE_ADDRESS",
+  "DELETE_SERVICE_ADDRESS",
+  "CREATE_TASK",
+  "UPDATE_TASK",
+  "COMPLETE_TASK",
+  "CANCEL_TASK",
+  "REOPEN_TASK",
+  "DELETE_TASK",
+  "CREATE_JOB",
+  "UPDATE_JOB",
+  "REPORT_JOB_COMPLETED",
+  "CANCEL_JOB",
+  "REOPEN_JOB",
+  "DELETE_JOB",
+  "CREATE_VISIT",
+  "UPDATE_VISIT",
+  "REPORT_VISIT_COMPLETED",
+  "CANCEL_VISIT",
+  "REOPEN_VISIT",
+  "DELETE_VISIT",
+  "SET_ACTIVITY_AMOUNT",
+  "ADD_PAYMENT",
+  "SET_PAID_TOTAL",
+  "SETTLE_BALANCE",
+  "MERGE_CUSTOMERS",
+  "RESTORE_CUSTOMER",
+  "UNDO_ACTION_BATCH",
+  "ASK_CLARIFICATION",
+  "RESPOND"
+] as const;
+
+export const AssistantToolNameSchema = z.enum(ASSISTANT_TOOL_NAMES);
+export type AssistantToolName = z.infer<typeof AssistantToolNameSchema>;
+
+export const AssistantStepReferenceSchema = z.object({
+  stepId: z.string().trim().min(1),
+  outputField: z.string().trim().min(1)
+});
+export type AssistantStepReference = z.infer<typeof AssistantStepReferenceSchema>;
+
+export const AssistantPlanStepSchema = z.object({
+  stepId: z.string().trim().min(1),
+  kind: z.enum(["READ", "WRITE", "CLARIFY", "RESPOND"]),
+  tool: AssistantToolNameSchema,
+  dependsOn: z.array(z.string().trim().min(1)).default([]),
+  input: z.record(z.unknown()),
+  confidence: z.number().min(0).max(1),
+  requiresExplicitConfirmation: z.boolean()
+});
+export type AssistantPlanStep = z.infer<typeof AssistantPlanStepSchema>;
+
+export const AssistantPlanSchema = z.object({
+  version: z.literal("2"),
+  requestKind: z.enum(["QUESTION", "ACTION", "MIXED"]),
+  language: z.literal("he-IL"),
+  extractedFacts: z.record(z.unknown()),
+  steps: z.array(AssistantPlanStepSchema).min(1).max(10)
+}).superRefine((plan, context) => {
+  const stepIds = new Set<string>();
+  for (const [index, step] of plan.steps.entries()) {
+    if (stepIds.has(step.stepId)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["steps", index, "stepId"], message: "stepId must be unique" });
+    }
+    stepIds.add(step.stepId);
+  }
+  for (const [index, step] of plan.steps.entries()) {
+    for (const dependency of step.dependsOn) {
+      if (!stepIds.has(dependency) || dependency === step.stepId) {
+        context.addIssue({ code: z.ZodIssueCode.custom, path: ["steps", index, "dependsOn"], message: "dependency must reference another step" });
+      }
+    }
+  }
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const byId = new Map(plan.steps.map((step) => [step.stepId, step]));
+  const visit = (stepId: string): boolean => {
+    if (visiting.has(stepId)) return false;
+    if (visited.has(stepId)) return true;
+    visiting.add(stepId);
+    for (const dependency of byId.get(stepId)?.dependsOn ?? []) {
+      if (!visit(dependency)) return false;
+    }
+    visiting.delete(stepId);
+    visited.add(stepId);
+    return true;
+  };
+  if (!plan.steps.every((step) => visit(step.stepId))) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["steps"], message: "step dependencies must not contain cycles" });
+  }
+});
+export type AssistantPlan = z.infer<typeof AssistantPlanSchema>;
+
+export const V2CreateAssistantSessionSchema = z.object({
+  clientSessionId: z.string().trim().min(1).max(200)
+});
+export type V2CreateAssistantSession = z.infer<typeof V2CreateAssistantSessionSchema>;
+
+export const V2AssistantCommandSchema = z.object({
+  transcript: z.string().trim().min(2),
+  clientSessionId: z.string().trim().min(1).max(200)
+});
+export type V2AssistantCommand = z.infer<typeof V2AssistantCommandSchema>;

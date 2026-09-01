@@ -10,6 +10,7 @@ import { CoreVoiceCommandsApplicationService } from "./core-voice-commands-appli
 import { CoreSearchService } from "./core-search.service.js";
 import { CoreV2CustomersService } from "./core-v2-customers.service.js";
 import { CoreV2TasksService } from "./core-v2-tasks.service.js";
+import { CoreV2AssistantService } from "./core-v2-assistant.service.js";
 
 export const CORE_SERVICE = Symbol("CORE_SERVICE");
 
@@ -161,6 +162,16 @@ defineRoutes(V2TasksController, [
   { name: "completeTask", method: "post", path: "v2/businesses/:businessId/tasks/:taskId/complete", delegate: (core, request) => core.completeTask(headers(request), params(request).businessId, params(request).taskId) },
   { name: "cancelTask", method: "post", path: "v2/businesses/:businessId/tasks/:taskId/cancel", delegate: (core, request) => core.cancelTask(headers(request), params(request).businessId, params(request).taskId) },
   { name: "reopenTask", method: "post", path: "v2/businesses/:businessId/tasks/:taskId/reopen", delegate: (core, request) => core.reopenTask(headers(request), params(request).businessId, params(request).taskId) }
+]);
+
+@Controller()
+export class V2AssistantController {
+  constructor(@Inject(CoreV2AssistantService) readonly core: CoreV2AssistantService) {}
+}
+
+defineRoutes(V2AssistantController, [
+  { name: "createSession", method: "post", path: "v2/businesses/:businessId/assistant/sessions", delegate: (core, request) => core.createSession(headers(request), params(request).businessId, request.body) },
+  { name: "command", method: "post", path: "v2/businesses/:businessId/assistant/sessions/:sessionId/commands", delegate: (core, request) => core.command(headers(request), params(request).businessId, params(request).sessionId, request.body) }
 ]);
 
 @Controller()
