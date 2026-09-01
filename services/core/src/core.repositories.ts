@@ -70,6 +70,7 @@ export {
 } from "./repositories/v2-crm.repositories.js";
 
 export { V2ActivitiesRepository } from "./repositories/v2-activities.repositories.js";
+export { V2AmountsRepository } from "./repositories/v2-amounts.repositories.js";
 
 type CreateReminderInput = {
   businessId: string;

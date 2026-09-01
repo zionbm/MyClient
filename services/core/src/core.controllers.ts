@@ -1,4 +1,4 @@
-import { Controller, Delete, Get, Inject, Patch, Post, Req, type Type } from "@nestjs/common";
+import { Controller, Delete, Get, Inject, Patch, Post, Put, Req, type Type } from "@nestjs/common";
 import type { FastifyRequest } from "fastify";
 import type { CoreService } from "./main.js";
 import { CoreCustomersService } from "./core-customers.service.js";
@@ -13,10 +13,11 @@ import { CoreV2TasksService } from "./core-v2-tasks.service.js";
 import { CoreV2AssistantService } from "./core-v2-assistant.service.js";
 import { CoreV2ActivitiesService } from "./core-v2-activities.service.js";
 import { CoreV2SearchService } from "./core-v2-search.service.js";
+import { CoreV2AmountsService } from "./core-v2-amounts.service.js";
 
 export const CORE_SERVICE = Symbol("CORE_SERVICE");
 
-type RouteMethod = "get" | "post" | "patch" | "delete";
+type RouteMethod = "get" | "post" | "put" | "patch" | "delete";
 type Delegate<T> = (core: T, request: FastifyRequest) => unknown;
 
 type RouteDefinition<T> = {
@@ -37,7 +38,7 @@ function params(request: FastifyRequest) {
 }
 
 function routeDecorator(method: RouteMethod) {
-  return { get: Get, post: Post, patch: Patch, delete: Delete }[method];
+  return { get: Get, post: Post, put: Put, patch: Patch, delete: Delete }[method];
 }
 
 function defineRoutes<T>(controller: CoreControllerType<T>, routes: RouteDefinition<T>[]) {
@@ -187,7 +188,7 @@ defineRoutes(V2ActivitiesController, [
   { name: "getJob", method: "get", path: "v2/businesses/:businessId/jobs/:jobId", delegate: (core, request) => core.get("job", headers(request), params(request).businessId, params(request).jobId) },
   { name: "updateJob", method: "patch", path: "v2/businesses/:businessId/jobs/:jobId", delegate: (core, request) => core.update("job", headers(request), params(request).businessId, params(request).jobId, request.body) },
   { name: "deleteJob", method: "delete", path: "v2/businesses/:businessId/jobs/:jobId", delegate: (core, request) => core.delete("job", headers(request), params(request).businessId, params(request).jobId) },
-  { name: "reportJobCompleted", method: "post", path: "v2/businesses/:businessId/jobs/:jobId/report-completed", delegate: (core, request) => core.reportCompleted("job", headers(request), params(request).businessId, params(request).jobId) },
+  { name: "reportJobCompleted", method: "post", path: "v2/businesses/:businessId/jobs/:jobId/report-completed", delegate: (core, request) => core.reportCompleted("job", headers(request), params(request).businessId, params(request).jobId, request.body) },
   { name: "cancelJob", method: "post", path: "v2/businesses/:businessId/jobs/:jobId/cancel", delegate: (core, request) => core.cancel("job", headers(request), params(request).businessId, params(request).jobId) },
   { name: "reopenJob", method: "post", path: "v2/businesses/:businessId/jobs/:jobId/reopen", delegate: (core, request) => core.reopen("job", headers(request), params(request).businessId, params(request).jobId) },
   { name: "listVisits", method: "get", path: "v2/businesses/:businessId/visits", delegate: (core, request) => core.list("visit", headers(request), params(request).businessId, request.query) },
@@ -195,7 +196,7 @@ defineRoutes(V2ActivitiesController, [
   { name: "getVisit", method: "get", path: "v2/businesses/:businessId/visits/:visitId", delegate: (core, request) => core.get("visit", headers(request), params(request).businessId, params(request).visitId) },
   { name: "updateVisit", method: "patch", path: "v2/businesses/:businessId/visits/:visitId", delegate: (core, request) => core.update("visit", headers(request), params(request).businessId, params(request).visitId, request.body) },
   { name: "deleteVisit", method: "delete", path: "v2/businesses/:businessId/visits/:visitId", delegate: (core, request) => core.delete("visit", headers(request), params(request).businessId, params(request).visitId) },
-  { name: "reportVisitCompleted", method: "post", path: "v2/businesses/:businessId/visits/:visitId/report-completed", delegate: (core, request) => core.reportCompleted("visit", headers(request), params(request).businessId, params(request).visitId) },
+  { name: "reportVisitCompleted", method: "post", path: "v2/businesses/:businessId/visits/:visitId/report-completed", delegate: (core, request) => core.reportCompleted("visit", headers(request), params(request).businessId, params(request).visitId, request.body) },
   { name: "cancelVisit", method: "post", path: "v2/businesses/:businessId/visits/:visitId/cancel", delegate: (core, request) => core.cancel("visit", headers(request), params(request).businessId, params(request).visitId) },
   { name: "reopenVisit", method: "post", path: "v2/businesses/:businessId/visits/:visitId/reopen", delegate: (core, request) => core.reopen("visit", headers(request), params(request).businessId, params(request).visitId) },
   { name: "schedule", method: "get", path: "v2/businesses/:businessId/schedule", delegate: (core, request) => core.schedule(headers(request), params(request).businessId, request.query) },
@@ -210,6 +211,24 @@ export class V2SearchController {
 
 defineRoutes(V2SearchController, [
   { name: "search", method: "get", path: "v2/businesses/:businessId/search", delegate: (core, request) => core.search(headers(request), params(request).businessId, request.query) }
+]);
+
+@Controller()
+export class V2AmountsController {
+  constructor(@Inject(CoreV2AmountsService) readonly core: CoreV2AmountsService) {}
+}
+
+defineRoutes(V2AmountsController, [
+  { name: "getJobAmount", method: "get", path: "v2/businesses/:businessId/jobs/:jobId/amount", delegate: (core, request) => core.get("job", headers(request), params(request).businessId, params(request).jobId) },
+  { name: "putJobAmount", method: "put", path: "v2/businesses/:businessId/jobs/:jobId/amount", delegate: (core, request) => core.put("job", headers(request), params(request).businessId, params(request).jobId, request.body) },
+  { name: "patchJobAmount", method: "patch", path: "v2/businesses/:businessId/jobs/:jobId/amount", delegate: (core, request) => core.patch("job", headers(request), params(request).businessId, params(request).jobId, request.body) },
+  { name: "payJobAmount", method: "post", path: "v2/businesses/:businessId/jobs/:jobId/amount/payments", delegate: (core, request) => core.payment("job", headers(request), params(request).businessId, params(request).jobId, request.body) },
+  { name: "getVisitAmount", method: "get", path: "v2/businesses/:businessId/visits/:visitId/amount", delegate: (core, request) => core.get("visit", headers(request), params(request).businessId, params(request).visitId) },
+  { name: "putVisitAmount", method: "put", path: "v2/businesses/:businessId/visits/:visitId/amount", delegate: (core, request) => core.put("visit", headers(request), params(request).businessId, params(request).visitId, request.body) },
+  { name: "patchVisitAmount", method: "patch", path: "v2/businesses/:businessId/visits/:visitId/amount", delegate: (core, request) => core.patch("visit", headers(request), params(request).businessId, params(request).visitId, request.body) },
+  { name: "payVisitAmount", method: "post", path: "v2/businesses/:businessId/visits/:visitId/amount/payments", delegate: (core, request) => core.payment("visit", headers(request), params(request).businessId, params(request).visitId, request.body) },
+  { name: "paymentReport", method: "get", path: "v2/businesses/:businessId/reports/payments", delegate: (core, request) => core.paymentReport(headers(request), params(request).businessId, request.query) },
+  { name: "openBalances", method: "get", path: "v2/businesses/:businessId/reports/open-balances", delegate: (core, request) => core.openBalances(headers(request), params(request).businessId) }
 ]);
 
 @Controller()

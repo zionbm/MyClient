@@ -5,6 +5,7 @@ import {
   V2CreateJobSchema,
   V2CreateVisitSchema,
   V2ScheduleQuerySchema,
+  V2ReportCompletedSchema,
   V2UpdateActivitySchema
 } from "@myclient/contracts";
 import { CoreAccessService } from "./core-access.service.js";
@@ -80,7 +81,8 @@ export class CoreV2ActivitiesService {
     }, command.allowScheduleConflict ?? false);
   }
 
-  reportCompleted(kind: V2ActivityKind, headers: RequestHeaders, businessId: string, entityId: string) {
+  reportCompleted(kind: V2ActivityKind, headers: RequestHeaders, businessId: string, entityId: string, body: unknown) {
+    const command = V2ReportCompletedSchema.parse(body ?? {});
     return this.lifecycle(kind, headers, businessId, entityId, "report_completed", async (existing, userId) => {
       const amount = existing.amounts[0];
       const paid = amount?.paymentStatus === "PAID";
@@ -88,11 +90,11 @@ export class CoreV2ActivitiesService {
         update: {
           executionCompletedAt: new Date(),
           executionCompletedByUserId: userId,
-          status: paid ? "CLOSED" as ActivityStatus : "OPEN" as ActivityStatus
+          status: paid || (!amount && command.noCharge === true) ? "CLOSED" as ActivityStatus : "OPEN" as ActivityStatus
         },
         clarification: amount
           ? amount.paymentStatus === "PAID" ? undefined : "הביצוע הסתיים, אך נשארה יתרה פתוחה ולכן הפעילות נשארה פתוחה."
-          : "הביצוע הסתיים. האם היה חיוב עבור הפעילות?"
+          : command.noCharge === true ? undefined : "הביצוע הסתיים. האם היה חיוב עבור הפעילות?"
       };
     });
   }

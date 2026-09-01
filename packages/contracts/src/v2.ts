@@ -334,3 +334,39 @@ export const V2SearchQuerySchema = V2PaginationQuerySchema.extend({
   target: z.enum(["all", "customers", "tasks", "jobs", "visits"]).default("all"),
   status: z.enum(["all", "open", "closed", "cancelled"]).default("all")
 });
+
+export const V2PutAmountSchema = z.object({
+  totalAmount: V2MoneySchema,
+  paidAmount: V2MoneySchema.optional(),
+  confirmed: z.boolean().optional()
+});
+export type V2PutAmount = z.infer<typeof V2PutAmountSchema>;
+
+export const V2UpdateAmountSchema = z.object({
+  totalAmount: V2MoneySchema.optional(),
+  paidAmount: V2MoneySchema.optional(),
+  confirmed: z.boolean().optional(),
+  version: V2EntityVersionSchema.optional()
+}).refine((value) => value.totalAmount !== undefined || value.paidAmount !== undefined, {
+  message: "At least one amount field is required"
+});
+export type V2UpdateAmount = z.infer<typeof V2UpdateAmountSchema>;
+
+export const V2AddPaymentSchema = z.object({
+  mode: V2PaymentModeSchema,
+  amount: V2MoneySchema.optional()
+}).superRefine((value, context) => {
+  if (value.mode !== "SETTLE_BALANCE" && value.amount === undefined) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["amount"], message: "amount is required for this payment mode" });
+  }
+});
+export type V2AddPayment = z.infer<typeof V2AddPaymentSchema>;
+
+export const V2ReportCompletedSchema = z.object({
+  noCharge: z.boolean().optional()
+});
+
+export const V2DateRangeQuerySchema = z.object({
+  from: z.string().datetime({ offset: true }),
+  to: z.string().datetime({ offset: true })
+}).refine((value) => new Date(value.to) > new Date(value.from), { message: "to must be after from" });
