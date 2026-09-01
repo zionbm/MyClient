@@ -37,6 +37,47 @@ test("AssistantPlan accepts an ordered customer-to-task reference", () => {
   assert.equal(result.steps.length, 2);
 });
 
+test("AssistantPlan rejects arbitrary reference output fields", () => {
+  const result = AssistantPlanSchema.safeParse({
+    ...basePlan,
+    steps: [
+      { stepId: "customer", kind: "WRITE", tool: "CREATE_CUSTOMER", dependsOn: [], input: { name: "נועה" }, confidence: 1, requiresExplicitConfirmation: false },
+      { stepId: "task", kind: "WRITE", tool: "CREATE_TASK", dependsOn: ["customer"], input: { title: "לחזור", customerRef: { stepId: "customer", outputField: "customer.id" } }, confidence: 1, requiresExplicitConfirmation: false }
+    ]
+  });
+  assert.equal(result.success, false);
+});
+
+test("AssistantPlan requires references to be direct dependencies", () => {
+  const result = AssistantPlanSchema.safeParse({
+    ...basePlan,
+    steps: [
+      { stepId: "customer", kind: "WRITE", tool: "CREATE_CUSTOMER", dependsOn: [], input: { name: "נועה" }, confidence: 1, requiresExplicitConfirmation: false },
+      { stepId: "task", kind: "WRITE", tool: "CREATE_TASK", dependsOn: [], input: { title: "לחזור", customerRef: { stepId: "customer", outputField: "entityId" } }, confidence: 1, requiresExplicitConfirmation: false }
+    ]
+  });
+  assert.equal(result.success, false);
+});
+
+test("AssistantPlan rejects references to non-entity and later steps", () => {
+  const nonEntity = AssistantPlanSchema.safeParse({
+    ...basePlan,
+    steps: [
+      { stepId: "availability", kind: "READ", tool: "GET_AVAILABILITY", dependsOn: [], input: { date: "2026-09-02", durationMinutes: 60 }, confidence: 1, requiresExplicitConfirmation: false },
+      { stepId: "task", kind: "WRITE", tool: "CREATE_TASK", dependsOn: ["availability"], input: { title: "לחזור", entityRef: { stepId: "availability", outputField: "entityId" } }, confidence: 1, requiresExplicitConfirmation: false }
+    ]
+  });
+  const later = AssistantPlanSchema.safeParse({
+    ...basePlan,
+    steps: [
+      { stepId: "task", kind: "WRITE", tool: "CREATE_TASK", dependsOn: ["customer"], input: { title: "לחזור", customerRef: { stepId: "customer", outputField: "entityId" } }, confidence: 1, requiresExplicitConfirmation: false },
+      { stepId: "customer", kind: "WRITE", tool: "CREATE_CUSTOMER", dependsOn: [], input: { name: "נועה" }, confidence: 1, requiresExplicitConfirmation: false }
+    ]
+  });
+  assert.equal(nonEntity.success, false);
+  assert.equal(later.success, false);
+});
+
 test("grounded summary rejects amounts absent from the receipt", () => {
   const receipt = { steps: [{ status: "COMPLETED", totalAmount: 500 }] };
   assert.equal(summaryIsGrounded("נשמרו 500 שקלים", receipt), true);

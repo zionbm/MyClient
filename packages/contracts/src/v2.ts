@@ -211,9 +211,19 @@ export type AssistantToolName = z.infer<typeof AssistantToolNameSchema>;
 
 export const AssistantStepReferenceSchema = z.object({
   stepId: z.string().trim().min(1),
-  outputField: z.string().trim().min(1)
+  outputField: z.literal("entityId")
 });
 export type AssistantStepReference = z.infer<typeof AssistantStepReferenceSchema>;
+
+const ASSISTANT_ENTITY_OUTPUT_TOOLS = new Set<AssistantToolName>([
+  "FIND_CUSTOMERS", "FIND_TASKS", "FIND_JOBS", "FIND_VISITS", "GET_ACTIVITY_AMOUNT",
+  "CREATE_CUSTOMER", "UPDATE_CUSTOMER", "ADD_CUSTOMER_PHONE", "UPDATE_CUSTOMER_PHONE", "DELETE_CUSTOMER_PHONE",
+  "ADD_SERVICE_ADDRESS", "UPDATE_SERVICE_ADDRESS", "DELETE_SERVICE_ADDRESS",
+  "CREATE_TASK", "UPDATE_TASK", "COMPLETE_TASK", "CANCEL_TASK", "REOPEN_TASK", "DELETE_TASK",
+  "CREATE_JOB", "UPDATE_JOB", "REPORT_JOB_COMPLETED", "CANCEL_JOB", "REOPEN_JOB", "DELETE_JOB",
+  "CREATE_VISIT", "UPDATE_VISIT", "REPORT_VISIT_COMPLETED", "CANCEL_VISIT", "REOPEN_VISIT", "DELETE_VISIT",
+  "SET_ACTIVITY_AMOUNT", "ADD_PAYMENT", "SET_PAID_TOTAL", "SETTLE_BALANCE", "MERGE_CUSTOMERS", "RESTORE_CUSTOMER"
+]);
 
 export const AssistantPlanStepSchema = z.object({
   stepId: z.string().trim().min(1),
@@ -244,6 +254,24 @@ export const AssistantPlanSchema = z.object({
     for (const dependency of step.dependsOn) {
       if (!stepIds.has(dependency) || dependency === step.stepId) {
         context.addIssue({ code: z.ZodIssueCode.custom, path: ["steps", index, "dependsOn"], message: "dependency must reference another step" });
+      }
+    }
+    for (const [inputField, value] of Object.entries(step.input)) {
+      if (!inputField.endsWith("Ref")) continue;
+      const parsedReference = AssistantStepReferenceSchema.safeParse(value);
+      if (!parsedReference.success) {
+        context.addIssue({ code: z.ZodIssueCode.custom, path: ["steps", index, "input", inputField], message: "step reference must contain stepId and outputField=entityId" });
+        continue;
+      }
+      const referencedIndex = plan.steps.findIndex((candidate) => candidate.stepId === parsedReference.data.stepId);
+      const referencedStep = referencedIndex >= 0 ? plan.steps[referencedIndex] : undefined;
+      if (!step.dependsOn.includes(parsedReference.data.stepId)) {
+        context.addIssue({ code: z.ZodIssueCode.custom, path: ["steps", index, "dependsOn"], message: "step reference must be declared as a direct dependency" });
+      }
+      if (!referencedStep || referencedIndex >= index) {
+        context.addIssue({ code: z.ZodIssueCode.custom, path: ["steps", index, "input", inputField, "stepId"], message: "step reference must point to an earlier step" });
+      } else if (!ASSISTANT_ENTITY_OUTPUT_TOOLS.has(referencedStep.tool)) {
+        context.addIssue({ code: z.ZodIssueCode.custom, path: ["steps", index, "input", inputField, "stepId"], message: "referenced step does not produce an entityId" });
       }
     }
   }

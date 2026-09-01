@@ -221,7 +221,7 @@ class AiController {
               "לקוח חדש דורש שם בלבד; Task דורשת title בלבד; Job/Visit דורשים לקוח וכותרת. אל תניח שהיה או לא היה חיוב בסיום פעילות. " +
               "פתור ביטויי זמן רק לפי environment.now, environment.timezone ו-environment.workingHours שב-context: מחר הוא היום הקלנדרי הבא; יום בשבוע הוא המופע העתידי הקרוב; שעה שכבר חלפה היום דורשת clarification לגבי מחר; זמן מפורש בעבר אינו מוזז. החזר זמנים כ-ISO עם offset. " +
               "GET_AVAILABILITY דורש date בפורמט YYYY-MM-DD ו-durationMinutes. GET_SCHEDULE דורש from ו-to כ-ISO datetime; לשאלת הפעילות הבאה הוסף limit=1. " +
-              "אם משימה תלויה בלקוח שנוצר קודם, השתמש ב-customerRef עם stepId ו-outputField=entityId. " +
+              "אם שלב תלוי בישות שנמצאה או נוצרה בשלב קודם, הוסף את stepId ל-dependsOn והשתמש ב-customerRef או entityRef עם אותו stepId ו-outputField=entityId בלבד. אין להפנות לשלב מאוחר או לשלב שאינו מחזיר ישות. " +
               "אל תמציא מזהים. מידע חסר הופך ל-ASK_CLARIFICATION. עד 10 צעדים וללא מעגלים."
           },
           { role: "user", content: `context: ${JSON.stringify(context ?? {})}\nתמלול מאושר: ${transcript}` }
