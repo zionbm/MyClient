@@ -1,6 +1,8 @@
 export type WorkingDay = { open: string; close: string; closed?: boolean };
 export type WorkingHours = Record<string, WorkingDay>;
 
+export const AVAILABILITY_SLOT_INTERVAL_MINUTES = 30;
+
 export const DEFAULT_WORKING_HOURS: WorkingHours = {
   sunday: { open: "08:00", close: "18:00" },
   monday: { open: "08:00", close: "18:00" },
@@ -74,7 +76,7 @@ export function freeSlots(
 ) {
   if (!window) return [];
   const duration = durationMinutes * 60_000;
-  const step = 30 * 60_000;
+  const step = AVAILABILITY_SLOT_INTERVAL_MINUTES * 60_000;
   const slots: Array<{ startsAt: Date; endsAt: Date }> = [];
   for (let cursor = window.startsAt.getTime(); cursor + duration <= window.endsAt.getTime(); cursor += step) {
     const end = cursor + duration;

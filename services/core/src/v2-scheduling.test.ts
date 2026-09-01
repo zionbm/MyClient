@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { V2CreateJobSchema, V2UpdateActivitySchema, WorkingHoursSchema } from "@myclient/contracts";
-import { DEFAULT_WORKING_HOURS, freeSlots, localDateTimeToUtc, workingWindow } from "./v2-scheduling.js";
+import { AVAILABILITY_SLOT_INTERVAL_MINUTES, DEFAULT_WORKING_HOURS, freeSlots, localDateTimeToUtc, workingWindow } from "./v2-scheduling.js";
 
 test("default Israeli work week uses the product-defined hours", () => {
   const sunday = workingWindow("2026-09-06", "Asia/Jerusalem", DEFAULT_WORKING_HOURS);
@@ -19,6 +19,7 @@ test("timezone conversion follows daylight-saving changes", () => {
 });
 
 test("free slots exclude overlaps and use deterministic 30-minute starts", () => {
+  assert.equal(AVAILABILITY_SLOT_INTERVAL_MINUTES, 30);
   const window = {
     startsAt: new Date("2026-09-06T05:00:00.000Z"),
     endsAt: new Date("2026-09-06T08:00:00.000Z")
@@ -31,6 +32,15 @@ test("free slots exclude overlaps and use deterministic 30-minute starts", () =>
     "2026-09-06T05:00:00.000Z",
     "2026-09-06T07:00:00.000Z"
   ]);
+});
+
+test("the suggestion interval does not restrict an explicitly requested minute", () => {
+  const explicitQuarterHour = V2CreateJobSchema.safeParse({
+    customerId: "customer-1",
+    title: "התקנה",
+    startsAt: "2026-09-02T10:15:00+03:00"
+  });
+  assert.equal(explicitQuarterHour.success, true);
 });
 
 test("working-hours settings reject malformed or reversed open windows", () => {
