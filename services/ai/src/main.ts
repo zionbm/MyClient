@@ -8,6 +8,7 @@ import {
   ASSISTANT_TOOL_NAMES,
   type AssistantPlan
 } from "@myclient/contracts";
+import { normalizeAssistantPlan } from "./v2-assistant-plan.js";
 
 type RequestHeaders = Record<string, string | string[] | undefined>;
 
@@ -59,7 +60,7 @@ class AiController {
       body: JSON.stringify({
         model: getEnv("OPENAI_LLM_MODEL", "gpt-5-mini"),
         input: [
-          { role: "system", content: "נסח סיכום עברי טבעי וקצר אך ורק לפי קבלת הביצוע. אסור להוסיף פעולה, ישות, סכום או תוצאה שאינם בקבלה. חובה לכלול כל warning שמופיע בקבלה, ובפרט קביעה מחוץ לשעות העבודה." },
+          { role: "system", content: "נסח סיכום עברי טבעי וקצר אך ורק לפי קבלת הביצוע. אסור להוסיף פעולה, ישות, סכום או תוצאה שאינם בקבלה. אין להציג למשתמש UUID, מזהה פנימי או pendingActionId. חובה לכלול כל warning שמופיע בקבלה, ובפרט קביעה מחוץ לשעות העבודה." },
           { role: "user", content: `תמלול: ${body.transcript ?? ""}\nקבלה: ${JSON.stringify(body.receipt ?? {})}` }
         ],
         text: { format: { type: "json_schema", name: "assistant_summary_v2", strict: true, schema: { type: "object", additionalProperties: false, required: ["textSummary", "spokenSummary"], properties: { textSummary: { type: "string" }, spokenSummary: { type: "string" } } } } }
@@ -172,13 +173,17 @@ class AiController {
             role: "system",
             content:
               "אתה מתכנן פעולות עבור MyClient V2. החזר AssistantPlan בעברית he-IL בלבד. " +
-              "תכנן רק כלים מתוך ה-allowlist. לפני שינוי ישות קיימת השתמש ב-FIND_CUSTOMERS וב-FIND_TASKS/FIND_JOBS/FIND_VISITS לפי הצורך, ואז העבר entityRef מובנה לשלב הכתיבה. " +
+              "תכנן רק כלים מתוך ה-allowlist. לפני שינוי ישות קיימת השתמש ב-FIND_CUSTOMERS וב-FIND_TASKS/FIND_JOBS/FIND_VISITS לפי הצורך, ואז העבר entityRef מובנה לשלב הכתיבה. כאשר המשתמש מבקש במפורש ליצור לקוח חדש, צור אותו ישירות ואל תחפש לקוח קיים לפני היצירה. " +
               "יצירה רגילה, עדכון, השלמה, ביטול ודיווח סיום אינם דורשים אישור נוסף. מחיקה, מיזוג, Undo ועקיפת התנגשות דורשים requiresExplicitConfirmation=true. " +
-              "לקוח חדש דורש שם בלבד; Task דורשת title בלבד; Job/Visit דורשים לקוח וכותרת. אל תניח שהיה או לא היה חיוב בסיום פעילות. " +
+              "חוזי input מדויקים: CREATE/UPDATE_CUSTOMER משתמשים ב-name,email,generalNotes; ADD_CUSTOMER_PHONE משתמש ב-customerId או customerRef וב-phone,label,isPrimary; ADD_SERVICE_ADDRESS משתמש ב-customerId או customerRef וב-addressText,label; CREATE/UPDATE_TASK משתמשים ב-customerId או customerRef וב-title,description,dueAt; CREATE/UPDATE_JOB ו-CREATE/UPDATE_VISIT משתמשים ב-customerId או customerRef וב-title,description,startsAt,endsAt,serviceAddressId,locationSnapshot; SET_ACTIVITY_AMOUNT משתמש ב-entityId או entityRef וב-totalAmount,paidAmount; ADD_PAYMENT משתמש ב-entityId או entityRef וב-amount. אל תשתמש ב-scheduledStart, scheduledEnd או amount במקום totalAmount. " +
+              "לקוח חדש דורש name בלבד; Task דורשת title בלבד; Job/Visit דורשים לקוח ו-title. אל תניח שהיה או לא היה חיוב בסיום פעילות. " +
+              "אל תשאל על שדות אופציונליים שלא נמסרו. בפרט, שעה ו-dueAt אופציונליים ב-Task: אם נאמר יום יחסי ללא שעה, אל תעכב את היצירה כדי לבקש שעה; אפשר ליצור ללא dueAt ולשמר את ניסוח היום ב-description. " +
               "פתור ביטויי זמן רק לפי environment.now, environment.timezone ו-environment.workingHours שב-context: מחר הוא היום הקלנדרי הבא; יום בשבוע הוא המופע העתידי הקרוב; שעה שכבר חלפה היום דורשת clarification לגבי מחר; זמן מפורש בעבר אינו מוזז. החזר זמנים כ-ISO עם offset. " +
               "GET_AVAILABILITY דורש date בפורמט YYYY-MM-DD ו-durationMinutes. GET_SCHEDULE דורש from ו-to כ-ISO datetime; לשאלת הפעילות הבאה הוסף limit=1. " +
               "אם שלב תלוי בישות שנמצאה או נוצרה בשלב קודם, הוסף את stepId ל-dependsOn והשתמש ב-customerRef או entityRef עם אותו stepId ו-outputField=entityId בלבד. אין להפנות לשלב מאוחר או לשלב שאינו מחזיר ישות. " +
-              "אל תמציא מזהים. מידע חסר הופך ל-ASK_CLARIFICATION. עד 10 צעדים וללא מעגלים."
+              "אם context כולל readResults, זהו סבב שני: השתמש ב-entityId הקונקרטי שבתוצאות, אל תחזיר שוב את שלב הקריאה ואל תפנה ב-dependsOn או Ref ל-stepId חיצוני שאינו בתוכנית החדשה. " +
+              "אם context כולל recentTurns ו-pendingActions, התייחס לתמלול הקצר כהמשך טבעי כשהוא עונה על השאלה האחרונה: השלם את הפעולה המקורית בעזרת המועמד/הפרטים/האישור שניתנו. במקרה כזה העתק את id של הפעולה הממתינה אל extractedFacts.resolvesPendingActionId. אל תדרוש מהמשתמש לחזור על כל הבקשה. " +
+              "לשאלת הבהרה השתמש kind=CLARIFY ו-tool=ASK_CLARIFICATION; ASK_CLARIFICATION אינו ערך חוקי של kind. אל תמציא מזהים. עד 10 צעדים וללא מעגלים."
           },
           { role: "user", content: `context: ${JSON.stringify(context ?? {})}\nתמלול מאושר: ${transcript}` }
         ],
@@ -231,7 +236,7 @@ class AiController {
     }
     const outputText = result.output_text ?? result.output?.flatMap((item) => item.content ?? []).find((content) => content.text)?.text;
     if (!outputText) throw new BadGatewayException("OpenAI V2 planning returned empty output");
-    return AssistantPlanSchema.parse(JSON.parse(outputText));
+    return normalizeAssistantPlan(JSON.parse(outputText), context, transcript);
   }
 
 }

@@ -114,8 +114,38 @@ export class CoreV2AssistantService {
       execute: async () => {
         const startedAt = Date.now();
         const businessSettings = await this.settings.getByBusiness(businessId);
+        const [recentTurns, pendingActions] = await Promise.all([
+          this.prisma.assistantTurn.findMany({
+            where: { assistantSessionId: session.id, expiresAt: { gt: new Date() } },
+            include: { actionBatch: { select: { finalSummary: true, status: true, proposedPlan: true } } },
+            orderBy: { createdAt: "desc" },
+            take: 6
+          }),
+          this.prisma.aiPendingAction.findMany({
+            where: { assistantSessionId: session.id, businessId, status: "PENDING" },
+            select: {
+              id: true,
+              actionType: true,
+              payload: true,
+              question: true,
+              missingFields: true,
+              candidateEntities: true,
+              requiresExplicitConfirmation: true,
+              createdAt: true
+            },
+            orderBy: { createdAt: "desc" },
+            take: 5
+          })
+        ]);
         const planningContext = {
           session: session.context,
+          recentTurns: recentTurns.reverse().map((turn) => ({
+            transcript: turn.approvedTranscript,
+            summary: turn.actionBatch?.finalSummary,
+            status: turn.actionBatch?.status,
+            plan: turn.actionBatch?.proposedPlan
+          })),
+          pendingActions,
           environment: {
             now: new Date().toISOString(),
             timezone: businessSettings.timezone,
@@ -346,6 +376,43 @@ export class CoreV2AssistantService {
               context: jsonValue({ lastActionBatchId: actionBatch.id, outputs: Object.fromEntries(outputs) })
             }
           });
+          const resolvedPendingActionId = typeof plan.extractedFacts.resolvesPendingActionId === "string"
+            ? plan.extractedFacts.resolvesPendingActionId
+            : undefined;
+          if (resolvedPendingActionId) {
+            const continued = await tx.aiPendingAction.findFirst({
+              where: {
+                id: resolvedPendingActionId,
+                businessId,
+                assistantSessionId: session.id,
+                status: "PENDING",
+                actionBatchId: { not: actionBatch.id }
+              }
+            });
+            if (continued) {
+              await tx.aiPendingAction.update({
+                where: { id: continued.id },
+                data: {
+                  status: "COMPLETED",
+                  resolution: jsonValue({ continuedByActionBatchId: actionBatch.id, transcript: command.transcript }),
+                  resolvedAt: new Date(),
+                  resolvedByUserId: user.id
+                }
+              });
+              if (continued.actionBatchStepId) {
+                await tx.actionBatchStep.update({
+                  where: { id: continued.actionBatchStepId },
+                  data: { status: "COMPLETED", output: jsonValue({ continuedByActionBatchId: actionBatch.id }) }
+                });
+              }
+              if (continued.actionBatchId) {
+                await tx.actionBatch.update({
+                  where: { id: continued.actionBatchId },
+                  data: { status: "PARTIALLY_COMPLETED", finalSummary: "הפעולה הושלמה בהמשך השיחה." }
+                });
+              }
+            }
+          }
           return {
             actionBatch: updatedBatch,
             receipt: {

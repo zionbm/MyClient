@@ -90,6 +90,12 @@ test("grounded summary must preserve scheduling warnings", () => {
   assert.equal(summaryIsGrounded("הפעולה בוצעה. הפעילות נקבעה מחוץ לשעות העבודה.", receipt), true);
 });
 
+test("grounded summary never exposes internal UUIDs", () => {
+  const receipt = { steps: [{ entityId: "4155ee63-34d9-46d0-a77e-1b8f37d24548", status: "COMPLETED" }] };
+  assert.equal(summaryIsGrounded("הלקוחה נוצרה בהצלחה.", receipt), true);
+  assert.equal(summaryIsGrounded("הלקוחה נוצרה: 4155ee63-34d9-46d0-a77e-1b8f37d24548", receipt), false);
+});
+
 test("AssistantPlan rejects dependency cycles", () => {
   const result = AssistantPlanSchema.safeParse({
     ...basePlan,

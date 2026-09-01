@@ -24,6 +24,7 @@ export function stepsBlockedByPlannedClarification(steps: AssistantPlanStep[]) {
 
 export function summaryIsGrounded(summary: string, receipt: unknown) {
   if (!summary.trim() || summary.length > 500) return false;
+  if (/\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/i.test(summary)) return false;
   const receiptText = JSON.stringify(receipt);
   const numbers = summary.match(/\d+(?:[.,]\d+)?/g) ?? [];
   const warnings: string[] = [];
