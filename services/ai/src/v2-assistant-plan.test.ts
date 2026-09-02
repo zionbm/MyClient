@@ -148,3 +148,29 @@ test("a spoken no rejects the missing customer suggestion", () => {
   assert.equal(plan.steps[0]!.tool, "RESPOND");
   assert.match(String(plan.steps[0]!.input.text), /לא יצרתי לקוח בשם ג׳ק/);
 });
+
+test("turns an explicit customer note request into a note work item", () => {
+  const plan = normalizeAssistantPlan({
+    ...basePlan,
+    steps: [step({
+      tool: "UPDATE_CUSTOMER",
+      input: { customerId: "customer-1", generalNotes: "הכלב בחצר" }
+    })]
+  }, {}, "תוסיף הערה ללקוח שהכלב בחצר");
+
+  assert.equal(plan.steps[0]!.tool, "CREATE_NOTE");
+  assert.equal(plan.steps[0]!.input.customerId, "customer-1");
+  assert.equal(plan.steps[0]!.input.text, "הכלב בחצר");
+});
+
+test("removes generated activity boilerplate descriptions", () => {
+  const plan = normalizeAssistantPlan({
+    ...basePlan,
+    steps: [step({
+      tool: "CREATE_JOB",
+      input: { customerId: "customer-1", title: "התקנת מזגן", description: "עבודה שנקבעה ע״י המשתמש..." }
+    })]
+  }, {}, "תוסיף עבודה להתקנת מזגן");
+
+  assert.equal(plan.steps[0]!.input.description, undefined);
+});

@@ -49,13 +49,40 @@ function normalizeToolInput(tool: string, value: unknown) {
   if (["CREATE_CUSTOMER", "UPDATE_CUSTOMER"].includes(tool)) {
     moveAlias(input, "generalNotes", ["notes"]);
   }
+  if (["CREATE_NOTE", "UPDATE_NOTE"].includes(tool)) {
+    moveAlias(input, "text", ["note", "notes", "description", "generalNotes"]);
+  }
   if (tool === "FIND_CUSTOMERS") {
     moveAlias(input, "query", ["name", "customerName", "search"]);
   }
   for (const field of ["email", "generalNotes", "label", "description", "dueAt", "startsAt", "endsAt", "serviceAddressId", "locationSnapshot"]) {
     if (typeof input[field] === "string" && input[field].trim() === "") delete input[field];
   }
+  if (typeof input.description === "string" && /^(?:עבודה|ביקור)\s+שנקבע[ה]?\s+(?:על\s+ידי|ע["״]?י)\s+המשתמש[.!…]*$/u.test(input.description.trim())) {
+    delete input.description;
+  }
   return input;
+}
+
+function preferCustomerNoteWorkItem(steps: JsonObject[], transcript: string) {
+  const asksForNote = /(?:הוסף|הוסיפי|תוסיף|תוסיפי|רשום|רשמי|תרשום|תרשמי)\S*[^.?!]*הערה/u.test(transcript);
+  if (!asksForNote) return steps;
+  return steps.map((step) => {
+    if (step.tool !== "UPDATE_CUSTOMER") return step;
+    const input = objectValue(step.input);
+    if (typeof input.generalNotes !== "string" || !input.generalNotes.trim()) return step;
+    return {
+      ...step,
+      tool: "CREATE_NOTE",
+      input: {
+        ...(typeof input.customerId === "string" ? { customerId: input.customerId } : {}),
+        ...(typeof input.entityId === "string" ? { customerId: input.entityId } : {}),
+        ...(input.customerRef !== undefined ? { customerRef: input.customerRef } : {}),
+        ...(input.entityRef !== undefined ? { customerRef: input.entityRef } : {}),
+        text: input.generalNotes
+      }
+    };
+  });
 }
 
 function isExplicitCustomerCreation(transcript: string) {
@@ -233,5 +260,6 @@ export function normalizeAssistantPlan(rawPlan: unknown, context: unknown, trans
   });
   steps = resolveExternalReadReferences(steps, context);
   steps = preferExplicitCustomerCreation(steps, transcript);
+  steps = preferCustomerNoteWorkItem(steps, transcript);
   return AssistantPlanSchema.parse({ ...raw, steps });
 }

@@ -7,9 +7,11 @@ import {
   V2AssistantCommandSchema,
   V2CreateAssistantSessionSchema,
   V2CreateCustomerSchema,
+  V2CreateNoteSchema,
   V2CreateTaskSchema,
   V2PendingActionsQuerySchema,
   V2ResolvePendingActionSchema,
+  V2UpdateNoteSchema,
   V2UpdatePendingActionSchema,
   type AssistantPlan,
   type AssistantPlanStep
@@ -486,7 +488,7 @@ export class CoreV2AssistantService {
               items: receiptSteps.map((step) => ({
                 id: String(step.pendingActionId ?? step.entityId ?? step.stepId),
                 actionType: step.tool,
-                kind: "action",
+                kind: this.voiceItemKind(step.tool),
                 status: step.status === "COMPLETED" ? "created" : "pending",
                 title: this.voiceItemTitle(
                   step.tool,
@@ -917,14 +919,34 @@ export class CoreV2AssistantService {
       const dueText = task.dueAt
         ? ` ל-${new Intl.DateTimeFormat("he-IL", { timeZone: businessSettings.timezone, dateStyle: "short", timeStyle: "short" }).format(task.dueAt)}`
         : "";
-      return { entityType: "task", entityId: task.id, entity: task, message: `נפתחה המשימה "${task.title}"${dueText}.` };
+      const customer = task.customerId ? await tx.customer.findFirst({ where: { id: task.customerId, businessId: input.businessId, deletedAt: null } }) : null;
+      return { entityType: "task", entityId: task.id, entity: task, displayPayload: { ...task, customerName: customer?.name }, message: `נפתחה המשימה "${task.title}"${dueText}.` };
     }
     if (input.step.tool === "UPDATE_TASK") {
       const taskId = this.resolveEntityId(input.step.input.taskId, input.step.input.entityRef, input.outputs);
       const existing = taskId ? await tx.task.findFirst({ where: { id: taskId, businessId: input.businessId, deletedAt: null } }) : null;
       if (!existing) return { waiting: true as const, question: "לא מצאתי את המשימה לעדכון.", missingFields: ["taskId"] };
-      const entity = await tx.task.update({ where: { id: existing.id }, data: { title: typeof input.step.input.title === "string" ? input.step.input.title : undefined, description: typeof input.step.input.description === "string" ? input.step.input.description : undefined, dueAt: typeof input.step.input.dueAt === "string" ? new Date(input.step.input.dueAt) : undefined, version: { increment: 1 } } });
-      return { entityType: "task", entityId: entity.id, entity, before: existing, operation: "UPDATE" };
+      const hasCustomerId = Object.prototype.hasOwnProperty.call(input.step.input, "customerId");
+      const entity = await tx.task.update({ where: { id: existing.id }, data: { customerId: hasCustomerId && (typeof input.step.input.customerId === "string" || input.step.input.customerId === null) ? input.step.input.customerId : undefined, title: typeof input.step.input.title === "string" ? input.step.input.title : undefined, description: typeof input.step.input.description === "string" ? input.step.input.description : undefined, dueAt: typeof input.step.input.dueAt === "string" ? new Date(input.step.input.dueAt) : undefined, version: { increment: 1 } } });
+      const customer = entity.customerId ? await tx.customer.findFirst({ where: { id: entity.customerId, businessId: input.businessId, deletedAt: null } }) : null;
+      return { entityType: "task", entityId: entity.id, entity, displayPayload: { ...entity, customerName: customer?.name }, before: existing, operation: "UPDATE" };
+    }
+    if (input.step.tool === "CREATE_NOTE") {
+      const customerId = this.resolveEntityId(input.step.input.customerId, input.step.input.customerRef, input.outputs);
+      const command = V2CreateNoteSchema.parse({ text: input.step.input.text, status: input.step.input.status });
+      const customer = customerId ? await tx.customer.findFirst({ where: { id: customerId, businessId: input.businessId, deletedAt: null, mergedIntoCustomerId: null } }) : null;
+      if (!customer) return { waiting: true as const, question: "צריך לבחור לקוח עבור ההערה.", missingFields: ["customerId"] };
+      const entity = await tx.note.create({ data: { businessId: input.businessId, customerId: customer.id, text: command.text, status: command.status } });
+      return { entityType: "note", entityId: entity.id, entity, displayPayload: { ...entity, customerId: customer.id, customerName: customer.name }, message: `נוספה הערה ללקוח ${customer.name}.` };
+    }
+    if (input.step.tool === "UPDATE_NOTE") {
+      const noteId = this.resolveEntityId(input.step.input.noteId, input.step.input.entityRef, input.outputs);
+      const existing = noteId ? await tx.note.findFirst({ where: { id: noteId, businessId: input.businessId, deletedAt: null } }) : null;
+      if (!existing) return { waiting: true as const, question: "לא מצאתי את ההערה לעדכון.", missingFields: ["noteId"] };
+      const command = V2UpdateNoteSchema.parse({ text: input.step.input.text, status: input.step.input.status });
+      const entity = await tx.note.update({ where: { id: existing.id }, data: command });
+      const customer = await tx.customer.findFirst({ where: { id: entity.customerId, businessId: input.businessId, deletedAt: null } });
+      return { entityType: "note", entityId: entity.id, entity, displayPayload: { ...entity, customerId: entity.customerId, customerName: customer?.name }, before: existing, operation: "UPDATE" };
     }
     if (input.step.tool === "UPDATE_CUSTOMER") {
       const customerId = this.resolveEntityId(input.step.input.customerId, input.step.input.customerRef, input.outputs);
@@ -1125,7 +1147,8 @@ export class CoreV2AssistantService {
       const windowText = startsAt && endsAt
         ? ` ל-${new Intl.DateTimeFormat("he-IL", { timeZone: businessSettings.timezone, dateStyle: "short", timeStyle: "short" }).format(startsAt)} עד ${new Intl.DateTimeFormat("he-IL", { timeZone: businessSettings.timezone, timeStyle: "short" }).format(endsAt)}`
         : " ללא מועד";
-      return { entityType: kind, entityId: entity.id, entity, message: `נ${kind === "job" ? "פתחה עבודה" : "פתח ביקור"} "${entity.title}"${windowText}.`, warnings: await this.activities.scheduleWarnings(input.businessId, startsAt, endsAt, kind) };
+      const customer = await tx.customer.findFirst({ where: { id: entity.customerId, businessId: input.businessId, deletedAt: null } });
+      return { entityType: kind, entityId: entity.id, entity, displayPayload: { ...entity, customerName: customer?.name }, message: `נ${kind === "job" ? "פתחה עבודה" : "פתח ביקור"} "${entity.title}"${windowText}.`, warnings: await this.activities.scheduleWarnings(input.businessId, startsAt, endsAt, kind) };
     }
     if (input.step.tool === "UPDATE_JOB" || input.step.tool === "UPDATE_VISIT") {
       const kind = input.step.tool === "UPDATE_JOB" ? "job" as const : "visit" as const;
@@ -1156,7 +1179,8 @@ export class CoreV2AssistantService {
       if (!("entity" in result)) return this.scheduleConflictPending(input.businessId, input.userId, "UPDATE", existing.id, startsAt ?? existing.startsAt!, endsAt ?? existing.endsAt, kind, result.conflicts);
       const entity = result.entity;
       if (!entity) throw new ConflictException("Activity update did not return an entity");
-      return { entityType: kind, entityId: entity.id, entity, before: existing, operation: "UPDATE", warnings: await this.activities.scheduleWarnings(input.businessId, entity.startsAt ?? undefined, entity.endsAt ?? undefined, kind) };
+      const customer = await tx.customer.findFirst({ where: { id: entity.customerId, businessId: input.businessId, deletedAt: null } });
+      return { entityType: kind, entityId: entity.id, entity, displayPayload: { ...entity, customerName: customer?.name }, before: existing, operation: "UPDATE", warnings: await this.activities.scheduleWarnings(input.businessId, entity.startsAt ?? undefined, entity.endsAt ?? undefined, kind) };
     }
     if (["REPORT_JOB_COMPLETED", "CANCEL_JOB", "REOPEN_JOB", "DELETE_JOB", "REPORT_VISIT_COMPLETED", "CANCEL_VISIT", "REOPEN_VISIT", "DELETE_VISIT"].includes(input.step.tool)) {
       const kind = input.step.tool.includes("VISIT") ? "visit" : "job";
@@ -1312,11 +1336,21 @@ export class CoreV2AssistantService {
     const customerName = typeof value.name === "string" ? value.name : undefined;
     return tool === "CREATE_CUSTOMER" ? `לקוח חדש${customerName ? `: ${customerName}` : ""}`
       : tool === "ADD_CUSTOMER_PHONE" ? `טלפון נוסף${typeof value.customerName === "string" ? `: ${value.customerName}` : ""}`
-      : tool === "CREATE_JOB" ? `עבודה חדשה${entityTitle ? `: ${entityTitle}` : ""}`
-      : tool === "CREATE_VISIT" ? `ביקור חדש${entityTitle ? `: ${entityTitle}` : ""}`
-      : tool === "CREATE_TASK" ? `משימה חדשה${entityTitle ? `: ${entityTitle}` : ""}`
+      : tool === "CREATE_JOB" || tool === "UPDATE_JOB" ? entityTitle ?? "עבודה"
+      : tool === "CREATE_VISIT" || tool === "UPDATE_VISIT" ? entityTitle ?? "ביקור"
+      : tool === "CREATE_TASK" || tool === "UPDATE_TASK" ? entityTitle ?? "משימה"
+      : tool === "CREATE_NOTE" || tool === "UPDATE_NOTE" ? "הערה ללקוח"
       : tool === "COMPLETE_TASK" ? `משימה הושלמה${entityTitle ? `: ${entityTitle}` : ""}`
       : "הפעולה הושלמה";
+  }
+
+  private voiceItemKind(tool: unknown) {
+    return tool === "CREATE_CUSTOMER" || tool === "UPDATE_CUSTOMER" || tool === "ADD_CUSTOMER_PHONE" ? "customer"
+      : typeof tool === "string" && tool.includes("TASK") ? "reminder"
+      : typeof tool === "string" && tool.includes("JOB") ? "job"
+      : typeof tool === "string" && tool.includes("VISIT") ? "home_visit"
+      : typeof tool === "string" && tool.includes("NOTE") ? "note"
+      : "action";
   }
 
   private assistantApprovedConflictFingerprint(token: unknown, input: { businessId: string; userId: string; operation: ScheduleConflictOperation; kind: "job" | "visit"; entityId: string | null; startsAt: Date; endsAt?: Date | null }) {
