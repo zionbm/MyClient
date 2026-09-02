@@ -1,4 +1,19 @@
-import type { AssistantPlanStep } from "@myclient/contracts";
+import type { AssistantPlan, AssistantPlanStep } from "@myclient/contracts";
+
+export function planNeedsReadResolution(plan: AssistantPlan) {
+  const readStepIds = new Set(plan.steps.filter((step) => step.kind === "READ").map((step) => step.stepId));
+  if (readStepIds.size === 0) return false;
+  const dependsOnRead = (step: AssistantPlanStep, visited = new Set<string>()): boolean => {
+    if (visited.has(step.stepId)) return false;
+    visited.add(step.stepId);
+    return step.dependsOn.some((dependency) => {
+      if (readStepIds.has(dependency)) return true;
+      const parent = plan.steps.find((candidate) => candidate.stepId === dependency);
+      return parent ? dependsOnRead(parent, visited) : false;
+    });
+  };
+  return plan.steps.some((step) => step.kind !== "READ" && dependsOnRead(step));
+}
 
 export function stepsBlockedByPlannedClarification(steps: AssistantPlanStep[]) {
   const adjacency = new Map(steps.map((step) => [step.stepId, new Set<string>()]));

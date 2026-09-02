@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { AssistantPlanSchema } from "@myclient/contracts";
-import { stepsBlockedByPlannedClarification, summaryIsGrounded } from "./v2-assistant-plan.js";
+import { planNeedsReadResolution, stepsBlockedByPlannedClarification, summaryIsGrounded } from "./v2-assistant-plan.js";
 
 const basePlan = {
   version: "2" as const,
@@ -35,6 +35,28 @@ test("AssistantPlan accepts an ordered customer-to-task reference", () => {
     ]
   });
   assert.equal(result.steps.length, 2);
+});
+
+test("a pure read question does not require a second planning round", () => {
+  const plan = AssistantPlanSchema.parse({
+    ...basePlan,
+    requestKind: "QUESTION",
+    steps: [
+      { stepId: "today", kind: "READ", tool: "GET_TODAY_OVERVIEW", dependsOn: [], input: { date: "2026-09-02" }, confidence: 1, requiresExplicitConfirmation: false }
+    ]
+  });
+  assert.equal(planNeedsReadResolution(plan), false);
+});
+
+test("a write that depends on a lookup still requires read resolution", () => {
+  const plan = AssistantPlanSchema.parse({
+    ...basePlan,
+    steps: [
+      { stepId: "find", kind: "READ", tool: "FIND_CUSTOMERS", dependsOn: [], input: { query: "נועה" }, confidence: 1, requiresExplicitConfirmation: false },
+      { stepId: "task", kind: "WRITE", tool: "CREATE_TASK", dependsOn: ["find"], input: { title: "לחזור", customerRef: { stepId: "find", outputField: "entityId" } }, confidence: 1, requiresExplicitConfirmation: false }
+    ]
+  });
+  assert.equal(planNeedsReadResolution(plan), true);
 });
 
 test("AssistantPlan rejects arbitrary reference output fields", () => {

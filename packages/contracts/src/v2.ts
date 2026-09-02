@@ -164,6 +164,7 @@ export const ASSISTANT_TOOL_NAMES = [
   "GET_AVAILABILITY",
   "GET_PAYMENT_SUMMARY",
   "GET_OPEN_BALANCES",
+  "GET_TODAY_OVERVIEW",
   "CREATE_CUSTOMER",
   "UPDATE_CUSTOMER",
   "ADD_CUSTOMER_PHONE",
@@ -395,7 +396,8 @@ export const V2DateRangeQuerySchema = z.object({
 }).refine((value) => new Date(value.to) > new Date(value.from), { message: "to must be after from" });
 
 export const V2PendingActionsQuerySchema = V2PaginationQuerySchema.extend({
-  status: z.enum(["PENDING", "COMPLETED", "REJECTED", "ALL"]).default("PENDING")
+  status: z.enum(["PENDING", "COMPLETED", "REJECTED", "ALL"]).default("PENDING"),
+  actionBatchId: z.string().trim().min(1).optional()
 });
 
 export const V2UpdatePendingActionSchema = z.object({

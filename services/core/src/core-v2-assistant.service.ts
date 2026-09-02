@@ -24,9 +24,9 @@ import { PrismaService } from "./prisma.service.js";
 import { parseOptionalDate, requiredIdempotencyKey, type RequestHeaders } from "./core-utils.js";
 import { paginationFromParsedQuery, paginatedResponse } from "./core-utils.js";
 import { normalizeCustomerName } from "./v2-normalization.js";
-import { stepsBlockedByPlannedClarification, summaryIsGrounded } from "./v2-assistant-plan.js";
+import { planNeedsReadResolution, stepsBlockedByPlannedClarification, summaryIsGrounded } from "./v2-assistant-plan.js";
 import { assertAmountInvariant, money, nextPaidAmount, paymentStatus } from "./v2-money.js";
-import { DEFAULT_WORKING_HOURS, freeSlots, isWithinWorkingHours, localDate, workingWindow, type WorkingHours } from "./v2-scheduling.js";
+import { DEFAULT_WORKING_HOURS, freeSlots, isWithinWorkingHours, localDate, localDateTimeToUtc, workingWindow, type WorkingHours } from "./v2-scheduling.js";
 import { effectiveScheduleEnd, shiftedScheduleEnd, verifyScheduleConflictToken, type ScheduleConflictOperation } from "./v2-schedule-confirmation.js";
 
 function jsonValue(value: unknown): Prisma.InputJsonValue {
@@ -159,12 +159,12 @@ export class CoreV2AssistantService {
         let plan = AssistantPlanSchema.parse(planned.plan);
         let planningRounds = 1;
         const initialReadSteps = orderedSteps(plan.steps).filter((step) => step.kind === "READ");
-        if (initialReadSteps.length > 0) {
+        if (initialReadSteps.length > 0 && planNeedsReadResolution(plan)) {
           const readOutputs = await this.prisma.$transaction(async (tx) => {
             const outputs = new Map<string, Record<string, unknown>>();
             for (const step of initialReadSteps) {
               if (!step.dependsOn.every((dependency) => outputs.has(dependency) || !plan.steps.some((candidate) => candidate.stepId === dependency && candidate.kind === "READ"))) continue;
-              const output = await this.executeBasicWrite(tx, { businessId, userId: user.id, key, headers, step, outputs });
+              const output = await this.executeBasicWrite(tx, { businessId, userId: user.id, key, headers, step, outputs, emptyReadIsResult: false });
               if (output.waiting) return null;
               outputs.set(step.stepId, output);
             }
@@ -287,7 +287,8 @@ export class CoreV2AssistantService {
               key,
               headers,
               step,
-              outputs
+              outputs,
+              emptyReadIsResult: plan.requestKind === "QUESTION" && step.kind === "READ"
             });
             if (output.waiting) {
               const pendingOptions = objectValue(output);
@@ -314,7 +315,16 @@ export class CoreV2AssistantService {
                 data: { status: "WAITING", output: jsonValue({ pendingActionId: pending.id }) }
               });
               statuses.set(step.stepId, "WAITING");
-              receiptSteps.push({ stepId: step.stepId, tool: step.tool, status: "WAITING", question: output.question, pendingActionId: pending.id });
+              receiptSteps.push({
+                stepId: step.stepId,
+                tool: step.tool,
+                status: "WAITING",
+                question: output.question,
+                pendingActionId: pending.id,
+                payload: step.input,
+                missingFields: pendingOptions.missingFields ?? [],
+                candidates: pendingOptions.candidates ?? []
+              });
               continue;
             }
             if (output.entityType && output.entityId && output.entity) {
@@ -431,11 +441,11 @@ export class CoreV2AssistantService {
                 actionType: step.tool,
                 kind: "action",
                 status: step.status === "COMPLETED" ? "created" : "pending",
-                title: step.status === "COMPLETED" ? "הפעולה הושלמה" : "ממתין להשלמה",
+                title: this.voiceItemTitle(step.tool, step.status, step.entity),
                 subtitle: step.question,
-                payload: step.entity ?? step.result ?? {},
+                payload: step.payload ?? step.entity ?? step.result ?? {},
                 fields: [],
-                missingFields: [],
+                missingFields: step.missingFields ?? [],
                 entityId: step.entityId,
                 aiPendingActionId: step.pendingActionId
               })),
@@ -452,6 +462,7 @@ export class CoreV2AssistantService {
           stepCount: execution.receipt.steps.length,
           durationMs: Date.now() - startedAt
         });
+        if (planned.provider === "deterministic" || plan.requestKind === "QUESTION") return execution;
         try {
           const grounded = await this.ai.summarizeV2AssistantReceipt({ transcript: command.transcript, receipt: execution.receipt });
           if (!summaryIsGrounded(grounded.textSummary, execution.receipt) || !summaryIsGrounded(grounded.spokenSummary, execution.receipt)) {
@@ -481,6 +492,7 @@ export class CoreV2AssistantService {
       where: {
         businessId,
         ...(command.status === "ALL" ? {} : { status: command.status }),
+        ...(command.actionBatchId ? { actionBatchId: command.actionBatchId } : {}),
         ...(pagination.cursor ? { OR: [{ createdAt: { lt: pagination.cursor.createdAt } }, { createdAt: pagination.cursor.createdAt, id: { lt: pagination.cursor.id } }] } : {})
       },
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
@@ -561,7 +573,7 @@ export class CoreV2AssistantService {
             requiresExplicitConfirmation: false,
             input: { ...plannedCurrentStep.input, ...confirmationOverrides, ...(command.payload ?? {}), ...(command.selectedEntityId ? { entityId: command.selectedEntityId } : {}) }
           };
-          const executed = await this.executeBasicWrite(tx, { businessId, userId: user.id, key: requiredIdempotencyKey(headers), headers, step: confirmedStep, outputs });
+          const executed = await this.executeBasicWrite(tx, { businessId, userId: user.id, key: requiredIdempotencyKey(headers), headers, step: confirmedStep, outputs, emptyReadIsResult: false });
           if (executed.waiting) {
             const refreshed = objectValue(executed);
             await tx.aiPendingAction.update({
@@ -591,7 +603,7 @@ export class CoreV2AssistantService {
         for (const step of orderedSteps(plan.steps)) {
           const stored = allSteps.find((item) => item.stepKey === step.stepId);
           if (!stored || stored.status !== "BLOCKED" || !step.dependsOn.every((dependency) => outputs.has(dependency))) continue;
-          const output = await this.executeBasicWrite(tx, { businessId, userId: user.id, key: requiredIdempotencyKey(headers), headers, step, outputs });
+          const output = await this.executeBasicWrite(tx, { businessId, userId: user.id, key: requiredIdempotencyKey(headers), headers, step, outputs, emptyReadIsResult: false });
           if (output.waiting) continue;
           await tx.actionBatchStep.update({ where: { id: stored.id }, data: { status: "COMPLETED", output: jsonValue(output) } });
           outputs.set(step.stepId, output);
@@ -631,6 +643,7 @@ export class CoreV2AssistantService {
       headers: RequestHeaders;
       step: AssistantPlanStep;
       outputs: Map<string, Record<string, unknown>>;
+      emptyReadIsResult: boolean;
     }
   ) {
     if (input.step.tool === "FIND_CUSTOMERS") {
@@ -652,6 +665,12 @@ export class CoreV2AssistantService {
         select: { id: true, name: true, email: true, version: true },
         take: 10
       });
+      if (input.emptyReadIsResult) {
+        return {
+          result: { customers: candidates },
+          message: candidates.length === 0 ? "לא מצאתי לקוחות מתאימים." : `מצאתי ${candidates.length} לקוחות מתאימים.`
+        };
+      }
       if (candidates.length !== 1) {
         return {
           waiting: true as const,
@@ -674,6 +693,13 @@ export class CoreV2AssistantService {
         : input.step.tool === "FIND_JOBS"
           ? await tx.job.findMany({ where: commonWhere, take: 10 })
           : await tx.visit.findMany({ where: commonWhere, take: 10 });
+      if (input.emptyReadIsResult) {
+        const noun = input.step.tool === "FIND_TASKS" ? "משימות" : input.step.tool === "FIND_JOBS" ? "עבודות" : "ביקורים";
+        return {
+          result: { items: candidates },
+          message: candidates.length === 0 ? `לא מצאתי ${noun} מתאימים.` : `מצאתי ${candidates.length} ${noun} מתאימים.`
+        };
+      }
       if (candidates.length !== 1) {
         return {
           waiting: true as const,
@@ -741,6 +767,28 @@ export class CoreV2AssistantService {
       const balance = amounts.reduce((sum, amount) => sum.plus(amount.totalAmount.minus(amount.paidAmount)), money(0));
       return { result: { totalBalance: balance, count: amounts.length }, message: `היתרה הפתוחה היא ${balance.toString()} שקלים ב-${amounts.length} פעילויות.` };
     }
+    if (input.step.tool === "GET_TODAY_OVERVIEW") {
+      const businessSettings = await this.settings.getByBusiness(input.businessId);
+      const timezone = businessSettings.timezone;
+      const date = typeof input.step.input.date === "string" ? input.step.input.date : localDate(new Date(), timezone);
+      const startsAt = localDateTimeToUtc(date, "00:00", timezone);
+      const endsAt = localDateTimeToUtc(this.nextDate(date), "00:00", timezone);
+      const [tasks, jobs, visits] = await Promise.all([
+        tx.task.findMany({ where: { businessId: input.businessId, status: "OPEN", deletedAt: null, dueAt: { lt: endsAt } }, orderBy: { dueAt: "asc" }, take: 50 }),
+        tx.job.findMany({ where: { businessId: input.businessId, status: "OPEN", deletedAt: null, startsAt: { gte: startsAt, lt: endsAt } }, orderBy: { startsAt: "asc" }, take: 50 }),
+        tx.visit.findMany({ where: { businessId: input.businessId, status: "OPEN", deletedAt: null, startsAt: { gte: startsAt, lt: endsAt } }, orderBy: { startsAt: "asc" }, take: 50 })
+      ]);
+      const total = tasks.length + jobs.length + visits.length;
+      if (total === 0) {
+        return { result: { date, tasks, jobs, visits }, message: "אין לך משימות, עבודות או ביקורים פתוחים להיום." };
+      }
+      const parts = [
+        tasks.length > 0 ? `${tasks.length} משימות` : null,
+        jobs.length > 0 ? `${jobs.length} עבודות` : null,
+        visits.length > 0 ? `${visits.length} ביקורים` : null
+      ].filter((value): value is string => Boolean(value));
+      return { result: { date, tasks, jobs, visits }, message: `פתוחים להיום: ${parts.join(", ")}.` };
+    }
     if (input.step.tool === "RESPOND") {
       return { result: input.step.input, message: typeof input.step.input.text === "string" ? input.step.input.text : "הבקשה נבדקה." };
     }
@@ -755,7 +803,7 @@ export class CoreV2AssistantService {
           generalNotes: command.generalNotes
         }
       });
-      return { entityType: "customer", entityId: customer.id, entity: customer };
+      return { entityType: "customer", entityId: customer.id, entity: customer, message: `נוצר הלקוח ${customer.name}. אפשר להוסיף לו טלפון או כתובת בהודעה הבאה.` };
     }
     if (input.step.tool === "CREATE_TASK") {
       const command = V2CreateTaskSchema.parse(input.step.input);
@@ -1106,6 +1154,23 @@ export class CoreV2AssistantService {
       confirmationOverrides: { scheduleConflictToken: preview.scheduleConflictToken },
       entityVersions: {}
     };
+  }
+
+  private nextDate(date: string) {
+    const [year, month, day] = date.split("-").map(Number);
+    return new Date(Date.UTC(year!, month! - 1, day! + 1)).toISOString().slice(0, 10);
+  }
+
+  private voiceItemTitle(tool: unknown, status: unknown, entity: unknown) {
+    if (status !== "COMPLETED") return "ממתין להשלמה";
+    const value = objectValue(entity);
+    const entityTitle = typeof value.title === "string" ? value.title : undefined;
+    const customerName = typeof value.name === "string" ? value.name : undefined;
+    return tool === "CREATE_CUSTOMER" ? `לקוח חדש${customerName ? `: ${customerName}` : ""}`
+      : tool === "CREATE_JOB" ? `עבודה חדשה${entityTitle ? `: ${entityTitle}` : ""}`
+      : tool === "CREATE_VISIT" ? `ביקור חדש${entityTitle ? `: ${entityTitle}` : ""}`
+      : tool === "CREATE_TASK" ? `משימה חדשה${entityTitle ? `: ${entityTitle}` : ""}`
+      : "הפעולה הושלמה";
   }
 
   private assistantApprovedConflictFingerprint(token: unknown, input: { businessId: string; userId: string; operation: ScheduleConflictOperation; kind: "job" | "visit"; entityId: string | null; startsAt: Date; endsAt?: Date | null }) {

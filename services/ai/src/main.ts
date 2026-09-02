@@ -9,6 +9,7 @@ import {
   type AssistantPlan
 } from "@myclient/contracts";
 import { normalizeAssistantPlan } from "./v2-assistant-plan.js";
+import { deterministicAssistantPlan } from "./v2-assistant-fast-path.js";
 
 type RequestHeaders = Record<string, string | string[] | undefined>;
 
@@ -36,12 +37,14 @@ class AiController {
     const startedAt = Date.now();
     const transcript = (body.transcript ?? "").trim();
     const mock = getEnv("MOCK_LLM_PROVIDER", "false") === "true";
-    const plan = mock
+    const deterministic = deterministicAssistantPlan(transcript, body.context);
+    const provider = deterministic ? "deterministic" : mock ? "mock" : "openai";
+    const plan = deterministic ?? (mock
       ? this.mockV2Plan(transcript)
-      : await this.openAiV2Plan(transcript, body.context);
-    log("info", "v2 assistant plan completed", { provider: mock ? "mock" : "openai", model: mock ? undefined : getEnv("OPENAI_LLM_MODEL", "gpt-5-mini"), stepCount: plan.steps.length, durationMs: Date.now() - startedAt });
+      : await this.openAiV2Plan(transcript, body.context));
+    log("info", "v2 assistant plan completed", { provider, model: provider === "openai" ? getEnv("OPENAI_LLM_MODEL", "gpt-5-mini") : undefined, stepCount: plan.steps.length, durationMs: Date.now() - startedAt });
     return {
-      provider: mock ? "mock" : "openai",
+      provider,
       plan: AssistantPlanSchema.parse(plan)
     };
   }
