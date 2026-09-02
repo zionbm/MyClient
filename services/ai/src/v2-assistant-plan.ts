@@ -31,6 +31,9 @@ function normalizeMoney(input: JsonObject, fields: string[]) {
 
 function normalizeToolInput(tool: string, value: unknown) {
   const input = { ...objectValue(value) };
+  for (const [field, fieldValue] of Object.entries(input)) {
+    if (fieldValue === null && !(tool === "UPDATE_TASK" && field === "customerId")) delete input[field];
+  }
   if (["CREATE_JOB", "UPDATE_JOB", "CREATE_VISIT", "UPDATE_VISIT"].includes(tool)) {
     moveAlias(input, "startsAt", ["scheduledStart", "startAt", "startTime"]);
     moveAlias(input, "endsAt", ["scheduledEnd", "endAt", "endTime"]);
@@ -85,32 +88,48 @@ function preferCustomerNoteWorkItem(steps: JsonObject[], transcript: string) {
   });
 }
 
-function isExplicitCustomerCreation(transcript: string) {
-  return /(?:לקוח(?:ה)?\s+חדש(?:ה)?|(?:צור|צרי|תיצור|תצרי|הוסף|הוסיפי|תוסיף|תוסיפי)\S*\s+(?:לי\s+)?לקוח)/u.test(transcript);
+function preserveTaskCustomerUnlessExplicitlyRemoved(steps: JsonObject[], transcript: string) {
+  const removesCustomer = /(?:הסר|הסירי|תסיר|תסירי|נתק|נתקי|תנתק|תנתקי).*(?:לקוח|שיוך)|(?:בלי|ללא)\s+לקוח/u.test(transcript);
+  if (removesCustomer) return steps;
+  return steps.map((step) => {
+    if (step.tool !== "UPDATE_TASK") return step;
+    const input = { ...objectValue(step.input) };
+    if (input.customerId === null) delete input.customerId;
+    return { ...step, input };
+  });
 }
 
-function resolveExternalReadReferences(steps: JsonObject[], context: unknown) {
-  const readResults = objectValue(objectValue(context).readResults);
-  const externalStepIds = new Set(Object.keys(readResults));
-  if (externalStepIds.size === 0) return steps;
+function preferExplicitMissingCustomer(steps: JsonObject[], transcript: string) {
+  const customerName = /להתקשר\s+ל(.+?)\s+לקוח(?:ה)?\s+לא\s+קיי/u.exec(transcript)?.[1]?.trim();
+  if (!customerName || steps.some((step) => step.tool === "FIND_CUSTOMERS")) return steps;
+  const taskIndexes = steps
+    .map((step, index) => ({ step, index }))
+    .filter(({ step }) => step.tool === "CREATE_TASK" && objectValue(step.input).customerId === undefined && objectValue(step.input).customerRef === undefined);
+  if (taskIndexes.length !== 1 || steps.length >= 10) return steps;
+  const findStepId = "find_explicit_missing_customer";
+  const taskIndex = taskIndexes[0]!.index;
+  return [
+    {
+      stepId: findStepId,
+      kind: "READ",
+      tool: "FIND_CUSTOMERS",
+      dependsOn: [],
+      input: { query: customerName },
+      confidence: 1,
+      requiresExplicitConfirmation: false
+    },
+    ...steps.map((step, index) => index === taskIndex
+      ? {
+          ...step,
+          dependsOn: [...new Set([...(Array.isArray(step.dependsOn) ? step.dependsOn : []), findStepId])],
+          input: { ...objectValue(step.input), customerRef: { stepId: findStepId, outputField: "entityId" } }
+        }
+      : step)
+  ];
+}
 
-  return steps.map((step) => {
-    const input = { ...objectValue(step.input) };
-    for (const [field, value] of Object.entries(input)) {
-      if (!field.endsWith("Ref")) continue;
-      const reference = objectValue(value);
-      const stepId = typeof reference.stepId === "string" ? reference.stepId : undefined;
-      if (!stepId || !externalStepIds.has(stepId)) continue;
-      const entityId = objectValue(readResults[stepId]).entityId;
-      if (typeof entityId !== "string" || !entityId) continue;
-      input[field === "customerRef" ? "customerId" : "entityId"] = entityId;
-      delete input[field];
-    }
-    const dependsOn = Array.isArray(step.dependsOn)
-      ? step.dependsOn.filter((dependency) => typeof dependency === "string" && !externalStepIds.has(dependency))
-      : [];
-    return { ...step, input, dependsOn };
-  });
+function isExplicitCustomerCreation(transcript: string) {
+  return /(?:לקוח(?:ה)?\s+חדש(?:ה)?|(?:צור|צרי|תיצור|תצרי|הוסף|הוסיפי|תוסיף|תוסיפי)\S*\s+(?:לי\s+)?לקוח)/u.test(transcript);
 }
 
 function preferExplicitCustomerCreation(steps: JsonObject[], transcript: string) {
@@ -143,8 +162,9 @@ function continueMissingCustomerDecision(context: unknown, transcript: string): 
   const pendingActions = Array.isArray(objectValue(context).pendingActions)
     ? (objectValue(context).pendingActions as unknown[]).map(objectValue)
     : [];
-  if (pendingActions.length !== 1 || pendingActions[0]!.actionType !== "FIND_CUSTOMERS") return undefined;
-  const pending = pendingActions[0]!;
+  const matchingPending = pendingActions.filter((pending) => pending.actionType === "FIND_CUSTOMERS");
+  if (matchingPending.length !== 1) return undefined;
+  const pending = matchingPending[0]!;
   const payload = objectValue(pending.payload);
   const suggestion = objectValue(payload.createCustomerSuggestion);
   const customerName = typeof suggestion.name === "string" ? suggestion.name.trim() : "";
@@ -209,41 +229,82 @@ function continueMissingCustomerDecision(context: unknown, transcript: string): 
   });
 }
 
-export function normalizeAssistantPlan(rawPlan: unknown, context: unknown, transcript: string): AssistantPlan {
-  const missingCustomerDecision = continueMissingCustomerDecision(context, transcript);
-  if (missingCustomerDecision) return missingCustomerDecision;
-  const raw = objectValue(rawPlan);
+function continueConfirmedPendingAction(context: unknown, transcript: string): AssistantPlan | undefined {
   const pendingActions = Array.isArray(objectValue(context).pendingActions)
     ? (objectValue(context).pendingActions as unknown[]).map(objectValue)
     : [];
-  const confirmedPending = pendingActions.length === 1 && pendingActions[0]!.requiresExplicitConfirmation === true && /(?:^|\s)(?:כן|מאשר|מאשרת|אשר|אשרי|תאשר|תאשרי)(?:\s|,|\.|$)|בכל\s+זאת/u.test(transcript)
-    ? pendingActions[0]
+  const confirmationCandidates = pendingActions.filter((pending) => pending.requiresExplicitConfirmation === true);
+  const confirmedPending = confirmationCandidates.length === 1
+    && /(?:^|\s)(?:כן|מאשר|מאשרת|אשר|אשרי|תאשר|תאשרי)(?:\s|,|\.|$)|בכל\s+זאת/u.test(transcript)
+    ? confirmationCandidates[0]
     : undefined;
-  if (confirmedPending && typeof confirmedPending.id === "string") {
-    const payload = objectValue(confirmedPending.payload);
-    const tool = typeof payload.tool === "string"
-      ? payload.tool.toUpperCase()
-      : typeof confirmedPending.actionType === "string" ? confirmedPending.actionType.toUpperCase() : undefined;
-    const input = {
-      ...objectValue(payload.input),
-      ...objectValue(payload.confirmationOverrides)
-    };
-    return AssistantPlanSchema.parse({
-      version: "2",
-      requestKind: "ACTION",
-      language: "he-IL",
-      extractedFacts: { resolvesPendingActionId: confirmedPending.id },
-      steps: [{
-        stepId: "continue_confirmed_pending_action",
-        kind: "WRITE",
-        tool,
-        dependsOn: [],
-        input: normalizeToolInput(String(tool ?? ""), input),
-        confidence: 1,
-        requiresExplicitConfirmation: false
-      }]
-    });
-  }
+  if (!confirmedPending || typeof confirmedPending.id !== "string") return undefined;
+  const payload = objectValue(confirmedPending.payload);
+  const tool = typeof payload.tool === "string"
+    ? payload.tool.toUpperCase()
+    : typeof confirmedPending.actionType === "string" ? confirmedPending.actionType.toUpperCase() : undefined;
+  const input = {
+    ...objectValue(payload.input),
+    ...objectValue(payload.confirmationOverrides)
+  };
+  return AssistantPlanSchema.parse({
+    version: "2",
+    requestKind: "ACTION",
+    language: "he-IL",
+    extractedFacts: { resolvesPendingActionId: confirmedPending.id },
+    steps: [{
+      stepId: "continue_confirmed_pending_action",
+      kind: "WRITE",
+      tool,
+      dependsOn: [],
+      input: normalizeToolInput(String(tool ?? ""), input),
+      confidence: 1,
+      requiresExplicitConfirmation: false
+    }]
+  });
+}
+
+function continueNoChargeCompletion(context: unknown, transcript: string): AssistantPlan | undefined {
+  if (!/(?:לא\s+היה|בלי|אין)\s+חיוב/u.test(transcript)) return undefined;
+  const pendingActions = Array.isArray(objectValue(context).pendingActions)
+    ? (objectValue(context).pendingActions as unknown[]).map(objectValue)
+    : [];
+  const candidates = pendingActions.filter((pending) =>
+    ["REPORT_JOB_COMPLETED", "REPORT_VISIT_COMPLETED"].includes(String(pending.actionType))
+    && Array.isArray(pending.missingFields)
+    && pending.missingFields.includes("noChargeOrAmount")
+  );
+  if (candidates.length !== 1 || typeof candidates[0]!.id !== "string") return undefined;
+  const pending = candidates[0]!;
+  const payload = objectValue(pending.payload);
+  const tool = String(payload.tool ?? pending.actionType);
+  return AssistantPlanSchema.parse({
+    version: "2",
+    requestKind: "ACTION",
+    language: "he-IL",
+    extractedFacts: { resolvesPendingActionId: pending.id },
+    steps: [{
+      stepId: "continue_no_charge_completion",
+      kind: "WRITE",
+      tool,
+      dependsOn: [],
+      input: { ...objectValue(payload.input), noCharge: true },
+      confidence: 1,
+      requiresExplicitConfirmation: false
+    }]
+  });
+}
+
+export function deterministicPendingAssistantPlan(context: unknown, transcript: string): AssistantPlan | undefined {
+  return continueNoChargeCompletion(context, transcript)
+    ?? continueMissingCustomerDecision(context, transcript)
+    ?? continueConfirmedPendingAction(context, transcript);
+}
+
+export function normalizeAssistantPlan(rawPlan: unknown, context: unknown, transcript: string): AssistantPlan {
+  const deterministicPending = deterministicPendingAssistantPlan(context, transcript);
+  if (deterministicPending) return deterministicPending;
+  const raw = objectValue(rawPlan);
   const rawSteps = Array.isArray(raw.steps) ? raw.steps.map(objectValue) : [];
   let steps: JsonObject[] = rawSteps.map((step) => {
     const tool = typeof step.tool === "string" ? step.tool.toUpperCase() : step.tool;
@@ -258,8 +319,9 @@ export function normalizeAssistantPlan(rawPlan: unknown, context: unknown, trans
       input: normalizeToolInput(String(tool ?? ""), step.input)
     };
   });
-  steps = resolveExternalReadReferences(steps, context);
   steps = preferExplicitCustomerCreation(steps, transcript);
   steps = preferCustomerNoteWorkItem(steps, transcript);
+  steps = preserveTaskCustomerUnlessExplicitlyRemoved(steps, transcript);
+  steps = preferExplicitMissingCustomer(steps, transcript);
   return AssistantPlanSchema.parse({ ...raw, steps });
 }

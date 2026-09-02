@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { AssistantPlanSchema } from "@myclient/contracts";
-import { planNeedsReadResolution, stepsBlockedByPlannedClarification, summaryIsGrounded } from "./v2-assistant-plan.js";
+import { applyAssistantConfirmationPolicy, materializeStepReferences, preferTranscriptCustomerName, stepsBlockedByPlannedClarification } from "./v2-assistant-plan.js";
 
 const basePlan = {
   version: "2" as const,
@@ -37,26 +37,93 @@ test("AssistantPlan accepts an ordered customer-to-task reference", () => {
   assert.equal(result.steps.length, 2);
 });
 
-test("a pure read question does not require a second planning round", () => {
-  const plan = AssistantPlanSchema.parse({
+test("AssistantPlan accepts two direct lookup references for a customer merge", () => {
+  const result = AssistantPlanSchema.parse({
     ...basePlan,
-    requestKind: "QUESTION",
     steps: [
-      { stepId: "today", kind: "READ", tool: "GET_TODAY_OVERVIEW", dependsOn: [], input: { date: "2026-09-02" }, confidence: 1, requiresExplicitConfirmation: false }
+      { stepId: "source", kind: "READ", tool: "FIND_CUSTOMERS", dependsOn: [], input: { query: "נועה" }, confidence: 1, requiresExplicitConfirmation: false },
+      { stepId: "target", kind: "READ", tool: "FIND_CUSTOMERS", dependsOn: [], input: { query: "מאיה" }, confidence: 1, requiresExplicitConfirmation: false },
+      {
+        stepId: "merge",
+        kind: "WRITE",
+        tool: "MERGE_CUSTOMERS",
+        dependsOn: ["source", "target"],
+        input: {
+          sourceCustomerRef: { stepId: "source", outputField: "entityId" },
+          targetCustomerRef: { stepId: "target", outputField: "entityId" }
+        },
+        confidence: 1,
+        requiresExplicitConfirmation: true
+      }
     ]
   });
-  assert.equal(planNeedsReadResolution(plan), false);
+  assert.equal(result.steps[2]?.tool, "MERGE_CUSTOMERS");
 });
 
-test("a write that depends on a lookup still requires read resolution", () => {
+test("confirmation payloads materialize references from the same plan", () => {
+  const step = AssistantPlanSchema.parse({
+    ...basePlan,
+    steps: [{
+      stepId: "find",
+      kind: "READ",
+      tool: "FIND_TASKS",
+      dependsOn: [],
+      input: { title: "לחזור" },
+      confidence: 1,
+      requiresExplicitConfirmation: false
+    }, {
+      stepId: "delete",
+      kind: "WRITE",
+      tool: "DELETE_TASK",
+      dependsOn: ["find"],
+      input: { entityRef: { stepId: "find", outputField: "entityId" } },
+      confidence: 1,
+      requiresExplicitConfirmation: true
+    }]
+  }).steps[1]!;
+  const materialized = materializeStepReferences(step, new Map([["find", { entityId: "task-1" }]]));
+  assert.deepEqual(materialized, { taskId: "task-1" });
+});
+
+test("Core enforces confirmation for cancellation and financial writes", () => {
   const plan = AssistantPlanSchema.parse({
     ...basePlan,
     steps: [
-      { stepId: "find", kind: "READ", tool: "FIND_CUSTOMERS", dependsOn: [], input: { query: "נועה" }, confidence: 1, requiresExplicitConfirmation: false },
-      { stepId: "task", kind: "WRITE", tool: "CREATE_TASK", dependsOn: ["find"], input: { title: "לחזור", customerRef: { stepId: "find", outputField: "entityId" } }, confidence: 1, requiresExplicitConfirmation: false }
+      { stepId: "cancel", kind: "WRITE", tool: "CANCEL_VISIT", dependsOn: [], input: { entityId: "visit-1" }, confidence: 1, requiresExplicitConfirmation: false },
+      { stepId: "payment", kind: "WRITE", tool: "ADD_PAYMENT", dependsOn: [], input: { entityId: "visit-1", amount: 200 }, confidence: 1, requiresExplicitConfirmation: false },
+      { stepId: "safe", kind: "WRITE", tool: "UPDATE_VISIT", dependsOn: [], input: { entityId: "visit-1", title: "בדיקה" }, confidence: 1, requiresExplicitConfirmation: false }
     ]
   });
-  assert.equal(planNeedsReadResolution(plan), true);
+  const enforced = applyAssistantConfirmationPolicy(plan);
+  assert.equal(enforced.steps[0]!.requiresExplicitConfirmation, true);
+  assert.equal(enforced.steps[1]!.requiresExplicitConfirmation, true);
+  assert.equal(enforced.steps[2]!.requiresExplicitConfirmation, false);
+});
+
+test("Core does not request a second confirmation for the pending action being resolved", () => {
+  const plan = AssistantPlanSchema.parse({
+    ...basePlan,
+    extractedFacts: { resolvesPendingActionId: "pending-1" },
+    steps: [{ stepId: "payment", kind: "WRITE", tool: "ADD_PAYMENT", dependsOn: [], input: { entityId: "visit-1", amount: 200 }, confidence: 1, requiresExplicitConfirmation: false }]
+  });
+  const enforced = applyAssistantConfirmationPolicy(plan, "pending-1");
+  assert.equal(enforced.steps[0]!.requiresExplicitConfirmation, false);
+});
+
+test("Core preserves the longest existing customer name explicitly spoken by the user", () => {
+  const plan = AssistantPlanSchema.parse({
+    ...basePlan,
+    steps: [{ stepId: "find", kind: "READ", tool: "FIND_CUSTOMERS", dependsOn: [], input: { query: "אורי לביא" }, confidence: 1, requiresExplicitConfirmation: false }]
+  });
+  const normalized = preferTranscriptCustomerName(
+    plan,
+    "אורי לביא לקוח בדיקה שילם על העבודה",
+    [
+      { name: "אורי לביא", normalizedName: "אורי לביא" },
+      { name: "אורי לביא לקוח בדיקה", normalizedName: "אורי לביא לקוח בדיקה" }
+    ]
+  );
+  assert.equal(normalized.steps[0]!.input.query, "אורי לביא לקוח בדיקה");
 });
 
 test("AssistantPlan rejects arbitrary reference output fields", () => {
@@ -98,24 +165,6 @@ test("AssistantPlan rejects references to non-entity and later steps", () => {
   });
   assert.equal(nonEntity.success, false);
   assert.equal(later.success, false);
-});
-
-test("grounded summary rejects amounts absent from the receipt", () => {
-  const receipt = { steps: [{ status: "COMPLETED", totalAmount: 500 }] };
-  assert.equal(summaryIsGrounded("נשמרו 500 שקלים", receipt), true);
-  assert.equal(summaryIsGrounded("נשמרו 700 שקלים", receipt), false);
-});
-
-test("grounded summary must preserve scheduling warnings", () => {
-  const receipt = { steps: [{ warnings: ["הפעילות נקבעה מחוץ לשעות העבודה."] }] };
-  assert.equal(summaryIsGrounded("הפעולה בוצעה בהצלחה.", receipt), false);
-  assert.equal(summaryIsGrounded("הפעולה בוצעה. הפעילות נקבעה מחוץ לשעות העבודה.", receipt), true);
-});
-
-test("grounded summary never exposes internal UUIDs", () => {
-  const receipt = { steps: [{ entityId: "4155ee63-34d9-46d0-a77e-1b8f37d24548", status: "COMPLETED" }] };
-  assert.equal(summaryIsGrounded("הלקוחה נוצרה בהצלחה.", receipt), true);
-  assert.equal(summaryIsGrounded("הלקוחה נוצרה: 4155ee63-34d9-46d0-a77e-1b8f37d24548", receipt), false);
 });
 
 test("AssistantPlan rejects dependency cycles", () => {

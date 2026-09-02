@@ -235,11 +235,19 @@ export const AssistantPlanStepSchema = z.object({
 });
 export type AssistantPlanStep = z.infer<typeof AssistantPlanStepSchema>;
 
+export const AssistantReplySchema = z.object({
+  completedLead: z.string().trim().min(1).max(100),
+  partialLead: z.string().trim().min(1).max(100),
+  needsInputLead: z.string().trim().min(1).max(100)
+});
+export type AssistantReply = z.infer<typeof AssistantReplySchema>;
+
 export const AssistantPlanSchema = z.object({
   version: z.literal("2"),
   requestKind: z.enum(["QUESTION", "ACTION", "MIXED"]),
   language: z.literal("he-IL"),
   extractedFacts: z.record(z.unknown()),
+  assistantReply: AssistantReplySchema.optional(),
   steps: z.array(AssistantPlanStepSchema).min(1).max(10)
 }).superRefine((plan, context) => {
   const stepIds = new Set<string>();

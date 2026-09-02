@@ -1,18 +1,92 @@
-import type { AssistantPlan, AssistantPlanStep } from "@myclient/contracts";
+import { AssistantPlanSchema, type AssistantPlan, type AssistantPlanStep } from "@myclient/contracts";
+import { normalizeCustomerName } from "./v2-normalization.js";
 
-export function planNeedsReadResolution(plan: AssistantPlan) {
-  const readStepIds = new Set(plan.steps.filter((step) => step.kind === "READ").map((step) => step.stepId));
-  if (readStepIds.size === 0) return false;
-  const dependsOnRead = (step: AssistantPlanStep, visited = new Set<string>()): boolean => {
-    if (visited.has(step.stepId)) return false;
-    visited.add(step.stepId);
-    return step.dependsOn.some((dependency) => {
-      if (readStepIds.has(dependency)) return true;
-      const parent = plan.steps.find((candidate) => candidate.stepId === dependency);
-      return parent ? dependsOnRead(parent, visited) : false;
-    });
+const CORE_CONFIRMATION_TOOLS = new Set<AssistantPlanStep["tool"]>([
+  "CANCEL_TASK",
+  "CANCEL_JOB",
+  "CANCEL_VISIT",
+  "DELETE_CUSTOMER_PHONE",
+  "DELETE_SERVICE_ADDRESS",
+  "DELETE_TASK",
+  "DELETE_JOB",
+  "DELETE_VISIT",
+  "SET_ACTIVITY_AMOUNT",
+  "ADD_PAYMENT",
+  "SET_PAID_TOTAL",
+  "SETTLE_BALANCE",
+  "MERGE_CUSTOMERS",
+  "UNDO_ACTION_BATCH"
+]);
+
+function objectValue(value: unknown) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+export function materializeStepReferences(step: AssistantPlanStep, outputs: Map<string, Record<string, unknown>>) {
+  const input = { ...step.input };
+  const entityIdField = step.tool.includes("TASK") ? "taskId"
+    : step.tool.includes("NOTE") ? "noteId"
+      : step.tool.includes("CUSTOMER_PHONE") ? "phoneId"
+        : step.tool.includes("SERVICE_ADDRESS") ? "addressId"
+          : "entityId";
+  const referenceTargets: Record<string, string> = {
+    customerRef: "customerId",
+    entityRef: entityIdField,
+    sourceCustomerRef: "sourceCustomerId",
+    targetCustomerRef: "targetCustomerId"
   };
-  return plan.steps.some((step) => step.kind !== "READ" && dependsOnRead(step));
+  for (const [referenceField, targetField] of Object.entries(referenceTargets)) {
+    const reference = objectValue(input[referenceField]);
+    const output = typeof reference.stepId === "string" ? outputs.get(reference.stepId) : undefined;
+    if (typeof output?.entityId !== "string") continue;
+    input[targetField] = output.entityId;
+    delete input[referenceField];
+  }
+  return input;
+}
+
+export function assistantToolRequiresConfirmation(tool: AssistantPlanStep["tool"]) {
+  return CORE_CONFIRMATION_TOOLS.has(tool);
+}
+
+export function applyAssistantConfirmationPolicy(
+  plan: AssistantPlan,
+  confirmedPendingActionId?: string
+) {
+  const resolvesConfirmedPending = confirmedPendingActionId !== undefined
+    && plan.extractedFacts.resolvesPendingActionId === confirmedPendingActionId;
+  return AssistantPlanSchema.parse({
+    ...plan,
+    steps: plan.steps.map((step) => ({
+      ...step,
+      requiresExplicitConfirmation: step.requiresExplicitConfirmation
+        || (!resolvesConfirmedPending && assistantToolRequiresConfirmation(step.tool))
+    }))
+  });
+}
+
+export function preferTranscriptCustomerName(
+  plan: AssistantPlan,
+  transcript: string,
+  customers: Array<{ name: string; normalizedName: string | null }>
+) {
+  const findSteps = plan.steps.filter((step) => step.tool === "FIND_CUSTOMERS");
+  if (findSteps.length !== 1) return plan;
+  const normalizedTranscript = normalizeCustomerName(transcript);
+  const mentioned = customers
+    .map((customer) => ({ ...customer, normalizedName: customer.normalizedName ?? normalizeCustomerName(customer.name) }))
+    .filter((customer) => normalizedTranscript.includes(customer.normalizedName))
+    .sort((left, right) => right.normalizedName.length - left.normalizedName.length);
+  if (mentioned.length === 0) return plan;
+  const longest = mentioned[0]!;
+  if (mentioned[1]?.normalizedName.length === longest.normalizedName.length
+    && mentioned[1].normalizedName !== longest.normalizedName) return plan;
+  return AssistantPlanSchema.parse({
+    ...plan,
+    steps: plan.steps.map((step) => step.tool === "FIND_CUSTOMERS"
+      ? { ...step, input: { ...step.input, query: longest.name } }
+      : step)
+  });
 }
 
 export function stepsBlockedByPlannedClarification(steps: AssistantPlanStep[]) {
@@ -35,25 +109,4 @@ export function stepsBlockedByPlannedClarification(steps: AssistantPlanStep[]) {
     }
   }
   return blocked;
-}
-
-export function summaryIsGrounded(summary: string, receipt: unknown) {
-  if (!summary.trim() || summary.length > 500) return false;
-  if (/\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/i.test(summary)) return false;
-  const receiptText = JSON.stringify(receipt);
-  const numbers = summary.match(/\d+(?:[.,]\d+)?/g) ?? [];
-  const warnings: string[] = [];
-  const visit = (value: unknown) => {
-    if (Array.isArray(value)) {
-      for (const item of value) visit(item);
-      return;
-    }
-    if (!value || typeof value !== "object") return;
-    for (const [key, item] of Object.entries(value)) {
-      if (key === "warnings" && Array.isArray(item)) warnings.push(...item.filter((warning): warning is string => typeof warning === "string"));
-      else visit(item);
-    }
-  };
-  visit(receipt);
-  return numbers.every((number) => receiptText.includes(number.replace(",", ".")) || receiptText.includes(number)) && warnings.every((warning) => summary.includes(warning));
 }

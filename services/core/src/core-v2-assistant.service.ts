@@ -27,7 +27,8 @@ import { PrismaService } from "./prisma.service.js";
 import { parseOptionalDate, requiredIdempotencyKey, type RequestHeaders } from "./core-utils.js";
 import { paginationFromParsedQuery, paginatedResponse } from "./core-utils.js";
 import { normalizeCustomerName } from "./v2-normalization.js";
-import { planNeedsReadResolution, stepsBlockedByPlannedClarification, summaryIsGrounded } from "./v2-assistant-plan.js";
+import { applyAssistantConfirmationPolicy, materializeStepReferences, preferTranscriptCustomerName, stepsBlockedByPlannedClarification } from "./v2-assistant-plan.js";
+import { composeAssistantSummary } from "./v2-assistant-reply.js";
 import { assertAmountInvariant, money, nextPaidAmount, paymentStatus } from "./v2-money.js";
 import { DEFAULT_WORKING_HOURS, freeSlots, isWithinWorkingHours, localDate, localDateTimeToUtc, workingWindow, type WorkingHours } from "./v2-scheduling.js";
 import { effectiveScheduleEnd, shiftedScheduleEnd, verifyScheduleConflictToken, type ScheduleConflictOperation } from "./v2-schedule-confirmation.js";
@@ -120,7 +121,7 @@ export class CoreV2AssistantService {
         const [recentTurns, pendingActions] = await Promise.all([
           this.prisma.assistantTurn.findMany({
             where: { assistantSessionId: session.id, expiresAt: { gt: new Date() } },
-            include: { actionBatch: { select: { finalSummary: true, status: true, proposedPlan: true } } },
+            include: { actionBatch: { select: { finalSummary: true, status: true } } },
             orderBy: { createdAt: "desc" },
             take: 6
           }),
@@ -145,8 +146,7 @@ export class CoreV2AssistantService {
           recentTurns: recentTurns.reverse().map((turn) => ({
             transcript: turn.approvedTranscript,
             summary: turn.actionBatch?.finalSummary,
-            status: turn.actionBatch?.status,
-            plan: turn.actionBatch?.proposedPlan
+            status: turn.actionBatch?.status
           })),
           pendingActions,
           environment: {
@@ -159,29 +159,23 @@ export class CoreV2AssistantService {
           transcript: command.transcript,
           context: planningContext
         });
+        const planningDurationMs = Date.now() - startedAt;
         let plan = AssistantPlanSchema.parse(planned.plan);
-        let planningRounds = 1;
-        const initialReadSteps = orderedSteps(plan.steps).filter((step) => step.kind === "READ");
-        if (initialReadSteps.length > 0 && planNeedsReadResolution(plan)) {
-          const readOutputs = await this.prisma.$transaction(async (tx) => {
-            const outputs = new Map<string, Record<string, unknown>>();
-            for (const step of initialReadSteps) {
-              if (!step.dependsOn.every((dependency) => outputs.has(dependency) || !plan.steps.some((candidate) => candidate.stepId === dependency && candidate.kind === "READ"))) continue;
-              const output = await this.executeBasicWrite(tx, { businessId, userId: user.id, key, headers, step, outputs, emptyReadIsResult: false });
-              if (output.waiting) return null;
-              outputs.set(step.stepId, output);
-            }
-            return Object.fromEntries(outputs);
-          });
-          if (readOutputs && Object.keys(readOutputs).length > 0) {
-            const replanned = await this.ai.planV2AssistantCommand({
-              transcript: command.transcript,
-              context: { ...planningContext, readResults: readOutputs, instruction: "זהו סבב התכנון השני והאחרון. השתמש בתוצאות הקריאה ואל תבקש סבב נוסף." }
-            });
-            plan = AssistantPlanSchema.parse(replanned.plan);
-            planningRounds = 2;
-          }
-        }
+        plan = preferTranscriptCustomerName(
+          plan,
+          command.transcript,
+          await this.prisma.customer.findMany({
+            where: { businessId, deletedAt: null, mergedIntoCustomerId: null },
+            select: { name: true, normalizedName: true }
+          })
+        );
+        const resolvesPendingActionId = typeof plan.extractedFacts.resolvesPendingActionId === "string"
+          ? plan.extractedFacts.resolvesPendingActionId
+          : undefined;
+        const confirmedPendingActionId = pendingActions.some((pending) =>
+          pending.id === resolvesPendingActionId && pending.requiresExplicitConfirmation
+        ) ? resolvesPendingActionId : undefined;
+        plan = applyAssistantConfirmationPolicy(plan, confirmedPendingActionId);
         plan = await this.completeSatisfiedCallTask(plan, command.transcript, businessId);
         const steps = orderedSteps(plan.steps);
         const plannedClarificationChain = stepsBlockedByPlannedClarification(steps);
@@ -231,17 +225,21 @@ export class CoreV2AssistantService {
               continue;
             }
 
+            const pendingInput = materializeStepReferences(step, outputs);
+            const financialProblem = step.requiresExplicitConfirmation
+              ? await this.financialConfirmationProblem(tx, businessId, { ...step, input: pendingInput })
+              : undefined;
             if (step.kind === "CLARIFY" || step.tool === "ASK_CLARIFICATION" || step.requiresExplicitConfirmation) {
-              const question = typeof step.input.question === "string"
+              const question = financialProblem?.question ?? (typeof step.input.question === "string"
                 ? step.input.question
-                : step.requiresExplicitConfirmation ? "הפעולה דורשת אישור מפורש. לבצע?" : "נדרש מידע נוסף";
+                : step.requiresExplicitConfirmation ? this.confirmationQuestion({ ...step, input: pendingInput }) : "נדרש מידע נוסף");
               const pending = await tx.aiPendingAction.create({
                 data: {
                   businessId,
                   userId: user.id,
                   actionType: step.tool,
-                  payload: jsonValue(step.input),
-                  missingFields: [],
+                  payload: jsonValue({ tool: step.tool, input: pendingInput, confirmationRequiredAfterInput: financialProblem !== undefined }),
+                  missingFields: financialProblem?.missingFields ?? [],
                   actionBatchId: actionBatch.id,
                   createdByUserId: user.id,
                   assistantSessionId: session.id,
@@ -253,7 +251,7 @@ export class CoreV2AssistantService {
                       ? [[output.entityId, output.entityVersion]]
                       : [];
                   }))),
-                  requiresExplicitConfirmation: step.requiresExplicitConfirmation
+                  requiresExplicitConfirmation: step.requiresExplicitConfirmation && financialProblem === undefined
                 }
               });
               const batchStep = await tx.actionBatchStep.create({
@@ -296,6 +294,7 @@ export class CoreV2AssistantService {
             });
             if (output.waiting) {
               const pendingOptions = objectValue(output);
+              const pendingInput = materializeStepReferences(step, outputs);
               const continuationSteps = steps.filter((candidate) => candidate.dependsOn.includes(step.stepId));
               const createCustomerSuggestion = typeof pendingOptions.createCustomerName === "string"
                 ? { name: pendingOptions.createCustomerName, sourceStepId: step.stepId }
@@ -307,7 +306,7 @@ export class CoreV2AssistantService {
                   actionType: step.tool,
                   payload: jsonValue({
                     tool: step.tool,
-                    input: step.input,
+                    input: pendingInput,
                     confirmationOverrides: pendingOptions.confirmationOverrides,
                     createCustomerSuggestion,
                     continuationSteps
@@ -367,20 +366,18 @@ export class CoreV2AssistantService {
 
           const waiting = [...statuses.values()].some((status) => status !== "COMPLETED");
           const completedCount = [...statuses.values()].filter((status) => status === "COMPLETED").length;
-          const readSummary = receiptSteps.map((step) => step.message).filter((message): message is string => typeof message === "string").join(" ");
-          const pendingSummary = receiptSteps.map((step) => step.question).filter((question): question is string => typeof question === "string").join(" ");
-          const baseSummary = readSummary || pendingSummary || (waiting
-            ? completedCount > 0
-              ? "ביצעתי את הפעולות הברורות ושמרתי שאלה להשלמה."
-              : "אני צריך עוד פרט לפני שאוכל לבצע את הבקשה."
-            : completedCount === 1
-              ? "הפעולה בוצעה בהצלחה."
-              : `בוצעו ${completedCount} פעולות בהצלחה.`);
           const warnings = [...new Set(receiptSteps.flatMap((step) => Array.isArray(step.warnings) ? step.warnings.filter((warning): warning is string => typeof warning === "string") : []))];
-          const summary = warnings.length > 0 ? `${baseSummary} ${warnings.join(" ")}` : baseSummary;
           const status = waiting
             ? completedCount > 0 ? "PARTIALLY_COMPLETED" : "WAITING"
             : "COMPLETED";
+          const summary = composeAssistantSummary({
+            plan,
+            state: status,
+            completedCount,
+            messages: receiptSteps.map((step) => typeof step.message === "string" ? step.message : undefined),
+            questions: receiptSteps.map((step) => typeof step.question === "string" ? step.question : undefined),
+            warnings
+          });
           const updatedBatch = await tx.actionBatch.update({
             where: { id: actionBatch.id },
             data: { finalSummary: summary, status }
@@ -510,29 +507,14 @@ export class CoreV2AssistantService {
         log("info", "v2 assistant command executed", {
           businessId,
           provider: planned.provider,
-          planningRounds,
+          planningRounds: 1,
+          planningDurationMs,
+          executionDurationMs: Date.now() - startedAt - planningDurationMs,
           status: execution.actionBatch.status,
           stepCount: execution.receipt.steps.length,
           durationMs: Date.now() - startedAt
         });
-        if (planned.provider === "deterministic" || plan.requestKind === "QUESTION") return execution;
-        try {
-          const grounded = await this.ai.summarizeV2AssistantReceipt({ transcript: command.transcript, receipt: execution.receipt });
-          if (!summaryIsGrounded(grounded.textSummary, execution.receipt) || !summaryIsGrounded(grounded.spokenSummary, execution.receipt)) {
-            log("warn", "v2 assistant summary fallback", { businessId, reason: "UNGROUNDED", actionBatchId: execution.actionBatch.id });
-            return execution;
-          }
-          await this.prisma.actionBatch.update({ where: { id: execution.actionBatch.id }, data: { finalSummary: grounded.textSummary, spokenSummary: grounded.spokenSummary } });
-          return {
-            ...execution,
-            actionBatch: { ...execution.actionBatch, finalSummary: grounded.textSummary, spokenSummary: grounded.spokenSummary },
-            receipt: { ...execution.receipt, textSummary: grounded.textSummary, spokenSummary: grounded.spokenSummary },
-            voiceResult: { ...execution.voiceResult, summary: grounded.textSummary }
-          };
-        } catch {
-          log("warn", "v2 assistant summary fallback", { businessId, reason: "PROVIDER_FAILURE", actionBatchId: execution.actionBatch.id });
-          return execution;
-        }
+        return execution;
       }
     });
   }
@@ -652,19 +634,45 @@ export class CoreV2AssistantService {
           });
         }
         if (plannedCurrentStep.kind === "WRITE") {
-          const confirmationOverrides = objectValue(objectValue(pending.payload).confirmationOverrides);
+          const storedPendingPayload = objectValue(pending.payload);
+          const confirmationOverrides = objectValue(storedPendingPayload.confirmationOverrides);
           const confirmedStep = {
             ...plannedCurrentStep,
             requiresExplicitConfirmation: false,
-            input: { ...plannedCurrentStep.input, ...confirmationOverrides, ...(command.payload ?? {}), ...(command.selectedEntityId ? { entityId: command.selectedEntityId } : {}) }
+            input: { ...plannedCurrentStep.input, ...objectValue(storedPendingPayload.input), ...confirmationOverrides, ...(command.payload ?? {}), ...(command.selectedEntityId ? { entityId: command.selectedEntityId } : {}) }
           };
+          if (storedPendingPayload.confirmationRequiredAfterInput === true && !pending.requiresExplicitConfirmation) {
+            const financialProblem = await this.financialConfirmationProblem(tx, businessId, confirmedStep);
+            if (financialProblem) {
+              await tx.aiPendingAction.update({
+                where: { id: pending.id },
+                data: {
+                  payload: jsonValue({ ...storedPendingPayload, input: confirmedStep.input }),
+                  question: financialProblem.question,
+                  missingFields: financialProblem.missingFields
+                }
+              });
+              return { actionBatchId: batch.id, summary: financialProblem.question, remaining: 1, needsReview: true };
+            }
+            const question = this.confirmationQuestion(confirmedStep);
+            await tx.aiPendingAction.update({
+              where: { id: pending.id },
+              data: {
+                payload: jsonValue({ ...storedPendingPayload, input: confirmedStep.input, confirmationRequiredAfterInput: false }),
+                question,
+                missingFields: [],
+                requiresExplicitConfirmation: true
+              }
+            });
+            return { actionBatchId: batch.id, summary: question, remaining: 1, needsReview: true };
+          }
           const executed = await this.executeBasicWrite(tx, { businessId, userId: user.id, key: requiredIdempotencyKey(headers), headers, step: confirmedStep, outputs, emptyReadIsResult: false });
           if (executed.waiting) {
             const refreshed = objectValue(executed);
             await tx.aiPendingAction.update({
               where: { id: pending.id },
               data: {
-                payload: jsonValue({ tool: plannedCurrentStep.tool, input: plannedCurrentStep.input, confirmationOverrides: refreshed.confirmationOverrides }),
+                payload: jsonValue({ tool: plannedCurrentStep.tool, input: confirmedStep.input, confirmationOverrides: refreshed.confirmationOverrides }),
                 question: executed.question,
                 missingFields: Array.isArray(refreshed.missingFields) ? refreshed.missingFields as string[] : [],
                 candidateEntities: refreshed.candidates ? jsonValue(refreshed.candidates) : Prisma.JsonNull,
@@ -717,6 +725,55 @@ export class CoreV2AssistantService {
       const actual = customer?.version ?? task?.version ?? job?.version ?? visit?.version;
       if (actual !== expected) throw new ConflictException({ code: "PENDING_ACTION_STALE", message: "The selected entity changed; review the action again" });
     }
+  }
+
+  private confirmationQuestion(step: AssistantPlanStep) {
+    if (step.tool.startsWith("CANCEL_")) return "הפעולה תבטל את הפריט אך תשמור את ההיסטוריה שלו. לאשר ביטול?";
+    if (step.tool.startsWith("DELETE_")) return "הפעולה תמחק את הפריט מהמערכת. לאשר מחיקה?";
+    if (step.tool === "UNDO_ACTION_BATCH") return "הפעולה תשחזר שינויים מהפעולה האחרונה. לאשר Undo?";
+    if (step.tool === "MERGE_CUSTOMERS") return "הפעולה תמזג בין שני לקוחות ותעביר את המידע ללקוח אחד. לאשר מיזוג?";
+    if (["SET_ACTIVITY_AMOUNT", "ADD_PAYMENT", "SET_PAID_TOTAL", "SETTLE_BALANCE"].includes(step.tool)) {
+      const amount = typeof step.input.amount === "number"
+        ? ` של ${step.input.amount} ₪`
+        : typeof step.input.totalAmount === "number" ? ` ל-${step.input.totalAmount} ₪` : "";
+      return `הפעולה תעדכן מידע כספי${amount}. לאשר?`;
+    }
+    return "הפעולה דורשת אישור מפורש. לבצע?";
+  }
+
+  private async financialConfirmationProblem(
+    tx: Prisma.TransactionClient,
+    businessId: string,
+    step: AssistantPlanStep
+  ): Promise<{ question: string; missingFields: string[] } | undefined> {
+    if (!["SET_ACTIVITY_AMOUNT", "ADD_PAYMENT", "SET_PAID_TOTAL", "SETTLE_BALANCE"].includes(step.tool)) return undefined;
+    const entityId = typeof step.input.entityId === "string" ? step.input.entityId : undefined;
+    if (!entityId) return { question: "לאיזו פעילות לעדכן את הסכום?", missingFields: ["entityId"] };
+    const existing = await tx.amount.findFirst({
+      where: { businessId, deletedAt: null, OR: [{ jobId: entityId }, { visitId: entityId }] }
+    });
+    if (step.tool !== "SET_ACTIVITY_AMOUNT" && !existing) {
+      return { question: "צריך להגדיר סכום כולל לפני עדכון תשלום.", missingFields: ["totalAmount"] };
+    }
+    const previousTotal = money(Number(existing?.totalAmount ?? 0));
+    const previousPaid = money(Number(existing?.paidAmount ?? 0));
+    const nextTotal = step.tool === "SET_ACTIVITY_AMOUNT"
+      ? money(Number(step.input.totalAmount))
+      : previousTotal;
+    const mode = step.tool === "ADD_PAYMENT" ? "ADD" : step.tool === "SET_PAID_TOTAL" ? "SET_PAID_TOTAL" : "SETTLE_BALANCE";
+    const nextPaid = step.tool === "SET_ACTIVITY_AMOUNT"
+      ? (typeof step.input.paidAmount === "number" ? money(step.input.paidAmount) : previousPaid)
+      : nextPaidAmount(mode, previousPaid, nextTotal, typeof step.input.amount === "number" ? step.input.amount : undefined);
+    try {
+      assertAmountInvariant(nextTotal, nextPaid);
+    } catch {
+      const balance = Number(previousTotal.minus(previousPaid));
+      return {
+        question: `הסכום גבוה מהיתרה של ${balance} ₪. מה הסכום הנכון?`,
+        missingFields: ["amount"]
+      };
+    }
+    return undefined;
   }
 
   private async executeBasicWrite(
@@ -929,7 +986,7 @@ export class CoreV2AssistantService {
       const hasCustomerId = Object.prototype.hasOwnProperty.call(input.step.input, "customerId");
       const entity = await tx.task.update({ where: { id: existing.id }, data: { customerId: hasCustomerId && (typeof input.step.input.customerId === "string" || input.step.input.customerId === null) ? input.step.input.customerId : undefined, title: typeof input.step.input.title === "string" ? input.step.input.title : undefined, description: typeof input.step.input.description === "string" ? input.step.input.description : undefined, dueAt: typeof input.step.input.dueAt === "string" ? new Date(input.step.input.dueAt) : undefined, version: { increment: 1 } } });
       const customer = entity.customerId ? await tx.customer.findFirst({ where: { id: entity.customerId, businessId: input.businessId, deletedAt: null } }) : null;
-      return { entityType: "task", entityId: entity.id, entity, displayPayload: { ...entity, customerName: customer?.name }, before: existing, operation: "UPDATE" };
+      return { entityType: "task", entityId: entity.id, entity, displayPayload: { ...entity, customerName: customer?.name }, before: existing, operation: "UPDATE", message: `המשימה "${entity.title}" עודכנה.` };
     }
     if (input.step.tool === "CREATE_NOTE") {
       const customerId = this.resolveEntityId(input.step.input.customerId, input.step.input.customerRef, input.outputs);
@@ -963,7 +1020,7 @@ export class CoreV2AssistantService {
           version: { increment: 1 }
         }
       });
-      return { entityType: "customer", entityId: entity.id, entity, before: existing, operation: "UPDATE" };
+      return { entityType: "customer", entityId: entity.id, entity, before: existing, operation: "UPDATE", message: `פרטי הלקוח ${entity.name} עודכנו.` };
     }
     if (input.step.tool === "ADD_CUSTOMER_PHONE") {
       const customerId = this.resolveEntityId(input.step.input.customerId, input.step.input.customerRef, input.outputs);
@@ -1053,8 +1110,8 @@ export class CoreV2AssistantService {
       return { entityType: "customer", entityId: entity.id, entity, before: { restoreSnapshot }, operation: "RESTORE" };
     }
     if (input.step.tool === "MERGE_CUSTOMERS") {
-      const sourceId = typeof input.step.input.sourceCustomerId === "string" ? input.step.input.sourceCustomerId : undefined;
-      const targetId = typeof input.step.input.targetCustomerId === "string" ? input.step.input.targetCustomerId : undefined;
+      const sourceId = this.resolveEntityId(input.step.input.sourceCustomerId, input.step.input.sourceCustomerRef, input.outputs);
+      const targetId = this.resolveEntityId(input.step.input.targetCustomerId, input.step.input.targetCustomerRef, input.outputs);
       if (!sourceId || !targetId || sourceId === targetId) return { waiting: true as const, question: "צריך לבחור לקוח מקור ולקוח יעד שונים.", missingFields: ["sourceCustomerId", "targetCustomerId"] };
       const [source, target] = await Promise.all([tx.customer.findFirst({ where: { id: sourceId, businessId: input.businessId, deletedAt: null, mergedIntoCustomerId: null } }), tx.customer.findFirst({ where: { id: targetId, businessId: input.businessId, deletedAt: null, mergedIntoCustomerId: null } })]);
       if (!source || !target) return { waiting: true as const, question: "אחד הלקוחות למיזוג לא נמצא.", missingFields: ["customers"] };
@@ -1180,7 +1237,7 @@ export class CoreV2AssistantService {
       const entity = result.entity;
       if (!entity) throw new ConflictException("Activity update did not return an entity");
       const customer = await tx.customer.findFirst({ where: { id: entity.customerId, businessId: input.businessId, deletedAt: null } });
-      return { entityType: kind, entityId: entity.id, entity, displayPayload: { ...entity, customerName: customer?.name }, before: existing, operation: "UPDATE", warnings: await this.activities.scheduleWarnings(input.businessId, entity.startsAt ?? undefined, entity.endsAt ?? undefined, kind) };
+      return { entityType: kind, entityId: entity.id, entity, displayPayload: { ...entity, customerName: customer?.name }, before: existing, operation: "UPDATE", message: `${kind === "job" ? "העבודה" : "הביקור"} "${entity.title}" עודכ${kind === "job" ? "נה" : "ן"}.`, warnings: await this.activities.scheduleWarnings(input.businessId, entity.startsAt ?? undefined, entity.endsAt ?? undefined, kind) };
     }
     if (["REPORT_JOB_COMPLETED", "CANCEL_JOB", "REOPEN_JOB", "DELETE_JOB", "REPORT_VISIT_COMPLETED", "CANCEL_VISIT", "REOPEN_VISIT", "DELETE_VISIT"].includes(input.step.tool)) {
       const kind = input.step.tool.includes("VISIT") ? "visit" : "job";

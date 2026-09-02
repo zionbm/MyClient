@@ -187,7 +187,8 @@ jobs:
               --image="$(image_for ai)" \
               --service-account="$RUNTIME_SERVICE_ACCOUNT" \
               --no-allow-unauthenticated \
-              --set-env-vars=NODE_ENV=production,DEFAULT_LOCALE=he-IL,MOCK_LLM_PROVIDER=false,OPENAI_LLM_MODEL=gpt-5-mini \
+              --min-instances=1 \
+              --set-env-vars=NODE_ENV=production,DEFAULT_LOCALE=he-IL,MOCK_LLM_PROVIDER=false,OPENAI_LLM_MODEL=gpt-5.6-terra,OPENAI_LLM_REASONING_EFFORT=low \
               --set-secrets=INTERNAL_API_SECRET=INTERNAL_API_SECRET:latest,OPENAI_API_KEY=OPENAI_API_KEY:latest \
               --quiet
             gcloud run services add-iam-policy-binding myclient-ai \
@@ -205,6 +206,7 @@ jobs:
               --image="$(image_for voice)" \
               --service-account="$RUNTIME_SERVICE_ACCOUNT" \
               --no-allow-unauthenticated \
+              --min-instances=1 \
               --set-env-vars=NODE_ENV=production,DEFAULT_LOCALE=he-IL,MOCK_STT_PROVIDER=false,MOCK_TTS_PROVIDER=false,OPENAI_STT_MODEL=gpt-4o-mini-transcribe,OPENAI_TTS_MODEL=gpt-4o-mini-tts,OPENAI_TTS_VOICE=marin \
               --set-secrets=INTERNAL_API_SECRET=INTERNAL_API_SECRET:latest,OPENAI_API_KEY=OPENAI_API_KEY:latest \
               --quiet
@@ -230,6 +232,7 @@ jobs:
               --image="$(image_for core)" \
               --service-account="$RUNTIME_SERVICE_ACCOUNT" \
               --allow-unauthenticated \
+              --min-instances=0 \
               --add-cloudsql-instances="$CLOUD_SQL_INSTANCE_CONNECTION_NAME" \
               --set-env-vars=NODE_ENV=production,DEFAULT_LOCALE=he-IL,AUTH_PROVIDER=firebase,AI_BASE_URL="$ai_url",VOICE_BASE_URL="$voice_url",MOCK_FCM_PROVIDER=false,MOCK_STT_PROVIDER=false,OPENAI_REALTIME_TRANSCRIPTION_MODEL=gpt-live-transcribe,CLOUD_RUN_SERVICE_AUTH=google,SCHEDULER_SERVICE_ACCOUNT_EMAIL="$(scheduler_service_account_email)",SCHEDULER_OIDC_AUDIENCE="$core_url" \
               --set-secrets=DATABASE_URL=DATABASE_URL:latest,INTERNAL_API_SECRET=INTERNAL_API_SECRET:latest,OPENAI_API_KEY=OPENAI_API_KEY:latest \
@@ -252,6 +255,7 @@ jobs:
               --image="$(image_for telephony)" \
               --service-account="$RUNTIME_SERVICE_ACCOUNT" \
               --allow-unauthenticated \
+              --min-instances=0 \
               --set-env-vars=NODE_ENV=production,DEFAULT_LOCALE=he-IL,CORE_BASE_URL="$core_url",VOICE_BASE_URL="$voice_url",MOCK_PLIVO_PROVIDER=true,CLOUD_RUN_SERVICE_AUTH=google \
               --set-secrets=INTERNAL_API_SECRET=INTERNAL_API_SECRET:latest \
               --quiet
