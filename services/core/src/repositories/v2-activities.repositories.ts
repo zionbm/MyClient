@@ -1,7 +1,7 @@
 import { Inject, Injectable } from "@nestjs/common";
 import { type ActivityStatus, Prisma } from "@prisma/client";
 import { PrismaService } from "../prisma.service.js";
-import { sameConflictFingerprint, scheduleConflictFingerprint } from "../v2-schedule-confirmation.js";
+import { effectiveScheduleEnd, sameConflictFingerprint, scheduleConflictFingerprint, shiftedScheduleEnd } from "../v2-schedule-confirmation.js";
 import { createdAtCursorWhere, paginationTake, type PaginationInput } from "./repository.shared.js";
 
 export type V2ActivityKind = "job" | "visit";
@@ -23,7 +23,7 @@ export type V2ActivityWrite = {
 
 function effectiveEnd(activity: { startsAt: Date | null; endsAt: Date | null }, kind: V2ActivityKind) {
   if (!activity.startsAt) return null;
-  return activity.endsAt ?? new Date(activity.startsAt.getTime() + (kind === "job" ? 120 : 60) * 60_000);
+  return effectiveScheduleEnd(kind, activity.startsAt, activity.endsAt);
 }
 
 @Injectable()
@@ -57,12 +57,13 @@ export class V2ActivitiesRepository {
     const linked = await this.validateLinks(tx, input.businessId, input.customerId, input.serviceAddressId);
     if (!linked.valid) return { missingLink: true as const };
     const locationSnapshot = input.locationSnapshot ?? linked.addressText ?? undefined;
+    const endsAt = input.startsAt ? effectiveScheduleEnd(input.kind, input.startsAt, input.endsAt) : input.endsAt;
     const conflicts = input.startsAt
-      ? await this.conflictsInTransaction(tx, input.businessId, input.startsAt, input.endsAt, input.kind)
+      ? await this.conflictsInTransaction(tx, input.businessId, input.startsAt, endsAt, input.kind)
       : [];
     if (conflicts.length > 0 && !input.allowScheduleConflict && !sameConflictFingerprint(input.approvedConflictFingerprint, scheduleConflictFingerprint(conflicts))) return { conflicts };
     const { kind: _kind, allowScheduleConflict: _allowScheduleConflict, approvedConflictFingerprint: _approvedConflictFingerprint, ...activityInput } = input;
-    const data = { ...activityInput, locationSnapshot };
+    const data = { ...activityInput, endsAt, locationSnapshot };
     const entity = input.kind === "job"
       ? await tx.job.create({ data })
       : await tx.visit.create({ data });
@@ -91,7 +92,13 @@ export class V2ActivitiesRepository {
     const linked = await this.validateLinks(tx, input.businessId, customerId, serviceAddressId);
     if (!linked.valid) return { missingLink: true as const };
     const startsAt = input.startsAt === undefined ? existing.startsAt : input.startsAt;
-    const endsAt = input.endsAt === undefined ? existing.endsAt : input.endsAt;
+    const endsAt = input.endsAt !== undefined
+      ? input.endsAt
+      : input.startsAt === undefined
+        ? existing.endsAt
+        : input.startsAt === null
+          ? null
+          : shiftedScheduleEnd(input.kind, existing.startsAt, existing.endsAt, input.startsAt);
     if (endsAt && (!startsAt || endsAt <= startsAt)) return { invalidSchedule: true as const };
     const conflicts = startsAt
       ? await this.conflictsInTransaction(tx, input.businessId, startsAt, endsAt, input.kind, input.entityId)
@@ -102,7 +109,7 @@ export class V2ActivitiesRepository {
       title: input.title,
       description: input.description,
       startsAt: input.startsAt,
-      endsAt: input.endsAt,
+      endsAt: input.endsAt !== undefined || input.startsAt !== undefined ? endsAt : undefined,
       serviceAddressId: input.serviceAddressId,
       locationSnapshot: input.locationSnapshot ?? (input.serviceAddressId !== undefined ? linked.addressText : undefined),
       status: input.status,
@@ -169,7 +176,7 @@ export class V2ActivitiesRepository {
     kind: V2ActivityKind,
     excludeEntityId?: string
   ) {
-    const proposedEnd = endsAt ?? new Date(startsAt.getTime() + (kind === "job" ? 120 : 60) * 60_000);
+    const proposedEnd = effectiveScheduleEnd(kind, startsAt, endsAt);
     const where = {
       businessId,
       deletedAt: null,

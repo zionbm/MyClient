@@ -27,7 +27,7 @@ import { normalizeCustomerName } from "./v2-normalization.js";
 import { stepsBlockedByPlannedClarification, summaryIsGrounded } from "./v2-assistant-plan.js";
 import { assertAmountInvariant, money, nextPaidAmount, paymentStatus } from "./v2-money.js";
 import { DEFAULT_WORKING_HOURS, freeSlots, isWithinWorkingHours, localDate, workingWindow, type WorkingHours } from "./v2-scheduling.js";
-import { effectiveScheduleEnd, verifyScheduleConflictToken, type ScheduleConflictOperation } from "./v2-schedule-confirmation.js";
+import { effectiveScheduleEnd, shiftedScheduleEnd, verifyScheduleConflictToken, type ScheduleConflictOperation } from "./v2-schedule-confirmation.js";
 
 function jsonValue(value: unknown): Prisma.InputJsonValue {
   return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
@@ -433,7 +433,7 @@ export class CoreV2AssistantService {
                 status: step.status === "COMPLETED" ? "created" : "pending",
                 title: step.status === "COMPLETED" ? "הפעולה הושלמה" : "ממתין להשלמה",
                 subtitle: step.question,
-                payload: {},
+                payload: step.entity ?? step.result ?? {},
                 fields: [],
                 missingFields: [],
                 entityId: step.entityId,
@@ -773,7 +773,11 @@ export class CoreV2AssistantService {
           idempotencyKey: `${input.key}:${input.step.stepId}`
         }
       });
-      return { entityType: "task", entityId: task.id, entity: task };
+      const businessSettings = await this.settings.getByBusiness(input.businessId);
+      const dueText = task.dueAt
+        ? ` ל-${new Intl.DateTimeFormat("he-IL", { timeZone: businessSettings.timezone, dateStyle: "short", timeStyle: "short" }).format(task.dueAt)}`
+        : "";
+      return { entityType: "task", entityId: task.id, entity: task, message: `נפתחה המשימה "${task.title}"${dueText}.` };
     }
     if (input.step.tool === "UPDATE_TASK") {
       const taskId = this.resolveEntityId(input.step.input.taskId, input.step.input.entityRef, input.outputs);
@@ -940,7 +944,8 @@ export class CoreV2AssistantService {
       const title = typeof input.step.input.title === "string" ? input.step.input.title.trim() : "";
       if (!customerId || !title) return { waiting: true as const, question: "צריך לקוח וכותרת לפעילות.", missingFields: [!customerId ? "customerId" : "title"] };
       const startsAt = typeof input.step.input.startsAt === "string" ? new Date(input.step.input.startsAt) : undefined;
-      const endsAt = typeof input.step.input.endsAt === "string" ? new Date(input.step.input.endsAt) : undefined;
+      const explicitEndsAt = typeof input.step.input.endsAt === "string" ? new Date(input.step.input.endsAt) : undefined;
+      const endsAt = startsAt ? effectiveScheduleEnd(kind, startsAt, explicitEndsAt) : explicitEndsAt;
       if ((startsAt && Number.isNaN(startsAt.getTime())) || (endsAt && Number.isNaN(endsAt.getTime())) || (startsAt && endsAt && endsAt <= startsAt)) return { waiting: true as const, question: "המועד אינו תקין. צריך שעת התחלה ושעת סיום מאוחרת ממנה.", missingFields: ["schedule"] };
       const result = await this.activityRepository.createInTransaction(tx, {
         kind,
@@ -960,7 +965,11 @@ export class CoreV2AssistantService {
       if (!("entity" in result)) return this.scheduleConflictPending(input.businessId, input.userId, "CREATE", null, startsAt!, endsAt, kind, result.conflicts);
       const entity = result.entity;
       if (!entity) throw new ConflictException("Activity creation did not return an entity");
-      return { entityType: kind, entityId: entity.id, entity, warnings: await this.activities.scheduleWarnings(input.businessId, startsAt, endsAt, kind) };
+      const businessSettings = await this.settings.getByBusiness(input.businessId);
+      const windowText = startsAt && endsAt
+        ? ` ל-${new Intl.DateTimeFormat("he-IL", { timeZone: businessSettings.timezone, dateStyle: "short", timeStyle: "short" }).format(startsAt)} עד ${new Intl.DateTimeFormat("he-IL", { timeZone: businessSettings.timezone, timeStyle: "short" }).format(endsAt)}`
+        : " ללא מועד";
+      return { entityType: kind, entityId: entity.id, entity, message: `נ${kind === "job" ? "פתחה עבודה" : "פתח ביקור"} "${entity.title}"${windowText}.`, warnings: await this.activities.scheduleWarnings(input.businessId, startsAt, endsAt, kind) };
     }
     if (input.step.tool === "UPDATE_JOB" || input.step.tool === "UPDATE_VISIT") {
       const kind = input.step.tool === "UPDATE_JOB" ? "job" as const : "visit" as const;
@@ -968,7 +977,10 @@ export class CoreV2AssistantService {
       const existing = entityId ? kind === "job" ? await tx.job.findFirst({ where: { id: entityId, businessId: input.businessId, deletedAt: null } }) : await tx.visit.findFirst({ where: { id: entityId, businessId: input.businessId, deletedAt: null } }) : null;
       if (!existing) return { waiting: true as const, question: "לא מצאתי את הפעילות לעדכון.", missingFields: ["entityId"] };
       const startsAt = typeof input.step.input.startsAt === "string" ? new Date(input.step.input.startsAt) : undefined;
-      const endsAt = typeof input.step.input.endsAt === "string" ? new Date(input.step.input.endsAt) : undefined;
+      const explicitEndsAt = typeof input.step.input.endsAt === "string" ? new Date(input.step.input.endsAt) : undefined;
+      const endsAt = startsAt && explicitEndsAt === undefined
+        ? shiftedScheduleEnd(kind, existing.startsAt, existing.endsAt, startsAt)
+        : explicitEndsAt;
       const result = await this.activityRepository.updateInTransaction(tx, {
         kind,
         entityId: existing.id,

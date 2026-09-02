@@ -16,12 +16,29 @@ export type ScheduleConflictClaims = {
   expiresAt: number;
 };
 
+export const DEFAULT_ACTIVITY_DURATION_MINUTES: Record<ScheduleConflictKind, number> = {
+  job: 120,
+  visit: 60
+};
+
 function signature(payload: string, secret: string) {
   return createHmac("sha256", secret).update(`myclient:v2:schedule-conflict:${payload}`).digest("base64url");
 }
 
 export function effectiveScheduleEnd(kind: ScheduleConflictKind, startsAt: Date, endsAt?: Date | null) {
-  return endsAt ?? new Date(startsAt.getTime() + (kind === "job" ? 120 : 60) * 60_000);
+  return endsAt ?? new Date(startsAt.getTime() + DEFAULT_ACTIVITY_DURATION_MINUTES[kind] * 60_000);
+}
+
+export function shiftedScheduleEnd(
+  kind: ScheduleConflictKind,
+  existingStartsAt: Date | null | undefined,
+  existingEndsAt: Date | null | undefined,
+  nextStartsAt: Date
+) {
+  const durationMs = existingStartsAt
+    ? effectiveScheduleEnd(kind, existingStartsAt, existingEndsAt).getTime() - existingStartsAt.getTime()
+    : DEFAULT_ACTIVITY_DURATION_MINUTES[kind] * 60_000;
+  return new Date(nextStartsAt.getTime() + durationMs);
 }
 
 export function scheduleConflictFingerprint(conflicts: unknown[]) {

@@ -32,7 +32,7 @@ import {
   workingWindow,
   type WorkingHours
 } from "./v2-scheduling.js";
-import { effectiveScheduleEnd, issueScheduleConflictToken, scheduleConflictFingerprint, verifyScheduleConflictToken, type ScheduleConflictOperation } from "./v2-schedule-confirmation.js";
+import { effectiveScheduleEnd, issueScheduleConflictToken, scheduleConflictFingerprint, shiftedScheduleEnd, verifyScheduleConflictToken, type ScheduleConflictOperation } from "./v2-schedule-confirmation.js";
 
 type ActivityUpdate = Partial<V2ActivityWrite> & { version?: number };
 
@@ -238,21 +238,29 @@ export class CoreV2ActivitiesService {
       key: requiredIdempotencyKey(headers),
       request,
       execute: async () => {
-        const existingForToken = scheduleConflictToken ? await this.activities.findById(kind, businessId, entityId) : undefined;
-        const tokenStartsAt = update.startsAt === undefined ? existingForToken?.startsAt : update.startsAt;
-        const tokenEndsAt = update.endsAt === undefined ? existingForToken?.endsAt : update.endsAt;
+        const existingForSchedule = scheduleConflictToken || update.startsAt !== undefined
+          ? await this.activities.findById(kind, businessId, entityId)
+          : undefined;
+        const normalizedUpdate = { ...update };
+        if (update.startsAt !== undefined && update.endsAt === undefined) {
+          normalizedUpdate.endsAt = update.startsAt === null
+            ? null
+            : shiftedScheduleEnd(kind, existingForSchedule?.startsAt, existingForSchedule?.endsAt, update.startsAt);
+        }
+        const tokenStartsAt = normalizedUpdate.startsAt === undefined ? existingForSchedule?.startsAt : normalizedUpdate.startsAt;
+        const tokenEndsAt = normalizedUpdate.endsAt === undefined ? existingForSchedule?.endsAt : normalizedUpdate.endsAt;
         const approvedConflictFingerprint = scheduleConflictToken && tokenStartsAt
           ? this.approvedConflictFingerprint(scheduleConflictToken, { businessId, userId: user.id, operation: "UPDATE", kind, entityId, startsAt: tokenStartsAt, endsAt: tokenEndsAt })
           : undefined;
-        const result = await this.activities.update({ kind, businessId, entityId, ...update, allowScheduleConflict, approvedConflictFingerprint });
+        const result = await this.activities.update({ kind, businessId, entityId, ...normalizedUpdate, allowScheduleConflict, approvedConflictFingerprint });
         if ("missingLink" in result) throw new NotFoundException("Customer or service address not found");
         if ("notFound" in result) throw new ConflictException({ code: "ENTITY_VERSION_CONFLICT", message: `${kind} changed or was not found` });
         if ("invalidSchedule" in result) throw new BadRequestException("endsAt must be after startsAt");
         if (!("entity" in result)) {
           const existing = await this.activities.findById(kind, businessId, entityId);
-          const conflictStart = update.startsAt ?? existing?.startsAt;
+          const conflictStart = normalizedUpdate.startsAt ?? existing?.startsAt;
           if (!conflictStart) throw new ConflictException({ code: "SCHEDULE_CONFLICT", conflicts: result.conflicts });
-          await this.throwConflict(businessId, user.id, "UPDATE", entityId, conflictStart, update.endsAt ?? existing?.endsAt, kind, result.conflicts);
+          await this.throwConflict(businessId, user.id, "UPDATE", entityId, conflictStart, normalizedUpdate.endsAt ?? existing?.endsAt, kind, result.conflicts);
         }
         if (!result.entity) throw new NotFoundException(`${kind} was not updated`);
         await this.recordAudit(kind, businessId, user.id, entityId, action.toUpperCase(), result.entity);

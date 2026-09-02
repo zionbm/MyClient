@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { issueScheduleConflictToken, sameConflictFingerprint, scheduleConflictFingerprint, verifyScheduleConflictToken } from "./v2-schedule-confirmation.js";
+import { effectiveScheduleEnd, issueScheduleConflictToken, sameConflictFingerprint, scheduleConflictFingerprint, shiftedScheduleEnd, verifyScheduleConflictToken } from "./v2-schedule-confirmation.js";
 
 const secret = "test-secret";
 const now = new Date("2026-09-01T12:00:00.000Z");
@@ -38,4 +38,26 @@ test("a confirmation applies only to the exact conflict fingerprint", () => {
   assert.equal(sameConflictFingerprint(fingerprint, ["visit:b:4", "job:a:2"]), true);
   assert.equal(sameConflictFingerprint(fingerprint, ["job:a:3", "visit:b:4"]), false);
   assert.equal(sameConflictFingerprint(fingerprint, [...fingerprint, "job:c:1"]), false);
+});
+
+test("activity windows use deterministic defaults when only a start is provided", () => {
+  const startsAt = new Date("2026-09-02T07:00:00.000Z");
+  assert.equal(effectiveScheduleEnd("job", startsAt).toISOString(), "2026-09-02T09:00:00.000Z");
+  assert.equal(effectiveScheduleEnd("visit", startsAt).toISOString(), "2026-09-02T08:00:00.000Z");
+  const explicitEnd = new Date("2026-09-02T10:30:00.000Z");
+  assert.equal(effectiveScheduleEnd("visit", startsAt, explicitEnd), explicitEnd);
+});
+
+test("moving an activity without a new end preserves its existing window duration", () => {
+  const existingStart = new Date("2026-09-02T07:00:00.000Z");
+  const existingEnd = new Date("2026-09-02T10:00:00.000Z");
+  const nextStart = new Date("2026-09-03T11:00:00.000Z");
+  assert.equal(
+    shiftedScheduleEnd("job", existingStart, existingEnd, nextStart).toISOString(),
+    "2026-09-03T14:00:00.000Z"
+  );
+  assert.equal(
+    shiftedScheduleEnd("visit", null, null, nextStart).toISOString(),
+    "2026-09-03T12:00:00.000Z"
+  );
 });
