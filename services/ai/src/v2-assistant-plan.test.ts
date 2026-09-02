@@ -101,3 +101,50 @@ test("explicit speech confirmation continues the sole pending action with its si
   assert.equal(plan.steps[0]!.input.scheduleConflictToken, "signed-token");
   assert.equal(plan.steps[0]!.requiresExplicitConfirmation, false);
 });
+
+test("a spoken yes creates a missing customer and continues the blocked task", () => {
+  const plan = normalizeAssistantPlan({ ...basePlan, steps: [step({})] }, {
+    pendingActions: [{
+      id: "pending-customer",
+      actionType: "FIND_CUSTOMERS",
+      payload: {
+        createCustomerSuggestion: { name: "ג׳ק", sourceStepId: "find_customer" },
+        continuationSteps: [{
+          stepId: "create_task",
+          kind: "WRITE",
+          tool: "CREATE_TASK",
+          dependsOn: ["find_customer"],
+          input: {
+            title: "להתקשר לג׳ק",
+            customerRef: { stepId: "find_customer", outputField: "entityId" }
+          },
+          confidence: 1,
+          requiresExplicitConfirmation: false
+        }]
+      }
+    }]
+  }, "כן");
+
+  assert.equal(plan.extractedFacts.resolvesPendingActionId, "pending-customer");
+  assert.deepEqual(plan.steps.map((item) => item.tool), ["CREATE_CUSTOMER", "CREATE_TASK"]);
+  assert.deepEqual(plan.steps[1]!.input.customerRef, {
+    stepId: "create_missing_customer",
+    outputField: "entityId"
+  });
+});
+
+test("a spoken no rejects the missing customer suggestion", () => {
+  const plan = normalizeAssistantPlan({ ...basePlan, steps: [step({})] }, {
+    pendingActions: [{
+      id: "pending-customer",
+      actionType: "FIND_CUSTOMERS",
+      payload: {
+        createCustomerSuggestion: { name: "ג׳ק", sourceStepId: "find_customer" }
+      }
+    }]
+  }, "לא תודה");
+
+  assert.equal(plan.extractedFacts.rejectsPendingActionId, "pending-customer");
+  assert.equal(plan.steps[0]!.tool, "RESPOND");
+  assert.match(String(plan.steps[0]!.input.text), /לא יצרתי לקוח בשם ג׳ק/);
+});

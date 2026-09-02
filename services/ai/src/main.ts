@@ -39,9 +39,10 @@ class AiController {
     const mock = getEnv("MOCK_LLM_PROVIDER", "false") === "true";
     const deterministic = deterministicAssistantPlan(transcript, body.context);
     const provider = deterministic ? "deterministic" : mock ? "mock" : "openai";
-    const plan = deterministic ?? (mock
+    const rawPlan = deterministic ?? (mock
       ? this.mockV2Plan(transcript)
       : await this.openAiV2Plan(transcript, body.context));
+    const plan = normalizeAssistantPlan(rawPlan, body.context, transcript);
     log("info", "v2 assistant plan completed", { provider, model: provider === "openai" ? getEnv("OPENAI_LLM_MODEL", "gpt-5-mini") : undefined, stepCount: plan.steps.length, durationMs: Date.now() - startedAt });
     return {
       provider,

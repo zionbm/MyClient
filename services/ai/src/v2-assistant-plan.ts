@@ -112,7 +112,79 @@ function preferExplicitCustomerCreation(steps: JsonObject[], transcript: string)
     });
 }
 
+function continueMissingCustomerDecision(context: unknown, transcript: string): AssistantPlan | undefined {
+  const pendingActions = Array.isArray(objectValue(context).pendingActions)
+    ? (objectValue(context).pendingActions as unknown[]).map(objectValue)
+    : [];
+  if (pendingActions.length !== 1 || pendingActions[0]!.actionType !== "FIND_CUSTOMERS") return undefined;
+  const pending = pendingActions[0]!;
+  const payload = objectValue(pending.payload);
+  const suggestion = objectValue(payload.createCustomerSuggestion);
+  const customerName = typeof suggestion.name === "string" ? suggestion.name.trim() : "";
+  if (!customerName || typeof pending.id !== "string") return undefined;
+
+  const answeredYes = /^(?:כן|בטח|אוקיי|בסדר|צור|צרי|תיצור|תצרי)(?:\s|,|\.|$)/u.test(transcript.trim());
+  const answeredNo = /^(?:לא|אל|עזוב|עזבי|בטל|בטלי)(?:\s|,|\.|$)/u.test(transcript.trim());
+  if (!answeredYes && !answeredNo) return undefined;
+  if (answeredNo) {
+    return AssistantPlanSchema.parse({
+      version: "2",
+      requestKind: "ACTION",
+      language: "he-IL",
+      extractedFacts: { rejectsPendingActionId: pending.id },
+      steps: [{
+        stepId: "decline_missing_customer_creation",
+        kind: "RESPOND",
+        tool: "RESPOND",
+        dependsOn: [],
+        input: { text: `בסדר, לא יצרתי לקוח בשם ${customerName}.` },
+        confidence: 1,
+        requiresExplicitConfirmation: false
+      }]
+    });
+  }
+
+  const createStepId = "create_missing_customer";
+  const continuationSteps = Array.isArray(payload.continuationSteps)
+    ? payload.continuationSteps.map(objectValue)
+    : [];
+  const steps: JsonObject[] = [{
+    stepId: createStepId,
+    kind: "WRITE",
+    tool: "CREATE_CUSTOMER",
+    dependsOn: [],
+    input: { name: customerName },
+    confidence: 1,
+    requiresExplicitConfirmation: false
+  }];
+  for (const [index, continuation] of continuationSteps.entries()) {
+    const input = { ...objectValue(continuation.input) };
+    for (const [field, value] of Object.entries(input)) {
+      const reference = objectValue(value);
+      if (field.endsWith("Ref") && reference.stepId === suggestion.sourceStepId) {
+        input[field] = { stepId: createStepId, outputField: "entityId" };
+      }
+    }
+    steps.push({
+      ...continuation,
+      stepId: typeof continuation.stepId === "string" ? `continue_${continuation.stepId}` : `continue_${index + 1}`,
+      dependsOn: [createStepId],
+      input,
+      requiresExplicitConfirmation: false
+    });
+  }
+  return AssistantPlanSchema.parse({
+    version: "2",
+    requestKind: "ACTION",
+    language: "he-IL",
+    extractedFacts: { resolvesPendingActionId: pending.id },
+    steps
+  });
+}
+
 export function normalizeAssistantPlan(rawPlan: unknown, context: unknown, transcript: string): AssistantPlan {
+  const missingCustomerDecision = continueMissingCustomerDecision(context, transcript);
+  if (missingCustomerDecision) return missingCustomerDecision;
   const raw = objectValue(rawPlan);
   const pendingActions = Array.isArray(objectValue(context).pendingActions)
     ? (objectValue(context).pendingActions as unknown[]).map(objectValue)
