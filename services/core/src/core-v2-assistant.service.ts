@@ -441,9 +441,13 @@ export class CoreV2AssistantService {
                 actionType: step.tool,
                 kind: "action",
                 status: step.status === "COMPLETED" ? "created" : "pending",
-                title: this.voiceItemTitle(step.tool, step.status, step.entity),
+                title: this.voiceItemTitle(
+                  step.tool,
+                  step.status,
+                  step.displayPayload ?? step.entity
+                ),
                 subtitle: step.question,
-                payload: step.payload ?? step.entity ?? step.result ?? {},
+                payload: step.payload ?? step.displayPayload ?? step.entity ?? step.result ?? {},
                 fields: [],
                 missingFields: step.missingFields ?? [],
                 entityId: step.entityId,
@@ -855,11 +859,26 @@ export class CoreV2AssistantService {
       const customerId = this.resolveEntityId(input.step.input.customerId, input.step.input.customerRef, input.outputs);
       const phone = typeof input.step.input.phone === "string" ? input.step.input.phone.trim() : "";
       if (!customerId || !phone) return { waiting: true as const, question: "צריך לקוח ומספר טלפון.", missingFields: [!customerId ? "customerId" : "phone"] };
+      const customer = await tx.customer.findFirst({
+        where: {
+          id: customerId,
+          businessId: input.businessId,
+          deletedAt: null,
+          mergedIntoCustomerId: null
+        }
+      });
+      if (!customer) return { waiting: true as const, question: "לא מצאתי את הלקוח להוספת הטלפון.", missingFields: ["customerId"] };
       const digits = phone.replace(/\D/g, "");
       const normalizedPhone = digits.startsWith("972") ? `+${digits}` : digits.startsWith("0") ? `+972${digits.slice(1)}` : `+972${digits}`;
       const activeCount = await tx.customerPhone.count({ where: { businessId: input.businessId, customerId, deletedAt: null } });
       const entity = await tx.customerPhone.create({ data: { businessId: input.businessId, customerId, rawPhone: phone, normalizedPhone, label: typeof input.step.input.label === "string" ? input.step.input.label : undefined, isPrimary: activeCount === 0 } });
-      return { entityType: "customer_phone", entityId: entity.id, entity };
+      return {
+        entityType: "customer_phone",
+        entityId: entity.id,
+        entity,
+        displayPayload: { customerId, customerName: customer.name, phone: entity.rawPhone },
+        message: `נוסף הטלפון ${entity.rawPhone} ללקוח ${customer.name}.`
+      };
     }
     if (input.step.tool === "UPDATE_CUSTOMER_PHONE" || input.step.tool === "DELETE_CUSTOMER_PHONE") {
       const phoneId = this.resolveEntityId(input.step.input.phoneId, input.step.input.entityRef, input.outputs);
@@ -1167,6 +1186,7 @@ export class CoreV2AssistantService {
     const entityTitle = typeof value.title === "string" ? value.title : undefined;
     const customerName = typeof value.name === "string" ? value.name : undefined;
     return tool === "CREATE_CUSTOMER" ? `לקוח חדש${customerName ? `: ${customerName}` : ""}`
+      : tool === "ADD_CUSTOMER_PHONE" ? `טלפון נוסף${typeof value.customerName === "string" ? `: ${value.customerName}` : ""}`
       : tool === "CREATE_JOB" ? `עבודה חדשה${entityTitle ? `: ${entityTitle}` : ""}`
       : tool === "CREATE_VISIT" ? `ביקור חדש${entityTitle ? `: ${entityTitle}` : ""}`
       : tool === "CREATE_TASK" ? `משימה חדשה${entityTitle ? `: ${entityTitle}` : ""}`
