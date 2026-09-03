@@ -26,7 +26,11 @@ import { AssistantSessionsRepository, BusinessSettingsRepository, V2ActivitiesRe
 import { PrismaService } from "./prisma.service.js";
 import { parseOptionalDate, requiredIdempotencyKey, type RequestHeaders } from "./core-utils.js";
 import { paginationFromParsedQuery, paginatedResponse } from "./core-utils.js";
-import { normalizeCustomerName } from "./v2-normalization.js";
+import {
+  normalizeCustomerName,
+  normalizeIsraeliPhone,
+  normalizeServiceAddress
+} from "./v2-normalization.js";
 import { applyAssistantConfirmationPolicy, materializeStepReferences, preferTranscriptCustomerName, stepsBlockedByPlannedClarification } from "./v2-assistant-plan.js";
 import { composeAssistantSummary } from "./v2-assistant-reply.js";
 import { assertAmountInvariant, money, nextPaidAmount, paymentStatus } from "./v2-money.js";
@@ -959,6 +963,12 @@ export class CoreV2AssistantService {
     if (input.step.tool === "CREATE_TASK") {
       const command = V2CreateTaskSchema.parse(input.step.input);
       const customerId = command.customerId ?? this.resolveCustomerReference(input.step.input.customerRef, input.outputs);
+      if (customerId && !await tx.customer.findFirst({
+        where: { id: customerId, businessId: input.businessId, deletedAt: null, mergedIntoCustomerId: null },
+        select: { id: true }
+      })) {
+        return { waiting: true as const, question: "הלקוח שנבחר אינו זמין עוד.", missingFields: ["customerId"] };
+      }
       const task = await tx.task.create({
         data: {
           businessId: input.businessId,
@@ -984,7 +994,16 @@ export class CoreV2AssistantService {
       const existing = taskId ? await tx.task.findFirst({ where: { id: taskId, businessId: input.businessId, deletedAt: null } }) : null;
       if (!existing) return { waiting: true as const, question: "לא מצאתי את המשימה לעדכון.", missingFields: ["taskId"] };
       const hasCustomerId = Object.prototype.hasOwnProperty.call(input.step.input, "customerId");
-      const entity = await tx.task.update({ where: { id: existing.id }, data: { customerId: hasCustomerId && (typeof input.step.input.customerId === "string" || input.step.input.customerId === null) ? input.step.input.customerId : undefined, title: typeof input.step.input.title === "string" ? input.step.input.title : undefined, description: typeof input.step.input.description === "string" ? input.step.input.description : undefined, dueAt: typeof input.step.input.dueAt === "string" ? new Date(input.step.input.dueAt) : undefined, version: { increment: 1 } } });
+      const nextCustomerId = hasCustomerId && (typeof input.step.input.customerId === "string" || input.step.input.customerId === null)
+        ? input.step.input.customerId
+        : undefined;
+      if (typeof nextCustomerId === "string" && !await tx.customer.findFirst({
+        where: { id: nextCustomerId, businessId: input.businessId, deletedAt: null, mergedIntoCustomerId: null },
+        select: { id: true }
+      })) {
+        return { waiting: true as const, question: "הלקוח שנבחר אינו זמין עוד.", missingFields: ["customerId"] };
+      }
+      const entity = await tx.task.update({ where: { id: existing.id }, data: { customerId: nextCustomerId, title: typeof input.step.input.title === "string" ? input.step.input.title : undefined, description: typeof input.step.input.description === "string" ? input.step.input.description : undefined, dueAt: typeof input.step.input.dueAt === "string" ? new Date(input.step.input.dueAt) : undefined, version: { increment: 1 } } });
       const customer = entity.customerId ? await tx.customer.findFirst({ where: { id: entity.customerId, businessId: input.businessId, deletedAt: null } }) : null;
       return { entityType: "task", entityId: entity.id, entity, displayPayload: { ...entity, customerName: customer?.name }, before: existing, operation: "UPDATE", message: `המשימה "${entity.title}" עודכנה.` };
     }
@@ -1035,8 +1054,13 @@ export class CoreV2AssistantService {
         }
       });
       if (!customer) return { waiting: true as const, question: "לא מצאתי את הלקוח להוספת הטלפון.", missingFields: ["customerId"] };
-      const digits = phone.replace(/\D/g, "");
-      const normalizedPhone = digits.startsWith("972") ? `+${digits}` : digits.startsWith("0") ? `+972${digits.slice(1)}` : `+972${digits}`;
+      const normalizedPhone = normalizeIsraeliPhone(phone);
+      if (!normalizedPhone) return { waiting: true as const, question: "מספר הטלפון אינו תקין.", missingFields: ["phone"] };
+      const duplicate = await tx.customerPhone.findFirst({
+        where: { businessId: input.businessId, normalizedPhone, deletedAt: null },
+        include: { customer: { select: { name: true } } }
+      });
+      if (duplicate) return { waiting: true as const, question: `מספר הטלפון כבר משויך ללקוח ${duplicate.customer.name}.`, missingFields: ["phone"] };
       const activeCount = await tx.customerPhone.count({ where: { businessId: input.businessId, customerId, deletedAt: null } });
       const entity = await tx.customerPhone.create({ data: { businessId: input.businessId, customerId, rawPhone: phone, normalizedPhone, label: typeof input.step.input.label === "string" ? input.step.input.label : undefined, isPrimary: activeCount === 0 } });
       return {
@@ -1053,16 +1077,42 @@ export class CoreV2AssistantService {
       if (!existing) return { waiting: true as const, question: "לא מצאתי את מספר הטלפון לעדכון.", missingFields: ["phoneId"] };
       const deleting = input.step.tool === "DELETE_CUSTOMER_PHONE";
       const rawPhone = typeof input.step.input.phone === "string" ? input.step.input.phone.trim() : undefined;
-      const digits = rawPhone?.replace(/\D/g, "");
-      const normalizedPhone = digits ? digits.startsWith("972") ? `+${digits}` : digits.startsWith("0") ? `+972${digits.slice(1)}` : `+972${digits}` : undefined;
-      const entity = await tx.customerPhone.update({ where: { id: existing.id }, data: deleting ? { deletedAt: new Date(), deletedByUserId: input.userId, isPrimary: false } : { rawPhone, normalizedPhone, label: typeof input.step.input.label === "string" ? input.step.input.label : undefined, isPrimary: typeof input.step.input.isPrimary === "boolean" ? input.step.input.isPrimary : undefined } });
+      const normalizedPhone = rawPhone ? normalizeIsraeliPhone(rawPhone) : undefined;
+      if (rawPhone && !normalizedPhone) return { waiting: true as const, question: "מספר הטלפון אינו תקין.", missingFields: ["phone"] };
+      if (normalizedPhone) {
+        const duplicate = await tx.customerPhone.findFirst({
+          where: { businessId: input.businessId, normalizedPhone, deletedAt: null, id: { not: existing.id } },
+          include: { customer: { select: { name: true } } }
+        });
+        if (duplicate) return { waiting: true as const, question: `מספר הטלפון כבר משויך ללקוח ${duplicate.customer.name}.`, missingFields: ["phone"] };
+      }
+      const makePrimary = !deleting && input.step.input.isPrimary === true;
+      if (makePrimary) {
+        await tx.customerPhone.updateMany({
+          where: { businessId: input.businessId, customerId: existing.customerId, deletedAt: null },
+          data: { isPrimary: false }
+        });
+      }
+      const entity = await tx.customerPhone.update({ where: { id: existing.id }, data: deleting ? { deletedAt: new Date(), deletedByUserId: input.userId, isPrimary: false } : { rawPhone, normalizedPhone: normalizedPhone ?? undefined, label: typeof input.step.input.label === "string" ? input.step.input.label : undefined, isPrimary: typeof input.step.input.isPrimary === "boolean" ? input.step.input.isPrimary : undefined } });
+      if (deleting && existing.isPrimary) {
+        const replacement = await tx.customerPhone.findFirst({
+          where: { businessId: input.businessId, customerId: existing.customerId, deletedAt: null },
+          orderBy: { createdAt: "asc" }
+        });
+        if (replacement) await tx.customerPhone.update({ where: { id: replacement.id }, data: { isPrimary: true } });
+      }
       return { entityType: "customer_phone", entityId: entity.id, entity, before: existing, operation: deleting ? "DELETE" : "UPDATE" };
     }
     if (input.step.tool === "ADD_SERVICE_ADDRESS") {
       const customerId = this.resolveEntityId(input.step.input.customerId, input.step.input.customerRef, input.outputs);
       const addressText = typeof input.step.input.addressText === "string" ? input.step.input.addressText.trim() : "";
       if (!customerId || !addressText) return { waiting: true as const, question: "צריך לקוח וכתובת שירות.", missingFields: [!customerId ? "customerId" : "addressText"] };
-      const entity = await tx.serviceAddress.create({ data: { businessId: input.businessId, customerId, addressText, normalizedAddress: addressText.toLowerCase().replace(/\s+/g, " "), label: typeof input.step.input.label === "string" ? input.step.input.label : undefined } });
+      const customer = await tx.customer.findFirst({
+        where: { id: customerId, businessId: input.businessId, deletedAt: null, mergedIntoCustomerId: null },
+        select: { id: true }
+      });
+      if (!customer) return { waiting: true as const, question: "הלקוח שנבחר אינו זמין עוד.", missingFields: ["customerId"] };
+      const entity = await tx.serviceAddress.create({ data: { businessId: input.businessId, customerId, addressText, normalizedAddress: normalizeServiceAddress(addressText), label: typeof input.step.input.label === "string" ? input.step.input.label : undefined } });
       return { entityType: "service_address", entityId: entity.id, entity };
     }
     if (input.step.tool === "UPDATE_SERVICE_ADDRESS" || input.step.tool === "DELETE_SERVICE_ADDRESS") {
@@ -1071,7 +1121,7 @@ export class CoreV2AssistantService {
       if (!existing) return { waiting: true as const, question: "לא מצאתי את כתובת השירות לעדכון.", missingFields: ["addressId"] };
       const deleting = input.step.tool === "DELETE_SERVICE_ADDRESS";
       const addressText = typeof input.step.input.addressText === "string" ? input.step.input.addressText.trim() : undefined;
-      const entity = await tx.serviceAddress.update({ where: { id: existing.id }, data: deleting ? { deletedAt: new Date(), deletedByUserId: input.userId } : { addressText, normalizedAddress: addressText?.toLowerCase().replace(/\s+/g, " "), label: typeof input.step.input.label === "string" ? input.step.input.label : undefined } });
+      const entity = await tx.serviceAddress.update({ where: { id: existing.id }, data: deleting ? { deletedAt: new Date(), deletedByUserId: input.userId } : { addressText, normalizedAddress: addressText ? normalizeServiceAddress(addressText) : undefined, label: typeof input.step.input.label === "string" ? input.step.input.label : undefined } });
       return { entityType: "service_address", entityId: entity.id, entity, before: existing, operation: deleting ? "DELETE" : "UPDATE" };
     }
     if (input.step.tool === "RESTORE_CUSTOMER") {
