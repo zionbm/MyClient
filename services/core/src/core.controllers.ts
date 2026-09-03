@@ -182,6 +182,7 @@ defineRoutes(V2ActivitiesController, [
   { name: "cancelVisit", method: "post", path: "v2/businesses/:businessId/visits/:visitId/cancel", delegate: (core, request) => core.cancel("visit", headers(request), params(request).businessId, params(request).visitId) },
   { name: "reopenVisit", method: "post", path: "v2/businesses/:businessId/visits/:visitId/reopen", delegate: (core, request) => core.reopen("visit", headers(request), params(request).businessId, params(request).visitId) },
   { name: "schedule", method: "get", path: "v2/businesses/:businessId/schedule", delegate: (core, request) => core.schedule(headers(request), params(request).businessId, request.query) },
+  { name: "completed", method: "get", path: "v2/businesses/:businessId/completed", delegate: (core, request) => core.completed(headers(request), params(request).businessId, request.query) },
   { name: "availability", method: "get", path: "v2/businesses/:businessId/availability", delegate: (core, request) => core.availability(headers(request), params(request).businessId, request.query) },
   { name: "customerTimeline", method: "get", path: "v2/businesses/:businessId/customers/:customerId/timeline", delegate: (core, request) => core.customerTimeline(headers(request), params(request).businessId, params(request).customerId) }
 ]);

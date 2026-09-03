@@ -43,6 +43,7 @@ export class CoreV2TasksService {
           title: command.title,
           description: command.description,
           dueAt: parseOptionalDate(command.dueAt) ?? undefined,
+          completedAt: command.status === "DONE" ? new Date() : undefined,
           status: command.status,
           source: "app_v2",
           idempotencyKey: key
@@ -76,6 +77,7 @@ export class CoreV2TasksService {
       title: command.title,
       description: command.description,
       dueAt: parseOptionalDate(command.dueAt),
+      completedAt: command.status === "DONE" ? new Date() : command.status === "OPEN" ? null : undefined,
       status: command.status,
       version: command.version
     });
@@ -112,7 +114,10 @@ export class CoreV2TasksService {
 
   private async lifecycle(headers: RequestHeaders, businessId: string, taskId: string, action: string, status: TaskStatus) {
     const user = await this.access.requireV2BusinessAccess(headers, businessId);
-    return this.writeTask(headers, businessId, user.id, taskId, action, { taskId }, { status });
+    return this.writeTask(headers, businessId, user.id, taskId, action, { taskId }, {
+      status,
+      completedAt: status === "DONE" ? new Date() : status === "OPEN" ? null : undefined
+    });
   }
 
   private writeTask(

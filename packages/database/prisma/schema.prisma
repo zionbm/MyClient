@@ -240,6 +240,7 @@ model Task {
   description         String?
   status              TaskStatus @default(OPEN)
   dueAt               DateTime?
+  completedAt         DateTime?
   reminderSentAt      DateTime?
   source              String     @default("app")
   sourceRef           String?
@@ -257,6 +258,7 @@ model Task {
   @@unique([businessId, idempotencyKey])
   @@index([businessId, customerId])
   @@index([businessId, status, dueAt])
+  @@index([businessId, completedAt])
   @@index([businessId, deletedAt])
   @@index([status, dueAt, reminderSentAt])
 }

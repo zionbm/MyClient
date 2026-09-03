@@ -1168,7 +1168,11 @@ export class CoreV2AssistantService {
       const existing = taskId ? await tx.task.findFirst({ where: { id: taskId, businessId: input.businessId, deletedAt: null } }) : null;
       if (!existing) return { waiting: true as const, question: "לא מצאתי את המשימה לעדכון.", missingFields: ["taskId"] };
       const data = input.step.tool === "DELETE_TASK" ? { deletedAt: new Date(), deletedByUserId: input.userId, version: { increment: 1 } }
-        : { status: input.step.tool === "COMPLETE_TASK" ? "DONE" as const : input.step.tool === "CANCEL_TASK" ? "CANCELLED" as const : "OPEN" as const, version: { increment: 1 } };
+        : {
+            status: input.step.tool === "COMPLETE_TASK" ? "DONE" as const : input.step.tool === "CANCEL_TASK" ? "CANCELLED" as const : "OPEN" as const,
+            completedAt: input.step.tool === "COMPLETE_TASK" ? new Date() : input.step.tool === "REOPEN_TASK" ? null : undefined,
+            version: { increment: 1 }
+          };
       const entity = await tx.task.update({ where: { id: existing.id }, data });
       const message = input.step.tool === "COMPLETE_TASK" ? `המשימה "${entity.title}" סומנה כהושלמה.` : undefined;
       return { entityType: "task", entityId: entity.id, entity, before: existing, operation: input.step.tool === "DELETE_TASK" ? "DELETE" : "UPDATE", message };

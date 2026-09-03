@@ -395,6 +395,7 @@ export class V2TasksRepository {
     title: string;
     description?: string;
     dueAt?: Date;
+    completedAt?: Date;
     status?: TaskStatus;
     source: string;
     idempotencyKey: string;
@@ -439,6 +440,7 @@ export class V2TasksRepository {
     title?: string;
     description?: string | null;
     dueAt?: Date | null;
+    completedAt?: Date | null;
     status?: TaskStatus;
     version?: number;
   }) {
@@ -455,6 +457,7 @@ export class V2TasksRepository {
         title: input.title,
         description: input.description,
         dueAt: input.dueAt,
+        completedAt: input.completedAt,
         status: input.status,
         reminderSentAt: input.dueAt !== undefined ? null : undefined,
         version: { increment: 1 }
@@ -487,6 +490,19 @@ export class V2TasksRepository {
       if (result.count === 1) claimed.push({ ...candidate, reminderSentAt });
     }
     return claimed;
+  }
+
+  completedBetween(businessId: string, from: Date, to: Date) {
+    return this.prisma.task.findMany({
+      where: {
+        businessId,
+        deletedAt: null,
+        status: "DONE",
+        completedAt: { gte: from, lt: to }
+      },
+      include: { customer: true },
+      orderBy: { completedAt: "desc" }
+    });
   }
 }
 

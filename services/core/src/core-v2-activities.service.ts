@@ -14,8 +14,9 @@ import { CoreV2IdempotencyService } from "./core-v2-idempotency.service.js";
 import {
   AuditRepository,
   BusinessSettingsRepository,
-  V2ActivitiesRepository,
-  V2CustomersRepository
+    V2ActivitiesRepository,
+  V2CustomersRepository,
+  V2TasksRepository
 } from "./core.repositories.js";
 import type { V2ActivityKind, V2ActivityWrite } from "./repositories/v2-activities.repositories.js";
 import {
@@ -44,7 +45,8 @@ export class CoreV2ActivitiesService {
     @Inject(AuditRepository) private readonly audit: AuditRepository,
     @Inject(BusinessSettingsRepository) private readonly settings: BusinessSettingsRepository,
     @Inject(V2ActivitiesRepository) private readonly activities: V2ActivitiesRepository,
-    @Inject(V2CustomersRepository) private readonly customers: V2CustomersRepository
+    @Inject(V2CustomersRepository) private readonly customers: V2CustomersRepository,
+    @Inject(V2TasksRepository) private readonly tasks: V2TasksRepository
   ) {}
 
   createJob(headers: RequestHeaders, businessId: string, body: unknown) {
@@ -132,6 +134,18 @@ export class CoreV2ActivitiesService {
     const command = V2ScheduleQuerySchema.parse(query);
     const items = await this.activities.schedule(businessId, new Date(command.from), new Date(command.to));
     return { items };
+  }
+
+  async completed(headers: RequestHeaders, businessId: string, query: unknown) {
+    await this.access.requireV2BusinessAccess(headers, businessId);
+    const command = V2ScheduleQuerySchema.parse(query);
+    const from = new Date(command.from);
+    const to = new Date(command.to);
+    const [tasks, activities] = await Promise.all([
+      this.tasks.completedBetween(businessId, from, to),
+      this.activities.completedBetween(businessId, from, to)
+    ]);
+    return { tasks, activities };
   }
 
   async availability(headers: RequestHeaders, businessId: string, query: unknown) {

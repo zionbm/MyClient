@@ -156,6 +156,23 @@ export class V2ActivitiesRepository {
     ].sort((a, b) => a.startsAt!.getTime() - b.startsAt!.getTime());
   }
 
+  async completedBetween(businessId: string, from: Date, to: Date) {
+    const where = {
+      businessId,
+      deletedAt: null,
+      executionCompletedAt: { gte: from, lt: to }
+    };
+    const include = { customer: true };
+    const [jobs, visits] = await Promise.all([
+      this.prisma.job.findMany({ where, include, orderBy: { executionCompletedAt: "desc" } }),
+      this.prisma.visit.findMany({ where, include, orderBy: { executionCompletedAt: "desc" } })
+    ]);
+    return [
+      ...jobs.map((item) => ({ ...item, kind: "job" as const })),
+      ...visits.map((item) => ({ ...item, kind: "visit" as const }))
+    ].sort((a, b) => b.executionCompletedAt!.getTime() - a.executionCompletedAt!.getTime());
+  }
+
   private lockSchedule(tx: Prisma.TransactionClient, businessId: string) {
     return tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`v2_schedule:${businessId}`}))`;
   }
