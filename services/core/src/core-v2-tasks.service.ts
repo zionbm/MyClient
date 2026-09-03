@@ -4,6 +4,7 @@ import { V2CreateTaskSchema, V2TaskListQuerySchema, V2UpdateTaskSchema } from "@
 import { CoreAccessService } from "./core-access.service.js";
 import { CoreV2IdempotencyService } from "./core-v2-idempotency.service.js";
 import { AuditRepository, V2TasksRepository } from "./core.repositories.js";
+import { PrismaService } from "./prisma.service.js";
 import {
   paginatedResponse,
   paginationFromParsedQuery,
@@ -23,7 +24,8 @@ export class CoreV2TasksService {
     @Inject(CoreAccessService) private readonly access: CoreAccessService,
     @Inject(CoreV2IdempotencyService) private readonly idempotency: CoreV2IdempotencyService,
     @Inject(AuditRepository) private readonly audit: AuditRepository,
-    @Inject(V2TasksRepository) private readonly tasks: V2TasksRepository
+    @Inject(V2TasksRepository) private readonly tasks: V2TasksRepository,
+    @Inject(PrismaService) private readonly prisma: PrismaService
   ) {}
 
   async createTask(headers: RequestHeaders, businessId: string, body: unknown) {
@@ -36,7 +38,7 @@ export class CoreV2TasksService {
       scope: "v2.task.create",
       key,
       request: command,
-      execute: async () => {
+      execute: () => this.prisma.$transaction(async (tx) => {
         const task = await this.tasks.create({
           businessId,
           customerId: command.customerId,
@@ -47,11 +49,11 @@ export class CoreV2TasksService {
           status: command.status,
           source: "app_v2",
           idempotencyKey: key
-        });
+        }, tx);
         if (!task) throw new NotFoundException("Customer not found");
-        await this.recordAudit(businessId, user.id, task.id, "CREATE_V2_TASK", task);
+        await this.recordAudit(businessId, user.id, task.id, "CREATE_V2_TASK", task, tx);
         return { task };
-      }
+      })
     });
   }
 
@@ -110,12 +112,12 @@ export class CoreV2TasksService {
       scope: `v2.task.delete.${taskId}`,
       key: requiredIdempotencyKey(headers),
       request: { taskId },
-      execute: async () => {
-        const task = await this.tasks.softDelete({ businessId, taskId, deletedByUserId: user.id });
+      execute: () => this.prisma.$transaction(async (tx) => {
+        const task = await this.tasks.softDelete({ businessId, taskId, deletedByUserId: user.id }, tx);
         if (!task) throw new NotFoundException("Task not found");
-        await this.recordAudit(businessId, user.id, task.id, "DELETE_V2_TASK", task);
+        await this.recordAudit(businessId, user.id, task.id, "DELETE_V2_TASK", task, tx);
         return { task };
-      }
+      })
     });
   }
 
@@ -142,22 +144,22 @@ export class CoreV2TasksService {
       scope: `v2.task.${action}.${taskId}`,
       key: requiredIdempotencyKey(headers),
       request,
-      execute: async () => {
-        const task = await this.tasks.update({ ...update, businessId, taskId });
+      execute: () => this.prisma.$transaction(async (tx) => {
+        const task = await this.tasks.update({ ...update, businessId, taskId }, tx);
         if (!task) {
-          const existing = await this.tasks.findById(businessId, taskId);
+          const existing = await tx.task.findFirst({ where: { id: taskId, businessId, deletedAt: null } });
           if (existing && update.version !== undefined) {
             throw new ConflictException({ code: "ENTITY_VERSION_CONFLICT", message: "Task changed since it was loaded" });
           }
           throw new NotFoundException("Task or customer not found");
         }
-        await this.recordAudit(businessId, userId, task.id, `${action.toUpperCase()}_V2_TASK`, task);
+        await this.recordAudit(businessId, userId, task.id, `${action.toUpperCase()}_V2_TASK`, task, tx);
         return { task };
-      }
+      })
     });
   }
 
-  private recordAudit(businessId: string, actorId: string, entityId: string, action: string, after: unknown) {
+  private recordAudit(businessId: string, actorId: string, entityId: string, action: string, after: unknown, tx: Prisma.TransactionClient) {
     return this.audit.record({
       businessId,
       actorType: "user",
@@ -167,6 +169,6 @@ export class CoreV2TasksService {
       entityId,
       action,
       after: after as Prisma.InputJsonValue
-    });
+    }, tx);
   }
 }

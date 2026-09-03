@@ -5,6 +5,7 @@ import { CoreAccessService } from "./core-access.service.js";
 import { CoreV2IdempotencyService } from "./core-v2-idempotency.service.js";
 import { AuditRepository, V2AmountsRepository } from "./core.repositories.js";
 import type { V2ActivityKind } from "./repositories/v2-activities.repositories.js";
+import { PrismaService } from "./prisma.service.js";
 import { requiredIdempotencyKey, type RequestHeaders } from "./core-utils.js";
 
 @Injectable()
@@ -13,7 +14,8 @@ export class CoreV2AmountsService {
     @Inject(CoreAccessService) private readonly access: CoreAccessService,
     @Inject(CoreV2IdempotencyService) private readonly idempotency: CoreV2IdempotencyService,
     @Inject(AuditRepository) private readonly audit: AuditRepository,
-    @Inject(V2AmountsRepository) private readonly amounts: V2AmountsRepository
+    @Inject(V2AmountsRepository) private readonly amounts: V2AmountsRepository,
+    @Inject(PrismaService) private readonly prisma: PrismaService
   ) {}
 
   async get(kind: V2ActivityKind, headers: RequestHeaders, businessId: string, entityId: string) {
@@ -40,12 +42,12 @@ export class CoreV2AmountsService {
       scope: `v2.${kind}.amount.payment.${entityId}`,
       key: requiredIdempotencyKey(headers),
       request: command,
-      execute: async () => {
-        const result = await this.amounts.payment({ kind, businessId, entityId, actorUserId: user.id, mode: command.mode, amount: command.amount, source: "core_v2" });
+      execute: () => this.prisma.$transaction(async (tx) => {
+        const result = await this.amounts.payment({ kind, businessId, entityId, actorUserId: user.id, mode: command.mode, amount: command.amount, source: "core_v2" }, tx);
         this.validateResult(result);
-        await this.recordAudit(kind, businessId, user.id, entityId, "PAYMENT", result.amount);
+        await this.recordAudit(kind, businessId, user.id, entityId, "PAYMENT", result.amount, tx);
         return { amount: result.amount, [kind]: { id: entityId } };
-      }
+      })
     });
   }
 
@@ -68,12 +70,12 @@ export class CoreV2AmountsService {
       scope: `v2.${kind}.amount.${action}.${entityId}`,
       key: requiredIdempotencyKey(headers),
       request: command,
-      execute: async () => {
-        const result = await this.amounts.set({ kind, businessId, entityId, actorUserId: user.id, change: command, source: "core_v2" });
+      execute: () => this.prisma.$transaction(async (tx) => {
+        const result = await this.amounts.set({ kind, businessId, entityId, actorUserId: user.id, change: command, source: "core_v2" }, tx);
         this.validateResult(result);
-        await this.recordAudit(kind, businessId, user.id, entityId, "SET_AMOUNT", result.amount);
+        await this.recordAudit(kind, businessId, user.id, entityId, "SET_AMOUNT", result.amount, tx);
         return { amount: result.amount };
-      }
+      })
     });
   }
 
@@ -85,7 +87,7 @@ export class CoreV2AmountsService {
     if (result.invalidAmount) throw new BadRequestException({ code: "INVALID_AMOUNT", message: "Paid amount must be between zero and the total amount" });
   }
 
-  private recordAudit(kind: V2ActivityKind, businessId: string, actorId: string, entityId: string, action: string, after: unknown) {
+  private recordAudit(kind: V2ActivityKind, businessId: string, actorId: string, entityId: string, action: string, after: unknown, tx: Prisma.TransactionClient) {
     return this.audit.record({
       businessId,
       actorType: "user",
@@ -95,6 +97,6 @@ export class CoreV2AmountsService {
       entityId,
       action: `${action}_V2_${kind.toUpperCase()}`,
       after: JSON.parse(JSON.stringify(after)) as Prisma.InputJsonValue
-    });
+    }, tx);
   }
 }

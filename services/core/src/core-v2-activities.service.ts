@@ -20,6 +20,7 @@ import {
   V2TasksRepository
 } from "./core.repositories.js";
 import type { V2ActivityKind, V2ActivityWrite } from "./repositories/v2-activities.repositories.js";
+import { PrismaService } from "./prisma.service.js";
 import {
   paginatedResponse,
   paginationFromParsedQuery,
@@ -47,7 +48,8 @@ export class CoreV2ActivitiesService {
     @Inject(BusinessSettingsRepository) private readonly settings: BusinessSettingsRepository,
     @Inject(V2ActivitiesRepository) private readonly activities: V2ActivitiesRepository,
     @Inject(V2CustomersRepository) private readonly customers: V2CustomersRepository,
-    @Inject(V2TasksRepository) private readonly tasks: V2TasksRepository
+    @Inject(V2TasksRepository) private readonly tasks: V2TasksRepository,
+    @Inject(PrismaService) private readonly prisma: PrismaService
   ) {}
 
   createJob(headers: RequestHeaders, businessId: string, body: unknown) {
@@ -122,11 +124,11 @@ export class CoreV2ActivitiesService {
       scope: `v2.${kind}.delete.${entityId}`,
       key: requiredIdempotencyKey(headers),
       request: { entityId },
-      execute: async () => {
-        if (!await this.activities.softDelete(kind, businessId, entityId, user.id)) throw new NotFoundException(`${kind} not found`);
-        await this.recordAudit(kind, businessId, user.id, entityId, "DELETE", { deleted: true });
+      execute: () => this.prisma.$transaction(async (tx) => {
+        if (!await this.activities.softDelete(kind, businessId, entityId, user.id, tx)) throw new NotFoundException(`${kind} not found`);
+        await this.recordAudit(kind, businessId, user.id, entityId, "DELETE", { deleted: true }, tx);
         return { deleted: true, id: entityId };
-      }
+      })
     });
   }
 
@@ -186,7 +188,7 @@ export class CoreV2ActivitiesService {
       scope: `v2.${kind}.create`,
       key,
       request: command,
-      execute: async () => {
+      execute: () => this.prisma.$transaction(async (tx) => {
         const startsAt = parseOptionalDate(command.startsAt) ?? undefined;
         const endsAt = parseOptionalDate(command.endsAt) ?? undefined;
         const approvedConflictFingerprint = startsAt && command.scheduleConflictToken
@@ -206,7 +208,7 @@ export class CoreV2ActivitiesService {
           idempotencyKey: key,
           allowScheduleConflict: false,
           approvedConflictFingerprint
-        });
+        }, tx);
         if ("missingLink" in result) throw new NotFoundException("Customer or service address not found");
         if (!("entity" in result)) {
           if (!startsAt) throw new ConflictException({ code: "SCHEDULE_CONFLICT", conflicts: result.conflicts });
@@ -214,9 +216,9 @@ export class CoreV2ActivitiesService {
         }
         const entity = result.entity;
         if (!entity) throw new NotFoundException(`${kind} was not created`);
-        await this.recordAudit(kind, businessId, user.id, entity.id, "CREATE", entity);
-        return { [kind]: await this.activities.findById(kind, businessId, entity.id), warnings: await this.scheduleWarnings(businessId, startsAt, endsAt, kind) };
-      }
+        await this.recordAudit(kind, businessId, user.id, entity.id, "CREATE", entity, tx);
+        return { [kind]: await this.activities.findById(kind, businessId, entity.id, tx), warnings: await this.scheduleWarnings(businessId, startsAt, endsAt, kind) };
+      })
     });
   }
 
@@ -259,9 +261,9 @@ export class CoreV2ActivitiesService {
       scope: `v2.${kind}.${action}.${entityId}`,
       key: requiredIdempotencyKey(headers),
       request,
-      execute: async () => {
+      execute: () => this.prisma.$transaction(async (tx) => {
         const existingForSchedule = scheduleConflictToken || update.startsAt !== undefined
-          ? await this.activities.findById(kind, businessId, entityId)
+          ? await this.activities.findById(kind, businessId, entityId, tx)
           : undefined;
         const normalizedUpdate = { ...update };
         if (update.startsAt !== undefined && update.endsAt === undefined) {
@@ -274,20 +276,20 @@ export class CoreV2ActivitiesService {
         const approvedConflictFingerprint = scheduleConflictToken && tokenStartsAt
           ? this.approvedConflictFingerprint(scheduleConflictToken, { businessId, userId: user.id, operation: "UPDATE", kind, entityId, startsAt: tokenStartsAt, endsAt: tokenEndsAt })
           : undefined;
-        const result = await this.activities.update({ kind, businessId, entityId, ...normalizedUpdate, allowScheduleConflict, approvedConflictFingerprint });
+        const result = await this.activities.update({ kind, businessId, entityId, ...normalizedUpdate, allowScheduleConflict, approvedConflictFingerprint }, tx);
         if ("missingLink" in result) throw new NotFoundException("Customer or service address not found");
         if ("notFound" in result) throw new ConflictException({ code: "ENTITY_VERSION_CONFLICT", message: `${kind} changed or was not found` });
         if ("invalidSchedule" in result) throw new BadRequestException("endsAt must be after startsAt");
         if (!("entity" in result)) {
-          const existing = await this.activities.findById(kind, businessId, entityId);
+          const existing = await this.activities.findById(kind, businessId, entityId, tx);
           const conflictStart = normalizedUpdate.startsAt ?? existing?.startsAt;
           if (!conflictStart) throw new ConflictException({ code: "SCHEDULE_CONFLICT", conflicts: result.conflicts });
           await this.throwConflict(businessId, user.id, "UPDATE", entityId, conflictStart, normalizedUpdate.endsAt ?? existing?.endsAt, kind, result.conflicts);
         }
         if (!result.entity) throw new NotFoundException(`${kind} was not updated`);
-        await this.recordAudit(kind, businessId, user.id, entityId, action.toUpperCase(), result.entity);
-        return { [kind]: await this.activities.findById(kind, businessId, entityId), warnings: await this.scheduleWarnings(businessId, result.entity.startsAt ?? undefined, result.entity.endsAt ?? undefined, kind) };
-      }
+        await this.recordAudit(kind, businessId, user.id, entityId, action.toUpperCase(), result.entity, tx);
+        return { [kind]: await this.activities.findById(kind, businessId, entityId, tx), warnings: await this.scheduleWarnings(businessId, result.entity.startsAt ?? undefined, result.entity.endsAt ?? undefined, kind) };
+      })
     });
   }
 
@@ -363,7 +365,7 @@ export class CoreV2ActivitiesService {
       : ["הפעילות נקבעה מחוץ לשעות העבודה."];
   }
 
-  private recordAudit(kind: V2ActivityKind, businessId: string, actorId: string, entityId: string, action: string, after: unknown) {
-    return this.audit.record({ businessId, actorType: "user", actorId, source: "core_v2", entityType: kind, entityId, action: `${action}_V2_${kind.toUpperCase()}`, after: after as Prisma.InputJsonValue });
+  private recordAudit(kind: V2ActivityKind, businessId: string, actorId: string, entityId: string, action: string, after: unknown, tx: Prisma.TransactionClient) {
+    return this.audit.record({ businessId, actorType: "user", actorId, source: "core_v2", entityType: kind, entityId, action: `${action}_V2_${kind.toUpperCase()}`, after: after as Prisma.InputJsonValue }, tx);
   }
 }

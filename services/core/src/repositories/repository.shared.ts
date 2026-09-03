@@ -1,4 +1,15 @@
 import { Prisma } from "@prisma/client";
+import type { PrismaService } from "../prisma.service.js";
+
+export type RepositoryTransaction = Prisma.TransactionClient;
+
+export function inRepositoryTransaction<T>(
+  prisma: PrismaService,
+  transaction: RepositoryTransaction | undefined,
+  operation: (tx: RepositoryTransaction) => Promise<T>
+): Promise<T> {
+  return transaction ? operation(transaction) : prisma.$transaction(operation);
+}
 
 export type CreateBusinessMemberInput = {
   businessId: string;

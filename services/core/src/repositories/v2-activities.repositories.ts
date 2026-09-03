@@ -2,7 +2,7 @@ import { Inject, Injectable } from "@nestjs/common";
 import { type ActivityStatus, Prisma } from "@prisma/client";
 import { PrismaService } from "../prisma.service.js";
 import { effectiveScheduleEnd, sameConflictFingerprint, scheduleConflictFingerprint, shiftedScheduleEnd } from "../v2-schedule-confirmation.js";
-import { createdAtCursorWhere, paginationTake, type PaginationInput } from "./repository.shared.js";
+import { createdAtCursorWhere, inRepositoryTransaction, paginationTake, type PaginationInput } from "./repository.shared.js";
 
 export type V2ActivityKind = "job" | "visit";
 
@@ -55,16 +55,17 @@ export class V2ActivitiesRepository {
     return kind === "job" ? this.prisma.job.findMany(args) : this.prisma.visit.findMany(args);
   }
 
-  findById(kind: V2ActivityKind, businessId: string, entityId: string) {
+  findById(kind: V2ActivityKind, businessId: string, entityId: string, tx?: Prisma.TransactionClient) {
     const args = {
       where: { id: entityId, businessId, deletedAt: null },
       include: { customer: true, serviceAddress: true, amounts: { where: { deletedAt: null }, take: 1 } }
     };
-    return kind === "job" ? this.prisma.job.findFirst(args) : this.prisma.visit.findFirst(args);
+    const db = tx ?? this.prisma;
+    return kind === "job" ? db.job.findFirst(args) : db.visit.findFirst(args);
   }
 
-  async create(input: V2ActivityWrite & { kind: V2ActivityKind; allowScheduleConflict: boolean; approvedConflictFingerprint?: string[] }) {
-    return this.prisma.$transaction((tx) => this.createInTransaction(tx, input));
+  async create(input: V2ActivityWrite & { kind: V2ActivityKind; allowScheduleConflict: boolean; approvedConflictFingerprint?: string[] }, transaction?: Prisma.TransactionClient) {
+    return inRepositoryTransaction(this.prisma, transaction, (tx) => this.createInTransaction(tx, input));
   }
 
   async createInTransaction(tx: Prisma.TransactionClient, input: V2ActivityWrite & { kind: V2ActivityKind; allowScheduleConflict: boolean; approvedConflictFingerprint?: string[] }) {
@@ -92,8 +93,8 @@ export class V2ActivitiesRepository {
     version?: number;
     allowScheduleConflict: boolean;
     approvedConflictFingerprint?: string[];
-  }) {
-    return this.prisma.$transaction((tx) => this.updateInTransaction(tx, input));
+  }, transaction?: Prisma.TransactionClient) {
+    return inRepositoryTransaction(this.prisma, transaction, (tx) => this.updateInTransaction(tx, input));
   }
 
   async updateInTransaction(tx: Prisma.TransactionClient, input: Partial<V2ActivityWrite> & { kind: V2ActivityKind; entityId: string; businessId: string; version?: number; allowScheduleConflict: boolean; approvedConflictFingerprint?: string[] }) {
@@ -138,8 +139,8 @@ export class V2ActivitiesRepository {
     return { entity, conflicts };
   }
 
-  async softDelete(kind: V2ActivityKind, businessId: string, entityId: string, deletedByUserId: string) {
-    return this.prisma.$transaction(async (tx) => {
+  async softDelete(kind: V2ActivityKind, businessId: string, entityId: string, deletedByUserId: string, transaction?: Prisma.TransactionClient) {
+    return inRepositoryTransaction(this.prisma, transaction, async (tx) => {
       const deletedAt = new Date();
       const data = { deletedAt, deletedByUserId, version: { increment: 1 } };
       const result = kind === "job"

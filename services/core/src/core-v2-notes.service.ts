@@ -4,6 +4,7 @@ import { V2CreateNoteSchema, V2UpdateNoteSchema } from "@myclient/contracts";
 import { CoreAccessService } from "./core-access.service.js";
 import { CoreV2IdempotencyService } from "./core-v2-idempotency.service.js";
 import { AuditRepository, V2NotesRepository } from "./core.repositories.js";
+import { PrismaService } from "./prisma.service.js";
 import { requiredIdempotencyKey, type RequestHeaders } from "./core-utils.js";
 
 @Injectable()
@@ -12,7 +13,8 @@ export class CoreV2NotesService {
     @Inject(CoreAccessService) private readonly access: CoreAccessService,
     @Inject(CoreV2IdempotencyService) private readonly idempotency: CoreV2IdempotencyService,
     @Inject(AuditRepository) private readonly audit: AuditRepository,
-    @Inject(V2NotesRepository) private readonly notes: V2NotesRepository
+    @Inject(V2NotesRepository) private readonly notes: V2NotesRepository,
+    @Inject(PrismaService) private readonly prisma: PrismaService
   ) {}
 
   async create(headers: RequestHeaders, businessId: string, customerId: string, body: unknown) {
@@ -24,12 +26,12 @@ export class CoreV2NotesService {
       scope: `v2.note.create.${customerId}`,
       key: requiredIdempotencyKey(headers),
       request: command,
-      execute: async () => {
-        const note = await this.notes.create({ businessId, customerId, ...command });
+      execute: () => this.prisma.$transaction(async (tx) => {
+        const note = await this.notes.create({ businessId, customerId, ...command }, tx);
         if (!note) throw new NotFoundException("Customer not found");
-        await this.recordAudit(businessId, user.id, note.id, "CREATE_V2_NOTE", note);
+        await this.recordAudit(businessId, user.id, note.id, "CREATE_V2_NOTE", note, tx);
         return { note };
-      }
+      })
     });
   }
 
@@ -42,12 +44,12 @@ export class CoreV2NotesService {
       scope: `v2.note.update.${noteId}`,
       key: requiredIdempotencyKey(headers),
       request: command,
-      execute: async () => {
-        const note = await this.notes.update({ businessId, customerId, noteId, ...command });
+      execute: () => this.prisma.$transaction(async (tx) => {
+        const note = await this.notes.update({ businessId, customerId, noteId, ...command }, tx);
         if (!note) throw new NotFoundException("Note not found");
-        await this.recordAudit(businessId, user.id, note.id, "UPDATE_V2_NOTE", note);
+        await this.recordAudit(businessId, user.id, note.id, "UPDATE_V2_NOTE", note, tx);
         return { note };
-      }
+      })
     });
   }
 
@@ -59,16 +61,16 @@ export class CoreV2NotesService {
       scope: `v2.note.delete.${noteId}`,
       key: requiredIdempotencyKey(headers),
       request: { customerId, noteId },
-      execute: async () => {
-        const note = await this.notes.softDelete(businessId, customerId, noteId);
+      execute: () => this.prisma.$transaction(async (tx) => {
+        const note = await this.notes.softDelete(businessId, customerId, noteId, tx);
         if (!note) throw new NotFoundException("Note not found");
-        await this.recordAudit(businessId, user.id, note.id, "DELETE_V2_NOTE", note);
+        await this.recordAudit(businessId, user.id, note.id, "DELETE_V2_NOTE", note, tx);
         return { note };
-      }
+      })
     });
   }
 
-  private recordAudit(businessId: string, actorId: string, entityId: string, action: string, after: unknown) {
+  private recordAudit(businessId: string, actorId: string, entityId: string, action: string, after: unknown, tx: Prisma.TransactionClient) {
     return this.audit.record({
       businessId,
       actorType: "user",
@@ -78,6 +80,6 @@ export class CoreV2NotesService {
       entityId,
       action,
       after: JSON.parse(JSON.stringify(after)) as Prisma.InputJsonValue
-    });
+    }, tx);
   }
 }

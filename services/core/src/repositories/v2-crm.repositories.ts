@@ -1,9 +1,9 @@
 import { Inject, Injectable } from "@nestjs/common";
 import { randomUUID } from "node:crypto";
-import { type TaskStatus } from "@prisma/client";
+import { Prisma, type TaskStatus } from "@prisma/client";
 import { PrismaService } from "../prisma.service.js";
 import { BusinessesRepository } from "./business.repositories.js";
-import { createdAtCursorWhere, paginationTake, type PaginationInput } from "./repository.shared.js";
+import { createdAtCursorWhere, inRepositoryTransaction, paginationTake, type PaginationInput } from "./repository.shared.js";
 
 type V2TaskListInput = PaginationInput & {
   state?: "OPEN" | "CLOSED";
@@ -25,9 +25,9 @@ export class V2CustomersRepository {
     normalizedName: string;
     email?: string;
     generalNotes?: string;
-  }) {
-    await this.businesses.requireBusiness(input.businessId);
-    return this.prisma.customer.create({ data: input });
+  }, tx?: Prisma.TransactionClient) {
+    if (!tx) await this.businesses.requireBusiness(input.businessId);
+    return (tx ?? this.prisma).customer.create({ data: input });
   }
 
   async list(businessId: string, pagination: PaginationInput) {
@@ -104,8 +104,9 @@ export class V2CustomersRepository {
     email?: string | null;
     generalNotes?: string | null;
     version?: number;
-  }) {
-    const updated = await this.prisma.customer.updateMany({
+  }, tx?: Prisma.TransactionClient) {
+    const db = tx ?? this.prisma;
+    const updated = await db.customer.updateMany({
       where: {
         id: input.customerId,
         businessId: input.businessId,
@@ -121,11 +122,19 @@ export class V2CustomersRepository {
         version: { increment: 1 }
       }
     });
-    return updated.count === 1 ? this.findById(input.businessId, input.customerId) : null;
+    return updated.count === 1 ? db.customer.findFirst({
+      where: { id: input.customerId, businessId: input.businessId, deletedAt: null, mergedIntoCustomerId: null },
+      include: {
+        customerPhones: { where: { deletedAt: null }, orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }] },
+        serviceAddresses: { where: { deletedAt: null }, orderBy: { createdAt: "asc" } },
+        tasks: { where: { deletedAt: null }, orderBy: [{ dueAt: "asc" }, { createdAt: "desc" }] },
+        notes: { where: { deletedAt: null }, orderBy: { createdAt: "desc" } }
+      }
+    }) : null;
   }
 
-  async softDelete(input: { businessId: string; customerId: string; deletedByUserId: string }) {
-    return this.prisma.$transaction(async (tx) => {
+  async softDelete(input: { businessId: string; customerId: string; deletedByUserId: string }, transaction?: Prisma.TransactionClient) {
+    return inRepositoryTransaction(this.prisma, transaction, async (tx) => {
       const customer = await tx.customer.findFirst({
         where: { id: input.customerId, businessId: input.businessId, deletedAt: null, mergedIntoCustomerId: null }
       });
@@ -155,8 +164,8 @@ export class V2CustomersRepository {
     });
   }
 
-  async restore(input: { businessId: string; customerId: string }) {
-    return this.prisma.$transaction(async (tx) => {
+  async restore(input: { businessId: string; customerId: string }, transaction?: Prisma.TransactionClient) {
+    return inRepositoryTransaction(this.prisma, transaction, async (tx) => {
       const customer = await tx.customer.findFirst({
         where: { id: input.customerId, businessId: input.businessId, deletedAt: { not: null }, deleteActionBatchId: { not: null } }
       });
@@ -185,9 +194,9 @@ export class V2CustomersRepository {
     });
   }
 
-  async merge(input: { businessId: string; sourceCustomerId: string; targetCustomerId: string; actorUserId: string }) {
+  async merge(input: { businessId: string; sourceCustomerId: string; targetCustomerId: string; actorUserId: string }, transaction?: Prisma.TransactionClient) {
     if (input.sourceCustomerId === input.targetCustomerId) return null;
-    return this.prisma.$transaction(async (tx) => {
+    return inRepositoryTransaction(this.prisma, transaction, async (tx) => {
       const [source, target] = await Promise.all([
         tx.customer.findFirst({ where: { id: input.sourceCustomerId, businessId: input.businessId, deletedAt: null, mergedIntoCustomerId: null } }),
         tx.customer.findFirst({ where: { id: input.targetCustomerId, businessId: input.businessId, deletedAt: null, mergedIntoCustomerId: null } })
@@ -264,8 +273,8 @@ export class V2CustomerPhonesRepository {
     normalizedPhone: string;
     label?: string;
     isPrimary?: boolean;
-  }) {
-    return this.prisma.$transaction(async (tx) => {
+  }, transaction?: Prisma.TransactionClient) {
+    return inRepositoryTransaction(this.prisma, transaction, async (tx) => {
       const customer = await tx.customer.findFirst({
         where: { id: input.customerId, businessId: input.businessId, deletedAt: null, mergedIntoCustomerId: null }
       });
@@ -294,8 +303,8 @@ export class V2CustomerPhonesRepository {
     normalizedPhone?: string;
     label?: string | null;
     isPrimary?: boolean;
-  }) {
-    return this.prisma.$transaction(async (tx) => {
+  }, transaction?: Prisma.TransactionClient) {
+    return inRepositoryTransaction(this.prisma, transaction, async (tx) => {
       const existing = await tx.customerPhone.findFirst({
         where: { id: input.phoneId, businessId: input.businessId, customerId: input.customerId, deletedAt: null }
       });
@@ -318,8 +327,8 @@ export class V2CustomerPhonesRepository {
     });
   }
 
-  async softDelete(input: { businessId: string; customerId: string; phoneId: string; deletedByUserId: string }) {
-    return this.prisma.$transaction(async (tx) => {
+  async softDelete(input: { businessId: string; customerId: string; phoneId: string; deletedByUserId: string }, transaction?: Prisma.TransactionClient) {
+    return inRepositoryTransaction(this.prisma, transaction, async (tx) => {
       const existing = await tx.customerPhone.findFirst({
         where: { id: input.phoneId, businessId: input.businessId, customerId: input.customerId, deletedAt: null }
       });
@@ -352,11 +361,12 @@ export class V2ServiceAddressesRepository {
     label?: string;
     addressText: string;
     normalizedAddress: string;
-  }) {
-    const customer = await this.prisma.customer.findFirst({
+  }, tx?: Prisma.TransactionClient) {
+    const db = tx ?? this.prisma;
+    const customer = await db.customer.findFirst({
       where: { id: input.customerId, businessId: input.businessId, deletedAt: null, mergedIntoCustomerId: null }
     });
-    return customer ? this.prisma.serviceAddress.create({ data: input }) : null;
+    return customer ? db.serviceAddress.create({ data: input }) : null;
   }
 
   async update(input: {
@@ -366,23 +376,25 @@ export class V2ServiceAddressesRepository {
     label?: string | null;
     addressText?: string;
     normalizedAddress?: string;
-  }) {
-    const existing = await this.prisma.serviceAddress.findFirst({
+  }, tx?: Prisma.TransactionClient) {
+    const db = tx ?? this.prisma;
+    const existing = await db.serviceAddress.findFirst({
       where: { id: input.addressId, businessId: input.businessId, customerId: input.customerId, deletedAt: null }
     });
     if (!existing) return null;
-    return this.prisma.serviceAddress.update({
+    return db.serviceAddress.update({
       where: { id: existing.id },
       data: { label: input.label, addressText: input.addressText, normalizedAddress: input.normalizedAddress }
     });
   }
 
-  async softDelete(input: { businessId: string; customerId: string; addressId: string; deletedByUserId: string }) {
-    const existing = await this.prisma.serviceAddress.findFirst({
+  async softDelete(input: { businessId: string; customerId: string; addressId: string; deletedByUserId: string }, tx?: Prisma.TransactionClient) {
+    const db = tx ?? this.prisma;
+    const existing = await db.serviceAddress.findFirst({
       where: { id: input.addressId, businessId: input.businessId, customerId: input.customerId, deletedAt: null }
     });
     if (!existing) return null;
-    return this.prisma.serviceAddress.update({
+    return db.serviceAddress.update({
       where: { id: existing.id },
       data: { deletedAt: new Date(), deletedByUserId: input.deletedByUserId }
     });
@@ -406,15 +418,16 @@ export class V2TasksRepository {
     status?: TaskStatus;
     source: string;
     idempotencyKey: string;
-  }) {
-    await this.businesses.requireBusiness(input.businessId);
+  }, tx?: Prisma.TransactionClient) {
+    const db = tx ?? this.prisma;
+    if (!tx) await this.businesses.requireBusiness(input.businessId);
     if (input.customerId) {
-      const customer = await this.prisma.customer.findFirst({
+      const customer = await db.customer.findFirst({
         where: { id: input.customerId, businessId: input.businessId, deletedAt: null, mergedIntoCustomerId: null }
       });
       if (!customer) return null;
     }
-    return this.prisma.task.create({ data: input });
+    return db.task.create({ data: input });
   }
 
   async list(businessId: string, pagination: V2TaskListInput) {
@@ -468,14 +481,15 @@ export class V2TasksRepository {
     completedAt?: Date | null;
     status?: TaskStatus;
     version?: number;
-  }) {
+  }, tx?: Prisma.TransactionClient) {
+    const db = tx ?? this.prisma;
     if (input.customerId) {
-      const customer = await this.prisma.customer.findFirst({
+      const customer = await db.customer.findFirst({
         where: { id: input.customerId, businessId: input.businessId, deletedAt: null, mergedIntoCustomerId: null }
       });
       if (!customer) return null;
     }
-    const updated = await this.prisma.task.updateMany({
+    const updated = await db.task.updateMany({
       where: { id: input.taskId, businessId: input.businessId, deletedAt: null, version: input.version },
       data: {
         customerId: input.customerId,
@@ -488,15 +502,19 @@ export class V2TasksRepository {
         version: { increment: 1 }
       }
     });
-    return updated.count === 1 ? this.findById(input.businessId, input.taskId) : null;
+    return updated.count === 1 ? db.task.findFirst({
+      where: { id: input.taskId, businessId: input.businessId, deletedAt: null },
+      include: { customer: true }
+    }) : null;
   }
 
-  async softDelete(input: { businessId: string; taskId: string; deletedByUserId: string }) {
-    const updated = await this.prisma.task.updateMany({
+  async softDelete(input: { businessId: string; taskId: string; deletedByUserId: string }, tx?: Prisma.TransactionClient) {
+    const db = tx ?? this.prisma;
+    const updated = await db.task.updateMany({
       where: { id: input.taskId, businessId: input.businessId, deletedAt: null },
       data: { deletedAt: new Date(), deletedByUserId: input.deletedByUserId, version: { increment: 1 } }
     });
-    return updated.count === 1 ? this.prisma.task.findUnique({ where: { id: input.taskId } }) : null;
+    return updated.count === 1 ? db.task.findUnique({ where: { id: input.taskId } }) : null;
   }
 
   async claimDue(limit: number) {
@@ -540,8 +558,9 @@ export class V2NotesRepository {
     customerId: string;
     text: string;
     status?: "OPEN" | "DONE" | "CANCELLED";
-  }) {
-    const customer = await this.prisma.customer.findFirst({
+  }, tx?: Prisma.TransactionClient) {
+    const db = tx ?? this.prisma;
+    const customer = await db.customer.findFirst({
       where: {
         id: input.customerId,
         businessId: input.businessId,
@@ -550,7 +569,7 @@ export class V2NotesRepository {
       },
       select: { id: true }
     });
-    return customer ? this.prisma.note.create({ data: input }) : null;
+    return customer ? db.note.create({ data: input }) : null;
   }
 
   findById(businessId: string, customerId: string, noteId: string) {
@@ -565,8 +584,9 @@ export class V2NotesRepository {
     noteId: string;
     text?: string;
     status?: "OPEN" | "DONE" | "CANCELLED";
-  }) {
-    const updated = await this.prisma.note.updateMany({
+  }, tx?: Prisma.TransactionClient) {
+    const db = tx ?? this.prisma;
+    const updated = await db.note.updateMany({
       where: {
         id: input.noteId,
         businessId: input.businessId,
@@ -576,17 +596,18 @@ export class V2NotesRepository {
       data: { text: input.text, status: input.status }
     });
     return updated.count === 1
-      ? this.findById(input.businessId, input.customerId, input.noteId)
+      ? db.note.findFirst({ where: { id: input.noteId, businessId: input.businessId, customerId: input.customerId, deletedAt: null } })
       : null;
   }
 
-  async softDelete(businessId: string, customerId: string, noteId: string) {
-    const updated = await this.prisma.note.updateMany({
+  async softDelete(businessId: string, customerId: string, noteId: string, tx?: Prisma.TransactionClient) {
+    const db = tx ?? this.prisma;
+    const updated = await db.note.updateMany({
       where: { id: noteId, businessId, customerId, deletedAt: null },
       data: { deletedAt: new Date() }
     });
     return updated.count === 1
-      ? this.prisma.note.findUnique({ where: { id: noteId } })
+      ? db.note.findUnique({ where: { id: noteId } })
       : null;
   }
 }

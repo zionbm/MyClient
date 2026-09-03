@@ -307,8 +307,8 @@ export class BusinessMembersRepository {
 export class AuditRepository {
   constructor(@Inject(PrismaService) private readonly prisma: PrismaService) {}
 
-  async record(input: AuditEventInput) {
-    return this.prisma.auditEvent.create({
+  async record(input: AuditEventInput, tx?: Prisma.TransactionClient) {
+    return (tx ?? this.prisma).auditEvent.create({
       data: {
         businessId: input.businessId,
         actorType: input.actorType,

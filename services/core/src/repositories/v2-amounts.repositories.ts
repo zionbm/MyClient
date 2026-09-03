@@ -2,6 +2,7 @@ import { Inject, Injectable } from "@nestjs/common";
 import { type AmountEventType, Prisma } from "@prisma/client";
 import { PrismaService } from "../prisma.service.js";
 import { activityStatusAfterAmount, assertAmountInvariant, money, nextPaidAmount, paymentStatus } from "../v2-money.js";
+import { inRepositoryTransaction } from "./repository.shared.js";
 import type { V2ActivityKind } from "./v2-activities.repositories.js";
 
 type AmountChange = {
@@ -29,8 +30,8 @@ export class V2AmountsRepository {
     actorUserId: string;
     change: AmountChange;
     source: string;
-  }) {
-    return this.prisma.$transaction(async (tx) => {
+  }, transaction?: Prisma.TransactionClient) {
+    return inRepositoryTransaction(this.prisma, transaction, async (tx) => {
       const activity = await this.activity(tx, input.kind, input.businessId, input.entityId);
       if (!activity) return { notFound: true as const };
       const existing = await tx.amount.findFirst({
@@ -81,8 +82,8 @@ export class V2AmountsRepository {
     mode: "ADD" | "SET_PAID_TOTAL" | "SETTLE_BALANCE";
     amount?: number;
     source: string;
-  }) {
-    return this.prisma.$transaction(async (tx) => {
+  }, transaction?: Prisma.TransactionClient) {
+    return inRepositoryTransaction(this.prisma, transaction, async (tx) => {
       const activity = await this.activity(tx, input.kind, input.businessId, input.entityId);
       if (!activity) return { notFound: true as const };
       const existing = await tx.amount.findFirst({
