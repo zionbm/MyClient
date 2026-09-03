@@ -7,7 +7,17 @@ type ObservedRequest = {
   url: string;
   requestId?: string;
   startedAt?: number;
+  routeOptions?: { url?: string };
 };
+
+export function safeRequestPath(request: Pick<ObservedRequest, "url" | "routeOptions">): string {
+  if (request.routeOptions?.url) return request.routeOptions.url;
+  try {
+    return new URL(request.url, "http://local").pathname;
+  } catch {
+    return request.url.split("?", 1)[0] ?? "";
+  }
+}
 
 type ObservedResponse = {
   statusCode: number;
@@ -37,7 +47,7 @@ export function configureHttpObservability(server: FastifyLike, service: string)
       service,
       requestId: request.requestId,
       method: request.method,
-      url: request.url,
+      path: safeRequestPath(request),
       statusCode: response.statusCode,
       durationMs: request.startedAt === undefined ? undefined : Date.now() - request.startedAt
     });

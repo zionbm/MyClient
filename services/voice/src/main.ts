@@ -45,7 +45,7 @@ class VoiceController {
       transcript,
       confidence: body.transcript ? 0.99 : 0.75
     };
-    log("info", "mock stt completed", { recordingUrl: body.recordingUrl, confidence: result.confidence });
+    log("info", "mock stt completed", { recordingUrlPresent: Boolean(body.recordingUrl), confidence: result.confidence });
     return result;
   }
 

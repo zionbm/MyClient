@@ -7,7 +7,7 @@ import { CoreV2IdempotencyService } from "./core-v2-idempotency.service.js";
 import { CoreVoiceInternalClient } from "./core-internal-clients.service.js";
 import { ActionBatchesRepository, UserPreferencesRepository } from "./core.repositories.js";
 import { PrismaService } from "./prisma.service.js";
-import { requiredIdempotencyKey, type RequestHeaders } from "./core-utils.js";
+import { headerValue, requiredIdempotencyKey, type RequestHeaders } from "./core-utils.js";
 import { orderMutationsForUndo, undoWindowBlockReason } from "./v2-undo.js";
 
 function record(value: Prisma.JsonValue | null | undefined) {
@@ -107,7 +107,7 @@ export class CoreV2ActionBatchesService {
     const batch = await this.batches.findByBusinessAndId(businessId, actionBatchId);
     if (!batch) throw new NotFoundException("Action batch not found");
     const summary = batch.status === "UNDONE" ? `הפעולה בוטלה. ${batch.finalSummary}` : batch.spokenSummary ?? batch.finalSummary;
-    return this.voice.synthesizeAssistantSummary(summary);
+    return this.voice.synthesizeAssistantSummary(summary, headerValue(headers, "x-request-id"));
   }
 
   async getPreferences(headers: RequestHeaders) {

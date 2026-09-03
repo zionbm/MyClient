@@ -1,5 +1,6 @@
 import { ArgumentsHost, Catch, ExceptionFilter, HttpException, HttpStatus } from "@nestjs/common";
 import { ZodError } from "zod";
+import { safeRequestPath } from "./http-observability.js";
 import { log } from "./logger.js";
 
 export type ApiErrorCode =
@@ -60,12 +61,16 @@ function messageFromHttpException(exception: HttpException): string {
   return exception.message;
 }
 
-function detailsFromHttpException(exception: HttpException): unknown {
+export function detailsFromHttpException(exception: HttpException): unknown {
   const response = exception.getResponse();
-  if (typeof response === "object" && response !== null && "details" in response) {
+  if (typeof response !== "object" || response === null) {
+    return undefined;
+  }
+  if ("details" in response) {
     return (response as { details?: unknown }).details;
   }
-  return undefined;
+  const { message: _message, statusCode: _statusCode, error: _error, ...domainDetails } = response as Record<string, unknown>;
+  return Object.keys(domainDetails).length > 0 ? domainDetails : undefined;
 }
 
 @Catch()
@@ -108,7 +113,7 @@ export class ApiExceptionFilter implements ExceptionFilter {
     log("error", "unhandled api error", {
       service: this.service,
       method: request.method,
-      url: request.url,
+      path: safeRequestPath({ url: request.url ?? "" }),
       requestId: request.requestId,
       error: exception instanceof Error ? exception.message : String(exception)
     });

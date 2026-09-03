@@ -24,7 +24,7 @@ import { CoreV2ActionBatchesService } from "./core-v2-action-batches.service.js"
 import { CoreOpenAiRealtimeClient } from "./core-openai-realtime-client.service.js";
 import { AssistantSessionsRepository, BusinessSettingsRepository, V2ActivitiesRepository } from "./core.repositories.js";
 import { PrismaService } from "./prisma.service.js";
-import { parseOptionalDate, requiredIdempotencyKey, type RequestHeaders } from "./core-utils.js";
+import { headerValue, parseOptionalDate, requiredIdempotencyKey, type RequestHeaders } from "./core-utils.js";
 import { paginationFromParsedQuery, paginatedResponse } from "./core-utils.js";
 import {
   normalizeCustomerName,
@@ -161,7 +161,8 @@ export class CoreV2AssistantService {
         };
         const planned = await this.ai.planV2AssistantCommand({
           transcript: command.transcript,
-          context: planningContext
+          context: planningContext,
+          requestId: headerValue(headers, "x-request-id")
         });
         const planningDurationMs = Date.now() - startedAt;
         let plan = AssistantPlanSchema.parse(planned.plan);
