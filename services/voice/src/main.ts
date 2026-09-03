@@ -2,7 +2,7 @@ import "reflect-metadata";
 import { BadGatewayException, BadRequestException, Body, Controller, Get, Headers, Module, Post, UnauthorizedException } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { FastifyAdapter, type NestFastifyApplication } from "@nestjs/platform-fastify";
-import { ApiExceptionFilter, configureHttpObservability, getEnv, getInternalApiSecret, getPort, health, log, stableIdempotencyKey } from "@myclient/common";
+import { ApiExceptionFilter, configureHttpObservability, getEnv, getInternalApiSecret, getPort, health, log, stableIdempotencyKey, validateServiceEnvironment } from "@myclient/common";
 
 type RequestHeaders = Record<string, string | string[] | undefined>;
 
@@ -162,8 +162,10 @@ class VoiceController {
 class VoiceModule {}
 
 async function bootstrap() {
+  validateServiceEnvironment("voice");
   const adapter = new FastifyAdapter();
   const app = await NestFactory.create<NestFastifyApplication>(VoiceModule, adapter);
+  app.enableShutdownHooks();
   configureHttpObservability(adapter.getInstance(), "voice");
   adapter.getInstance().addContentTypeParser(
     ["audio/mp4", "audio/m4a", "audio/aac", "application/octet-stream"],

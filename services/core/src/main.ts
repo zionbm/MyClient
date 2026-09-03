@@ -9,7 +9,7 @@ import {
 import { NestFactory } from "@nestjs/core";
 import { FastifyAdapter, type NestFastifyApplication } from "@nestjs/platform-fastify";
 import { Prisma } from "@prisma/client";
-import { ApiExceptionFilter, configureHttpObservability, getPort, log, stableIdempotencyKey } from "@myclient/common";
+import { ApiExceptionFilter, configureHttpObservability, getPort, log, stableIdempotencyKey, validateServiceEnvironment } from "@myclient/common";
 import {
   CreateTaskFromCallSchema,
   CreateCallTranscriptSchema,
@@ -382,8 +382,10 @@ const {
 class CoreModule {}
 
 async function bootstrap() {
+  validateServiceEnvironment("core");
   const adapter = new FastifyAdapter();
   const app = await NestFactory.create<NestFastifyApplication>(CoreModule, adapter);
+  app.enableShutdownHooks();
   configureHttpObservability(adapter.getInstance(), "core");
   app.useGlobalFilters(new ApiExceptionFilter("core"));
   const port = getPort("CORE_PORT", 3000);

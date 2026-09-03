@@ -2,7 +2,7 @@ import "reflect-metadata";
 import { Body, Controller, Get, Headers, Module, Post, UnauthorizedException } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { FastifyAdapter, type NestFastifyApplication } from "@nestjs/platform-fastify";
-import { ApiExceptionFilter, cloudRunServiceAuthHeaders, getEnv, getInternalApiSecret, getPort, health, log } from "@myclient/common";
+import { ApiExceptionFilter, cloudRunServiceAuthHeaders, configureHttpObservability, getEnv, getInternalApiSecret, getPort, health, log, validateServiceEnvironment } from "@myclient/common";
 
 type RequestHeaders = Record<string, string | string[] | undefined>;
 
@@ -142,7 +142,11 @@ class WorkerController {
 class WorkerModule {}
 
 async function bootstrap() {
-  const app = await NestFactory.create<NestFastifyApplication>(WorkerModule, new FastifyAdapter());
+  validateServiceEnvironment("worker");
+  const adapter = new FastifyAdapter();
+  const app = await NestFactory.create<NestFastifyApplication>(WorkerModule, adapter);
+  app.enableShutdownHooks();
+  configureHttpObservability(adapter.getInstance(), "worker");
   app.useGlobalFilters(new ApiExceptionFilter("worker"));
   const port = getPort("WORKER_PORT", 3004);
   await app.listen(port, "0.0.0.0");

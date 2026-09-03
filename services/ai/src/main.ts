@@ -2,7 +2,7 @@ import "reflect-metadata";
 import { BadGatewayException, Body, Controller, Get, Headers, Module, Post, UnauthorizedException } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { FastifyAdapter, type NestFastifyApplication } from "@nestjs/platform-fastify";
-import { ApiExceptionFilter, configureHttpObservability, getEnv, getInternalApiSecret, getPort, health, log } from "@myclient/common";
+import { ApiExceptionFilter, configureHttpObservability, getEnv, getInternalApiSecret, getPort, health, log, validateServiceEnvironment } from "@myclient/common";
 import {
   AssistantPlanSchema,
   type AssistantPlan
@@ -223,8 +223,10 @@ class AiController {
 class AiModule {}
 
 async function bootstrap() {
+  validateServiceEnvironment("ai");
   const adapter = new FastifyAdapter();
   const app = await NestFactory.create<NestFastifyApplication>(AiModule, adapter);
+  app.enableShutdownHooks();
   configureHttpObservability(adapter.getInstance(), "ai");
   app.useGlobalFilters(new ApiExceptionFilter("ai"));
   const port = getPort("AI_PORT", 3001);

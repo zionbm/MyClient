@@ -2,7 +2,7 @@ import "reflect-metadata";
 import { BadGatewayException, Body, Controller, Get, Module, Post } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { FastifyAdapter, type NestFastifyApplication } from "@nestjs/platform-fastify";
-import { ApiExceptionFilter, cloudRunServiceAuthHeaders, getEnv, getInternalApiSecret, getPort, health, log, stableIdempotencyKey } from "@myclient/common";
+import { ApiExceptionFilter, cloudRunServiceAuthHeaders, configureHttpObservability, getEnv, getInternalApiSecret, getPort, health, log, stableIdempotencyKey, validateServiceEnvironment } from "@myclient/common";
 import type { CreateTaskFromCall } from "@myclient/contracts";
 
 type IvrDigit = "1" | "2" | "3";
@@ -220,7 +220,11 @@ class TelephonyController {
 class TelephonyModule {}
 
 async function bootstrap() {
-  const app = await NestFactory.create<NestFastifyApplication>(TelephonyModule, new FastifyAdapter());
+  validateServiceEnvironment("telephony");
+  const adapter = new FastifyAdapter();
+  const app = await NestFactory.create<NestFastifyApplication>(TelephonyModule, adapter);
+  app.enableShutdownHooks();
+  configureHttpObservability(adapter.getInstance(), "telephony");
   app.useGlobalFilters(new ApiExceptionFilter("telephony"));
   const port = getPort("TELEPHONY_PORT", 3003);
   await app.listen(port, "0.0.0.0");
