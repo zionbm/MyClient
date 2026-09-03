@@ -31,7 +31,7 @@
     "@nestjs/core": "^11.1.6",
     "@nestjs/platform-fastify": "^11.1.6",
     "@prisma/client": "6.12.0",
-    "fastify": "^5.4.0",
+    "fastify": "5.12.1",
     "firebase-admin": "^14.3.0",
     "google-auth-library": "^11.0.2",
     "reflect-metadata": "^0.2.2",
@@ -48,6 +48,9 @@
     "tsx": "^4.20.4",
     "typescript": "^5.9.2",
     "typescript-eslint": "^8.69.0"
+  },
+  "overrides": {
+    "fastify": "$fastify"
   },
   "engines": {
     "node": ">=24"
