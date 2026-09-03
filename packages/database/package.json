@@ -10,6 +10,6 @@
     "check": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@prisma/client": "^6.14.0"
+    "@prisma/client": "6.12.0"
   }
 }
