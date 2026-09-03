@@ -1,60 +1,34 @@
 import "reflect-metadata";
-import {
-  BadRequestException,
-  Injectable,
-  Inject,
-  Module,
-  NotFoundException
-} from "@nestjs/common";
+import { BadRequestException, Injectable, Inject, Module, NotFoundException } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { FastifyAdapter, type NestFastifyApplication } from "@nestjs/platform-fastify";
 import { Prisma } from "@prisma/client";
-import { ApiExceptionFilter, configureHttpObservability, getPort, log, stableIdempotencyKey, validateServiceEnvironment } from "@myclient/common";
 import {
-  CreateTaskFromCallSchema,
-  CreateCallTranscriptSchema,
-  CreateIncomingCallSchema,
-} from "@myclient/contracts";
+  ApiExceptionFilter,
+  configureHttpObservability,
+  getPort,
+  log,
+  stableIdempotencyKey,
+  validateServiceEnvironment
+} from "@myclient/common";
+import { CreateTaskFromCallSchema, CreateCallTranscriptSchema, CreateIncomingCallSchema } from "@myclient/contracts";
 import {
-  AuthRepository,
   AuditRepository,
-  BusinessMembersRepository,
-  BusinessesRepository,
   BusinessPhoneNumbersRepository,
   BusinessSettingsRepository,
   CallTranscriptsRepository,
-  DeviceTokensRepository,
   IncomingCallsRepository,
   NotificationsRepository,
-  AiPendingActionsRepository,
-  ActionBatchesRepository,
-  AssistantSessionsRepository,
-  UserPreferencesRepository,
-  V2CustomerPhonesRepository,
-  V2CustomersRepository,
-  V2NotesRepository,
-  V2ServiceAddressesRepository,
-  V2TasksRepository,
-  V2ActivitiesRepository,
-  V2AmountsRepository,
+  V2TasksRepository
 } from "./core.repositories.js";
-import { PrismaService } from "./prisma.service.js";
 import { CoreAccessService } from "./core-access.service.js";
 import { CoreNotificationsService } from "./core-notifications.service.js";
-import { CoreNotificationsApplicationService } from "./core-notifications-application.service.js";
-import { CoreAiInternalClient, CoreVoiceInternalClient } from "./core-internal-clients.service.js";
-import { CoreBusinessApplicationService } from "./core-business-application.service.js";
-import { CoreOpenAiRealtimeClient } from "./core-openai-realtime-client.service.js";
-import { CoreCallsService } from "./core-calls.service.js";
-import { CoreV2CustomersService } from "./core-v2-customers.service.js";
-import { CoreV2IdempotencyService } from "./core-v2-idempotency.service.js";
-import { CoreV2TasksService } from "./core-v2-tasks.service.js";
-import { CoreV2AssistantService } from "./core-v2-assistant.service.js";
-import { CoreV2ActivitiesService } from "./core-v2-activities.service.js";
-import { CoreV2SearchService } from "./core-v2-search.service.js";
-import { CoreV2AmountsService } from "./core-v2-amounts.service.js";
-import { CoreV2ActionBatchesService } from "./core-v2-action-batches.service.js";
-import { CoreV2NotesService } from "./core-v2-notes.service.js";
+import {
+  CoreApplicationModule,
+  CoreInfrastructureModule,
+  CorePersistenceModule,
+  CoreV2Module
+} from "./core.modules.js";
 import {
   buildReminderFromCallDescription,
   buildReminderNotificationBody,
@@ -85,7 +59,10 @@ export class CoreService {
       throw new NotFoundException("Business phone number not found");
     }
 
-    const selectedDigit = command.selectedDigit === "1" || command.selectedDigit === "2" || command.selectedDigit === "3" ? command.selectedDigit : undefined;
+    const selectedDigit =
+      command.selectedDigit === "1" || command.selectedDigit === "2" || command.selectedDigit === "3"
+        ? command.selectedDigit
+        : undefined;
     const callerIdAvailable = Boolean(command.fromNumber);
     const status = selectedDigit === "1" ? "CALLBACK_REQUESTED" : selectedDigit ? "RECORDING_REQUESTED" : "MENU_PLAYED";
     const incomingCall = await this.incomingCalls.createOrUpdate({
@@ -168,7 +145,10 @@ export class CoreService {
       recordingUrl: command.recordingUrl,
       priority: command.urgent || incomingCall.urgent ? "URGENT" : "NORMAL",
       sourceCallId: incomingCall.plivoCallId,
-      idempotencyKey: stableIdempotencyKey("plivo_recording", `${incomingCall.plivoCallId}:${command.urgent || incomingCall.urgent ? "urgent" : "normal"}`)
+      idempotencyKey: stableIdempotencyKey(
+        "plivo_recording",
+        `${incomingCall.plivoCallId}:${command.urgent || incomingCall.urgent ? "urgent" : "normal"}`
+      )
     });
     const transcript = await this.callTranscripts.create({
       businessId: incomingCall.businessId,
@@ -301,7 +281,6 @@ export class CoreService {
     });
     return { duplicate: false, task, notification: notificationDelivery.notification, notificationDelivery };
   }
-
 }
 
 const {
@@ -321,6 +300,7 @@ const {
 } = await import("./core.controllers.js");
 
 @Module({
+  imports: [CorePersistenceModule, CoreInfrastructureModule, CoreV2Module, CoreApplicationModule],
   controllers: [
     SystemController,
     InternalController,
@@ -335,49 +315,7 @@ const {
     V2TasksController,
     NotificationsController
   ],
-  providers: [
-    PrismaService,
-    AuditRepository,
-    AuthRepository,
-    BusinessMembersRepository,
-    BusinessesRepository,
-    BusinessSettingsRepository,
-    BusinessPhoneNumbersRepository,
-    IncomingCallsRepository,
-    CallTranscriptsRepository,
-    NotificationsRepository,
-    DeviceTokensRepository,
-    AiPendingActionsRepository,
-    ActionBatchesRepository,
-    AssistantSessionsRepository,
-    UserPreferencesRepository,
-    V2CustomersRepository,
-    V2NotesRepository,
-    V2CustomerPhonesRepository,
-    V2ServiceAddressesRepository,
-    V2TasksRepository,
-    V2ActivitiesRepository,
-    V2AmountsRepository,
-    CoreAccessService,
-    CoreAiInternalClient,
-    CoreVoiceInternalClient,
-    CoreNotificationsService,
-    CoreOpenAiRealtimeClient,
-    CoreBusinessApplicationService,
-    CoreV2IdempotencyService,
-    CoreV2CustomersService,
-    CoreV2NotesService,
-    CoreV2TasksService,
-    CoreV2AssistantService,
-    CoreV2ActivitiesService,
-    CoreV2SearchService,
-    CoreV2AmountsService,
-    CoreV2ActionBatchesService,
-    CoreCallsService,
-    CoreNotificationsApplicationService,
-    CoreService,
-    { provide: CORE_SERVICE, useExisting: CoreService }
-  ]
+  providers: [CoreService, { provide: CORE_SERVICE, useExisting: CoreService }]
 })
 class CoreModule {}
 

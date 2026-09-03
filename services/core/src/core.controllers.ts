@@ -1,4 +1,4 @@
-import { Controller, Delete, Get, Inject, Patch, Post, Put, Req, type Type } from "@nestjs/common";
+import { Controller, Delete, Get, Inject, Patch, Post, Put, Req } from "@nestjs/common";
 import type { FastifyRequest } from "fastify";
 import type { CoreService } from "./main.js";
 import { CoreNotificationsApplicationService } from "./core-notifications-application.service.js";
@@ -15,18 +15,6 @@ import { CoreV2NotesService } from "./core-v2-notes.service.js";
 
 export const CORE_SERVICE = Symbol("CORE_SERVICE");
 
-type RouteMethod = "get" | "post" | "put" | "patch" | "delete";
-type Delegate<T> = (core: T, request: FastifyRequest) => unknown;
-
-type RouteDefinition<T> = {
-  name: string;
-  method: RouteMethod;
-  path: string;
-  delegate: Delegate<T>;
-};
-
-type CoreControllerType<T> = Type<{ core: T }>;
-
 function headers(request: FastifyRequest) {
   return request.headers;
 }
@@ -35,211 +23,575 @@ function params(request: FastifyRequest) {
   return request.params as Record<string, string>;
 }
 
-function routeDecorator(method: RouteMethod) {
-  return { get: Get, post: Post, put: Put, patch: Patch, delete: Delete }[method];
-}
+@Controller()
+export class SystemController {
+  constructor(@Inject(CoreBusinessApplicationService) private readonly core: CoreBusinessApplicationService) {}
 
-function defineRoutes<T>(controller: CoreControllerType<T>, routes: RouteDefinition<T>[]) {
-  for (const route of routes) {
-    Object.defineProperty(controller.prototype, route.name, {
-      configurable: true,
-      value(this: { core: T }, request: FastifyRequest) {
-        return route.delegate(this.core, request);
-      }
-    });
-    const descriptor = Object.getOwnPropertyDescriptor(controller.prototype, route.name);
-    if (!descriptor) {
-      throw new Error(`Route handler was not defined: ${route.name}`);
-    }
-    routeDecorator(route.method)(route.path)(controller.prototype, route.name, descriptor);
-    Req()(controller.prototype, route.name, 0);
+  @Get("health")
+  health() {
+    return this.core.health();
+  }
+
+  @Post("auth/register-business")
+  registerBusiness(@Req() request: FastifyRequest) {
+    return this.core.registerBusiness(headers(request), request.body);
+  }
+
+  @Get("auth/me")
+  me(@Req() request: FastifyRequest) {
+    return this.core.me(headers(request));
+  }
+
+  @Get("businesses/:businessId/settings")
+  getSettings(@Req() request: FastifyRequest) {
+    return this.core.getSettings(headers(request), params(request).businessId);
+  }
+
+  @Patch("businesses/:businessId/settings")
+  updateSettings(@Req() request: FastifyRequest) {
+    return this.core.updateSettings(headers(request), params(request).businessId, request.body);
+  }
+
+  @Get("businesses/:businessId/members")
+  listMembers(@Req() request: FastifyRequest) {
+    return this.core.listMembers(headers(request), params(request).businessId);
+  }
+
+  @Post("businesses/:businessId/members")
+  createMember(@Req() request: FastifyRequest) {
+    return this.core.createMember(headers(request), params(request).businessId, request.body);
+  }
+
+  @Post("businesses/:businessId/members/:memberId/disable")
+  disableMember(@Req() request: FastifyRequest) {
+    return this.core.disableMember(headers(request), params(request).businessId, params(request).memberId);
+  }
+
+  @Get("businesses/:businessId/phone-numbers")
+  listPhoneNumbers(@Req() request: FastifyRequest) {
+    return this.core.listPhoneNumbers(headers(request), params(request).businessId);
+  }
+
+  @Post("businesses/:businessId/phone-numbers")
+  createPhoneNumber(@Req() request: FastifyRequest) {
+    return this.core.createPhoneNumber(headers(request), params(request).businessId, request.body);
+  }
+
+  @Patch("businesses/:businessId/phone-numbers/:phoneNumberId")
+  updatePhoneNumber(@Req() request: FastifyRequest) {
+    return this.core.updatePhoneNumber(
+      headers(request),
+      params(request).businessId,
+      params(request).phoneNumberId,
+      request.body
+    );
   }
 }
 
 @Controller()
-export class SystemController {
-  constructor(@Inject(CoreBusinessApplicationService) readonly core: CoreBusinessApplicationService) {}
-}
-
-defineRoutes(SystemController, [
-  { name: "health", method: "get", path: "health", delegate: (core) => core.health() },
-  { name: "registerBusiness", method: "post", path: "auth/register-business", delegate: (core, request) => core.registerBusiness(headers(request), request.body) },
-  { name: "me", method: "get", path: "auth/me", delegate: (core, request) => core.me(headers(request)) },
-  { name: "getSettings", method: "get", path: "businesses/:businessId/settings", delegate: (core, request) => core.getSettings(headers(request), params(request).businessId) },
-  { name: "updateSettings", method: "patch", path: "businesses/:businessId/settings", delegate: (core, request) => core.updateSettings(headers(request), params(request).businessId, request.body) },
-  { name: "listMembers", method: "get", path: "businesses/:businessId/members", delegate: (core, request) => core.listMembers(headers(request), params(request).businessId) },
-  { name: "createMember", method: "post", path: "businesses/:businessId/members", delegate: (core, request) => core.createMember(headers(request), params(request).businessId, request.body) },
-  { name: "disableMember", method: "post", path: "businesses/:businessId/members/:memberId/disable", delegate: (core, request) => core.disableMember(headers(request), params(request).businessId, params(request).memberId) },
-  { name: "listPhoneNumbers", method: "get", path: "businesses/:businessId/phone-numbers", delegate: (core, request) => core.listPhoneNumbers(headers(request), params(request).businessId) },
-  { name: "createPhoneNumber", method: "post", path: "businesses/:businessId/phone-numbers", delegate: (core, request) => core.createPhoneNumber(headers(request), params(request).businessId, request.body) },
-  { name: "updatePhoneNumber", method: "patch", path: "businesses/:businessId/phone-numbers/:phoneNumberId", delegate: (core, request) => core.updatePhoneNumber(headers(request), params(request).businessId, params(request).phoneNumberId, request.body) }
-]);
-
-@Controller()
 export class InternalController {
-  constructor(@Inject(CORE_SERVICE) readonly core: CoreService) {}
-}
+  constructor(@Inject(CORE_SERVICE) private readonly core: CoreService) {}
 
-defineRoutes(InternalController, [
-  { name: "createIncomingCall", method: "post", path: "internal/telephony/incoming", delegate: (core, request) => core.createIncomingCall(headers(request), request.body) },
-  { name: "createCallTranscript", method: "post", path: "internal/telephony/recording", delegate: (core, request) => core.createCallTranscript(headers(request), request.body) },
-  { name: "createTaskFromCall", method: "post", path: "internal/tasks/from-call", delegate: (core, request) => core.createTaskFromCall(headers(request), request.body) },
-  { name: "processDueTasks", method: "post", path: "internal/tasks/due", delegate: (core, request) => core.processDueTasks(headers(request), request.body) }
-]);
+  @Post("internal/telephony/incoming")
+  createIncomingCall(@Req() request: FastifyRequest) {
+    return this.core.createIncomingCall(headers(request), request.body);
+  }
+
+  @Post("internal/telephony/recording")
+  createCallTranscript(@Req() request: FastifyRequest) {
+    return this.core.createCallTranscript(headers(request), request.body);
+  }
+
+  @Post("internal/tasks/from-call")
+  createTaskFromCall(@Req() request: FastifyRequest) {
+    return this.core.createTaskFromCall(headers(request), request.body);
+  }
+
+  @Post("internal/tasks/due")
+  processDueTasks(@Req() request: FastifyRequest) {
+    return this.core.processDueTasks(headers(request), request.body);
+  }
+}
 
 @Controller()
 export class CallsController {
-  constructor(@Inject(CoreCallsService) readonly core: CoreCallsService) {}
-}
+  constructor(@Inject(CoreCallsService) private readonly core: CoreCallsService) {}
 
-defineRoutes(CallsController, [
-  { name: "list", method: "get", path: "v2/businesses/:businessId/calls", delegate: (core, request) => core.list(headers(request), params(request).businessId, request.query) }
-]);
+  @Get("v2/businesses/:businessId/calls")
+  list(@Req() request: FastifyRequest) {
+    return this.core.list(headers(request), params(request).businessId, request.query);
+  }
+}
 
 @Controller()
 export class V2CustomersController {
-  constructor(@Inject(CoreV2CustomersService) readonly core: CoreV2CustomersService) {}
-}
+  constructor(@Inject(CoreV2CustomersService) private readonly core: CoreV2CustomersService) {}
 
-defineRoutes(V2CustomersController, [
-  { name: "createCustomer", method: "post", path: "v2/businesses/:businessId/customers", delegate: (core, request) => core.createCustomer(headers(request), params(request).businessId, request.body) },
-  { name: "listCustomers", method: "get", path: "v2/businesses/:businessId/customers", delegate: (core, request) => core.listCustomers(headers(request), params(request).businessId, request.query) },
-  { name: "getCustomer", method: "get", path: "v2/businesses/:businessId/customers/:customerId", delegate: (core, request) => core.getCustomer(headers(request), params(request).businessId, params(request).customerId) },
-  { name: "updateCustomer", method: "patch", path: "v2/businesses/:businessId/customers/:customerId", delegate: (core, request) => core.updateCustomer(headers(request), params(request).businessId, params(request).customerId, request.body) },
-  { name: "deleteCustomer", method: "delete", path: "v2/businesses/:businessId/customers/:customerId", delegate: (core, request) => core.deleteCustomer(headers(request), params(request).businessId, params(request).customerId, request.body) },
-  { name: "restoreCustomer", method: "post", path: "v2/businesses/:businessId/customers/:customerId/restore", delegate: (core, request) => core.restoreCustomer(headers(request), params(request).businessId, params(request).customerId, request.body) },
-  { name: "mergeCustomer", method: "post", path: "v2/businesses/:businessId/customers/:customerId/merge", delegate: (core, request) => core.mergeCustomer(headers(request), params(request).businessId, params(request).customerId, request.body) },
-  { name: "createPhone", method: "post", path: "v2/businesses/:businessId/customers/:customerId/phones", delegate: (core, request) => core.createPhone(headers(request), params(request).businessId, params(request).customerId, request.body) },
-  { name: "updatePhone", method: "patch", path: "v2/businesses/:businessId/customers/:customerId/phones/:phoneId", delegate: (core, request) => core.updatePhone(headers(request), params(request).businessId, params(request).customerId, params(request).phoneId, request.body) },
-  { name: "deletePhone", method: "delete", path: "v2/businesses/:businessId/customers/:customerId/phones/:phoneId", delegate: (core, request) => core.deletePhone(headers(request), params(request).businessId, params(request).customerId, params(request).phoneId) },
-  { name: "createAddress", method: "post", path: "v2/businesses/:businessId/customers/:customerId/addresses", delegate: (core, request) => core.createAddress(headers(request), params(request).businessId, params(request).customerId, request.body) },
-  { name: "updateAddress", method: "patch", path: "v2/businesses/:businessId/customers/:customerId/addresses/:addressId", delegate: (core, request) => core.updateAddress(headers(request), params(request).businessId, params(request).customerId, params(request).addressId, request.body) },
-  { name: "deleteAddress", method: "delete", path: "v2/businesses/:businessId/customers/:customerId/addresses/:addressId", delegate: (core, request) => core.deleteAddress(headers(request), params(request).businessId, params(request).customerId, params(request).addressId) }
-]);
+  @Post("v2/businesses/:businessId/customers")
+  createCustomer(@Req() request: FastifyRequest) {
+    return this.core.createCustomer(headers(request), params(request).businessId, request.body);
+  }
+  @Get("v2/businesses/:businessId/customers")
+  listCustomers(@Req() request: FastifyRequest) {
+    return this.core.listCustomers(headers(request), params(request).businessId, request.query);
+  }
+  @Get("v2/businesses/:businessId/customers/:customerId")
+  getCustomer(@Req() request: FastifyRequest) {
+    return this.core.getCustomer(headers(request), params(request).businessId, params(request).customerId);
+  }
+  @Patch("v2/businesses/:businessId/customers/:customerId")
+  updateCustomer(@Req() request: FastifyRequest) {
+    return this.core.updateCustomer(
+      headers(request),
+      params(request).businessId,
+      params(request).customerId,
+      request.body
+    );
+  }
+  @Delete("v2/businesses/:businessId/customers/:customerId")
+  deleteCustomer(@Req() request: FastifyRequest) {
+    return this.core.deleteCustomer(
+      headers(request),
+      params(request).businessId,
+      params(request).customerId,
+      request.body
+    );
+  }
+  @Post("v2/businesses/:businessId/customers/:customerId/restore")
+  restoreCustomer(@Req() request: FastifyRequest) {
+    return this.core.restoreCustomer(
+      headers(request),
+      params(request).businessId,
+      params(request).customerId,
+      request.body
+    );
+  }
+  @Post("v2/businesses/:businessId/customers/:customerId/merge")
+  mergeCustomer(@Req() request: FastifyRequest) {
+    return this.core.mergeCustomer(
+      headers(request),
+      params(request).businessId,
+      params(request).customerId,
+      request.body
+    );
+  }
+  @Post("v2/businesses/:businessId/customers/:customerId/phones")
+  createPhone(@Req() request: FastifyRequest) {
+    return this.core.createPhone(
+      headers(request),
+      params(request).businessId,
+      params(request).customerId,
+      request.body
+    );
+  }
+  @Patch("v2/businesses/:businessId/customers/:customerId/phones/:phoneId")
+  updatePhone(@Req() request: FastifyRequest) {
+    return this.core.updatePhone(
+      headers(request),
+      params(request).businessId,
+      params(request).customerId,
+      params(request).phoneId,
+      request.body
+    );
+  }
+  @Delete("v2/businesses/:businessId/customers/:customerId/phones/:phoneId")
+  deletePhone(@Req() request: FastifyRequest) {
+    return this.core.deletePhone(
+      headers(request),
+      params(request).businessId,
+      params(request).customerId,
+      params(request).phoneId
+    );
+  }
+  @Post("v2/businesses/:businessId/customers/:customerId/addresses")
+  createAddress(@Req() request: FastifyRequest) {
+    return this.core.createAddress(
+      headers(request),
+      params(request).businessId,
+      params(request).customerId,
+      request.body
+    );
+  }
+  @Patch("v2/businesses/:businessId/customers/:customerId/addresses/:addressId")
+  updateAddress(@Req() request: FastifyRequest) {
+    return this.core.updateAddress(
+      headers(request),
+      params(request).businessId,
+      params(request).customerId,
+      params(request).addressId,
+      request.body
+    );
+  }
+  @Delete("v2/businesses/:businessId/customers/:customerId/addresses/:addressId")
+  deleteAddress(@Req() request: FastifyRequest) {
+    return this.core.deleteAddress(
+      headers(request),
+      params(request).businessId,
+      params(request).customerId,
+      params(request).addressId
+    );
+  }
+}
 
 @Controller()
 export class V2NotesController {
-  constructor(@Inject(CoreV2NotesService) readonly core: CoreV2NotesService) {}
-}
+  constructor(@Inject(CoreV2NotesService) private readonly core: CoreV2NotesService) {}
 
-defineRoutes(V2NotesController, [
-  { name: "createNote", method: "post", path: "v2/businesses/:businessId/customers/:customerId/notes", delegate: (core, request) => core.create(headers(request), params(request).businessId, params(request).customerId, request.body) },
-  { name: "updateNote", method: "patch", path: "v2/businesses/:businessId/customers/:customerId/notes/:noteId", delegate: (core, request) => core.update(headers(request), params(request).businessId, params(request).customerId, params(request).noteId, request.body) },
-  { name: "deleteNote", method: "delete", path: "v2/businesses/:businessId/customers/:customerId/notes/:noteId", delegate: (core, request) => core.delete(headers(request), params(request).businessId, params(request).customerId, params(request).noteId) }
-]);
+  @Post("v2/businesses/:businessId/customers/:customerId/notes")
+  createNote(@Req() request: FastifyRequest) {
+    return this.core.create(headers(request), params(request).businessId, params(request).customerId, request.body);
+  }
+  @Patch("v2/businesses/:businessId/customers/:customerId/notes/:noteId")
+  updateNote(@Req() request: FastifyRequest) {
+    return this.core.update(
+      headers(request),
+      params(request).businessId,
+      params(request).customerId,
+      params(request).noteId,
+      request.body
+    );
+  }
+  @Delete("v2/businesses/:businessId/customers/:customerId/notes/:noteId")
+  deleteNote(@Req() request: FastifyRequest) {
+    return this.core.delete(
+      headers(request),
+      params(request).businessId,
+      params(request).customerId,
+      params(request).noteId
+    );
+  }
+}
 
 @Controller()
 export class V2TasksController {
-  constructor(@Inject(CoreV2TasksService) readonly core: CoreV2TasksService) {}
-}
+  constructor(@Inject(CoreV2TasksService) private readonly core: CoreV2TasksService) {}
 
-defineRoutes(V2TasksController, [
-  { name: "createTask", method: "post", path: "v2/businesses/:businessId/tasks", delegate: (core, request) => core.createTask(headers(request), params(request).businessId, request.body) },
-  { name: "listTasks", method: "get", path: "v2/businesses/:businessId/tasks", delegate: (core, request) => core.listTasks(headers(request), params(request).businessId, request.query) },
-  { name: "getTask", method: "get", path: "v2/businesses/:businessId/tasks/:taskId", delegate: (core, request) => core.getTask(headers(request), params(request).businessId, params(request).taskId) },
-  { name: "updateTask", method: "patch", path: "v2/businesses/:businessId/tasks/:taskId", delegate: (core, request) => core.updateTask(headers(request), params(request).businessId, params(request).taskId, request.body) },
-  { name: "deleteTask", method: "delete", path: "v2/businesses/:businessId/tasks/:taskId", delegate: (core, request) => core.deleteTask(headers(request), params(request).businessId, params(request).taskId) },
-  { name: "completeTask", method: "post", path: "v2/businesses/:businessId/tasks/:taskId/complete", delegate: (core, request) => core.completeTask(headers(request), params(request).businessId, params(request).taskId) },
-  { name: "cancelTask", method: "post", path: "v2/businesses/:businessId/tasks/:taskId/cancel", delegate: (core, request) => core.cancelTask(headers(request), params(request).businessId, params(request).taskId) },
-  { name: "reopenTask", method: "post", path: "v2/businesses/:businessId/tasks/:taskId/reopen", delegate: (core, request) => core.reopenTask(headers(request), params(request).businessId, params(request).taskId) }
-]);
+  @Post("v2/businesses/:businessId/tasks")
+  createTask(@Req() request: FastifyRequest) {
+    return this.core.createTask(headers(request), params(request).businessId, request.body);
+  }
+  @Get("v2/businesses/:businessId/tasks")
+  listTasks(@Req() request: FastifyRequest) {
+    return this.core.listTasks(headers(request), params(request).businessId, request.query);
+  }
+  @Get("v2/businesses/:businessId/tasks/:taskId")
+  getTask(@Req() request: FastifyRequest) {
+    return this.core.getTask(headers(request), params(request).businessId, params(request).taskId);
+  }
+  @Patch("v2/businesses/:businessId/tasks/:taskId")
+  updateTask(@Req() request: FastifyRequest) {
+    return this.core.updateTask(headers(request), params(request).businessId, params(request).taskId, request.body);
+  }
+  @Delete("v2/businesses/:businessId/tasks/:taskId")
+  deleteTask(@Req() request: FastifyRequest) {
+    return this.core.deleteTask(headers(request), params(request).businessId, params(request).taskId);
+  }
+  @Post("v2/businesses/:businessId/tasks/:taskId/complete")
+  completeTask(@Req() request: FastifyRequest) {
+    return this.core.completeTask(headers(request), params(request).businessId, params(request).taskId);
+  }
+  @Post("v2/businesses/:businessId/tasks/:taskId/cancel")
+  cancelTask(@Req() request: FastifyRequest) {
+    return this.core.cancelTask(headers(request), params(request).businessId, params(request).taskId);
+  }
+  @Post("v2/businesses/:businessId/tasks/:taskId/reopen")
+  reopenTask(@Req() request: FastifyRequest) {
+    return this.core.reopenTask(headers(request), params(request).businessId, params(request).taskId);
+  }
+}
 
 @Controller()
 export class V2AssistantController {
-  constructor(@Inject(CoreV2AssistantService) readonly core: CoreV2AssistantService) {}
-}
+  constructor(@Inject(CoreV2AssistantService) private readonly core: CoreV2AssistantService) {}
 
-defineRoutes(V2AssistantController, [
-  { name: "createRealtimeSession", method: "post", path: "v2/businesses/:businessId/assistant/realtime-session", delegate: (core, request) => core.createRealtimeSession(headers(request), params(request).businessId) },
-  { name: "createSession", method: "post", path: "v2/businesses/:businessId/assistant/sessions", delegate: (core, request) => core.createSession(headers(request), params(request).businessId, request.body) },
-  { name: "command", method: "post", path: "v2/businesses/:businessId/assistant/sessions/:sessionId/commands", delegate: (core, request) => core.command(headers(request), params(request).businessId, params(request).sessionId, request.body) },
-  { name: "listPending", method: "get", path: "v2/businesses/:businessId/assistant/pending-actions", delegate: (core, request) => core.listPending(headers(request), params(request).businessId, request.query) },
-  { name: "updatePending", method: "patch", path: "v2/businesses/:businessId/assistant/pending-actions/:pendingActionId", delegate: (core, request) => core.updatePending(headers(request), params(request).businessId, params(request).pendingActionId, request.body) },
-  { name: "resolvePending", method: "post", path: "v2/businesses/:businessId/assistant/pending-actions/:pendingActionId/resolve", delegate: (core, request) => core.resolvePending(headers(request), params(request).businessId, params(request).pendingActionId, request.body) },
-  { name: "rejectPending", method: "post", path: "v2/businesses/:businessId/assistant/pending-actions/:pendingActionId/reject", delegate: (core, request) => core.rejectPending(headers(request), params(request).businessId, params(request).pendingActionId) }
-]);
+  @Post("v2/businesses/:businessId/assistant/realtime-session")
+  createRealtimeSession(@Req() request: FastifyRequest) {
+    return this.core.createRealtimeSession(headers(request), params(request).businessId);
+  }
+  @Post("v2/businesses/:businessId/assistant/sessions")
+  createSession(@Req() request: FastifyRequest) {
+    return this.core.createSession(headers(request), params(request).businessId, request.body);
+  }
+  @Post("v2/businesses/:businessId/assistant/sessions/:sessionId/commands")
+  command(@Req() request: FastifyRequest) {
+    return this.core.command(headers(request), params(request).businessId, params(request).sessionId, request.body);
+  }
+  @Get("v2/businesses/:businessId/assistant/pending-actions")
+  listPending(@Req() request: FastifyRequest) {
+    return this.core.listPending(headers(request), params(request).businessId, request.query);
+  }
+  @Patch("v2/businesses/:businessId/assistant/pending-actions/:pendingActionId")
+  updatePending(@Req() request: FastifyRequest) {
+    return this.core.updatePending(
+      headers(request),
+      params(request).businessId,
+      params(request).pendingActionId,
+      request.body
+    );
+  }
+  @Post("v2/businesses/:businessId/assistant/pending-actions/:pendingActionId/resolve")
+  resolvePending(@Req() request: FastifyRequest) {
+    return this.core.resolvePending(
+      headers(request),
+      params(request).businessId,
+      params(request).pendingActionId,
+      request.body
+    );
+  }
+  @Post("v2/businesses/:businessId/assistant/pending-actions/:pendingActionId/reject")
+  rejectPending(@Req() request: FastifyRequest) {
+    return this.core.rejectPending(headers(request), params(request).businessId, params(request).pendingActionId);
+  }
+}
 
 @Controller()
 export class V2ActivitiesController {
-  constructor(@Inject(CoreV2ActivitiesService) readonly core: CoreV2ActivitiesService) {}
-}
+  constructor(@Inject(CoreV2ActivitiesService) private readonly core: CoreV2ActivitiesService) {}
 
-defineRoutes(V2ActivitiesController, [
-  { name: "listJobs", method: "get", path: "v2/businesses/:businessId/jobs", delegate: (core, request) => core.list("job", headers(request), params(request).businessId, request.query) },
-  { name: "createJob", method: "post", path: "v2/businesses/:businessId/jobs", delegate: (core, request) => core.createJob(headers(request), params(request).businessId, request.body) },
-  { name: "getJob", method: "get", path: "v2/businesses/:businessId/jobs/:jobId", delegate: (core, request) => core.get("job", headers(request), params(request).businessId, params(request).jobId) },
-  { name: "updateJob", method: "patch", path: "v2/businesses/:businessId/jobs/:jobId", delegate: (core, request) => core.update("job", headers(request), params(request).businessId, params(request).jobId, request.body) },
-  { name: "deleteJob", method: "delete", path: "v2/businesses/:businessId/jobs/:jobId", delegate: (core, request) => core.delete("job", headers(request), params(request).businessId, params(request).jobId) },
-  { name: "reportJobCompleted", method: "post", path: "v2/businesses/:businessId/jobs/:jobId/report-completed", delegate: (core, request) => core.reportCompleted("job", headers(request), params(request).businessId, params(request).jobId, request.body) },
-  { name: "cancelJob", method: "post", path: "v2/businesses/:businessId/jobs/:jobId/cancel", delegate: (core, request) => core.cancel("job", headers(request), params(request).businessId, params(request).jobId) },
-  { name: "reopenJob", method: "post", path: "v2/businesses/:businessId/jobs/:jobId/reopen", delegate: (core, request) => core.reopen("job", headers(request), params(request).businessId, params(request).jobId) },
-  { name: "listVisits", method: "get", path: "v2/businesses/:businessId/visits", delegate: (core, request) => core.list("visit", headers(request), params(request).businessId, request.query) },
-  { name: "createVisit", method: "post", path: "v2/businesses/:businessId/visits", delegate: (core, request) => core.createVisit(headers(request), params(request).businessId, request.body) },
-  { name: "getVisit", method: "get", path: "v2/businesses/:businessId/visits/:visitId", delegate: (core, request) => core.get("visit", headers(request), params(request).businessId, params(request).visitId) },
-  { name: "updateVisit", method: "patch", path: "v2/businesses/:businessId/visits/:visitId", delegate: (core, request) => core.update("visit", headers(request), params(request).businessId, params(request).visitId, request.body) },
-  { name: "deleteVisit", method: "delete", path: "v2/businesses/:businessId/visits/:visitId", delegate: (core, request) => core.delete("visit", headers(request), params(request).businessId, params(request).visitId) },
-  { name: "reportVisitCompleted", method: "post", path: "v2/businesses/:businessId/visits/:visitId/report-completed", delegate: (core, request) => core.reportCompleted("visit", headers(request), params(request).businessId, params(request).visitId, request.body) },
-  { name: "cancelVisit", method: "post", path: "v2/businesses/:businessId/visits/:visitId/cancel", delegate: (core, request) => core.cancel("visit", headers(request), params(request).businessId, params(request).visitId) },
-  { name: "reopenVisit", method: "post", path: "v2/businesses/:businessId/visits/:visitId/reopen", delegate: (core, request) => core.reopen("visit", headers(request), params(request).businessId, params(request).visitId) },
-  { name: "schedule", method: "get", path: "v2/businesses/:businessId/schedule", delegate: (core, request) => core.schedule(headers(request), params(request).businessId, request.query) },
-  { name: "completed", method: "get", path: "v2/businesses/:businessId/completed", delegate: (core, request) => core.completed(headers(request), params(request).businessId, request.query) },
-  { name: "availability", method: "get", path: "v2/businesses/:businessId/availability", delegate: (core, request) => core.availability(headers(request), params(request).businessId, request.query) },
-  { name: "customerTimeline", method: "get", path: "v2/businesses/:businessId/customers/:customerId/timeline", delegate: (core, request) => core.customerTimeline(headers(request), params(request).businessId, params(request).customerId) }
-]);
+  @Get("v2/businesses/:businessId/jobs")
+  listJobs(@Req() request: FastifyRequest) {
+    return this.core.list("job", headers(request), params(request).businessId, request.query);
+  }
+  @Post("v2/businesses/:businessId/jobs")
+  createJob(@Req() request: FastifyRequest) {
+    return this.core.createJob(headers(request), params(request).businessId, request.body);
+  }
+  @Get("v2/businesses/:businessId/jobs/:jobId")
+  getJob(@Req() request: FastifyRequest) {
+    return this.core.get("job", headers(request), params(request).businessId, params(request).jobId);
+  }
+  @Patch("v2/businesses/:businessId/jobs/:jobId")
+  updateJob(@Req() request: FastifyRequest) {
+    return this.core.update("job", headers(request), params(request).businessId, params(request).jobId, request.body);
+  }
+  @Delete("v2/businesses/:businessId/jobs/:jobId")
+  deleteJob(@Req() request: FastifyRequest) {
+    return this.core.delete("job", headers(request), params(request).businessId, params(request).jobId);
+  }
+  @Post("v2/businesses/:businessId/jobs/:jobId/report-completed")
+  reportJobCompleted(@Req() request: FastifyRequest) {
+    return this.core.reportCompleted(
+      "job",
+      headers(request),
+      params(request).businessId,
+      params(request).jobId,
+      request.body
+    );
+  }
+  @Post("v2/businesses/:businessId/jobs/:jobId/cancel")
+  cancelJob(@Req() request: FastifyRequest) {
+    return this.core.cancel("job", headers(request), params(request).businessId, params(request).jobId);
+  }
+  @Post("v2/businesses/:businessId/jobs/:jobId/reopen")
+  reopenJob(@Req() request: FastifyRequest) {
+    return this.core.reopen("job", headers(request), params(request).businessId, params(request).jobId);
+  }
+  @Get("v2/businesses/:businessId/visits")
+  listVisits(@Req() request: FastifyRequest) {
+    return this.core.list("visit", headers(request), params(request).businessId, request.query);
+  }
+  @Post("v2/businesses/:businessId/visits")
+  createVisit(@Req() request: FastifyRequest) {
+    return this.core.createVisit(headers(request), params(request).businessId, request.body);
+  }
+  @Get("v2/businesses/:businessId/visits/:visitId")
+  getVisit(@Req() request: FastifyRequest) {
+    return this.core.get("visit", headers(request), params(request).businessId, params(request).visitId);
+  }
+  @Patch("v2/businesses/:businessId/visits/:visitId")
+  updateVisit(@Req() request: FastifyRequest) {
+    return this.core.update(
+      "visit",
+      headers(request),
+      params(request).businessId,
+      params(request).visitId,
+      request.body
+    );
+  }
+  @Delete("v2/businesses/:businessId/visits/:visitId")
+  deleteVisit(@Req() request: FastifyRequest) {
+    return this.core.delete("visit", headers(request), params(request).businessId, params(request).visitId);
+  }
+  @Post("v2/businesses/:businessId/visits/:visitId/report-completed")
+  reportVisitCompleted(@Req() request: FastifyRequest) {
+    return this.core.reportCompleted(
+      "visit",
+      headers(request),
+      params(request).businessId,
+      params(request).visitId,
+      request.body
+    );
+  }
+  @Post("v2/businesses/:businessId/visits/:visitId/cancel")
+  cancelVisit(@Req() request: FastifyRequest) {
+    return this.core.cancel("visit", headers(request), params(request).businessId, params(request).visitId);
+  }
+  @Post("v2/businesses/:businessId/visits/:visitId/reopen")
+  reopenVisit(@Req() request: FastifyRequest) {
+    return this.core.reopen("visit", headers(request), params(request).businessId, params(request).visitId);
+  }
+  @Get("v2/businesses/:businessId/schedule")
+  schedule(@Req() request: FastifyRequest) {
+    return this.core.schedule(headers(request), params(request).businessId, request.query);
+  }
+  @Get("v2/businesses/:businessId/completed")
+  completed(@Req() request: FastifyRequest) {
+    return this.core.completed(headers(request), params(request).businessId, request.query);
+  }
+  @Get("v2/businesses/:businessId/availability")
+  availability(@Req() request: FastifyRequest) {
+    return this.core.availability(headers(request), params(request).businessId, request.query);
+  }
+  @Get("v2/businesses/:businessId/customers/:customerId/timeline")
+  customerTimeline(@Req() request: FastifyRequest) {
+    return this.core.customerTimeline(headers(request), params(request).businessId, params(request).customerId);
+  }
+}
 
 @Controller()
 export class V2SearchController {
-  constructor(@Inject(CoreV2SearchService) readonly core: CoreV2SearchService) {}
-}
+  constructor(@Inject(CoreV2SearchService) private readonly core: CoreV2SearchService) {}
 
-defineRoutes(V2SearchController, [
-  { name: "search", method: "get", path: "v2/businesses/:businessId/search", delegate: (core, request) => core.search(headers(request), params(request).businessId, request.query) }
-]);
+  @Get("v2/businesses/:businessId/search")
+  search(@Req() request: FastifyRequest) {
+    return this.core.search(headers(request), params(request).businessId, request.query);
+  }
+}
 
 @Controller()
 export class V2AmountsController {
-  constructor(@Inject(CoreV2AmountsService) readonly core: CoreV2AmountsService) {}
-}
+  constructor(@Inject(CoreV2AmountsService) private readonly core: CoreV2AmountsService) {}
 
-defineRoutes(V2AmountsController, [
-  { name: "getJobAmount", method: "get", path: "v2/businesses/:businessId/jobs/:jobId/amount", delegate: (core, request) => core.get("job", headers(request), params(request).businessId, params(request).jobId) },
-  { name: "putJobAmount", method: "put", path: "v2/businesses/:businessId/jobs/:jobId/amount", delegate: (core, request) => core.put("job", headers(request), params(request).businessId, params(request).jobId, request.body) },
-  { name: "patchJobAmount", method: "patch", path: "v2/businesses/:businessId/jobs/:jobId/amount", delegate: (core, request) => core.patch("job", headers(request), params(request).businessId, params(request).jobId, request.body) },
-  { name: "payJobAmount", method: "post", path: "v2/businesses/:businessId/jobs/:jobId/amount/payments", delegate: (core, request) => core.payment("job", headers(request), params(request).businessId, params(request).jobId, request.body) },
-  { name: "getVisitAmount", method: "get", path: "v2/businesses/:businessId/visits/:visitId/amount", delegate: (core, request) => core.get("visit", headers(request), params(request).businessId, params(request).visitId) },
-  { name: "putVisitAmount", method: "put", path: "v2/businesses/:businessId/visits/:visitId/amount", delegate: (core, request) => core.put("visit", headers(request), params(request).businessId, params(request).visitId, request.body) },
-  { name: "patchVisitAmount", method: "patch", path: "v2/businesses/:businessId/visits/:visitId/amount", delegate: (core, request) => core.patch("visit", headers(request), params(request).businessId, params(request).visitId, request.body) },
-  { name: "payVisitAmount", method: "post", path: "v2/businesses/:businessId/visits/:visitId/amount/payments", delegate: (core, request) => core.payment("visit", headers(request), params(request).businessId, params(request).visitId, request.body) },
-  { name: "paymentReport", method: "get", path: "v2/businesses/:businessId/reports/payments", delegate: (core, request) => core.paymentReport(headers(request), params(request).businessId, request.query) },
-  { name: "openBalances", method: "get", path: "v2/businesses/:businessId/reports/open-balances", delegate: (core, request) => core.openBalances(headers(request), params(request).businessId) }
-]);
+  @Get("v2/businesses/:businessId/jobs/:jobId/amount")
+  getJobAmount(@Req() request: FastifyRequest) {
+    return this.core.get("job", headers(request), params(request).businessId, params(request).jobId);
+  }
+  @Put("v2/businesses/:businessId/jobs/:jobId/amount")
+  putJobAmount(@Req() request: FastifyRequest) {
+    return this.core.put("job", headers(request), params(request).businessId, params(request).jobId, request.body);
+  }
+  @Patch("v2/businesses/:businessId/jobs/:jobId/amount")
+  patchJobAmount(@Req() request: FastifyRequest) {
+    return this.core.patch("job", headers(request), params(request).businessId, params(request).jobId, request.body);
+  }
+  @Post("v2/businesses/:businessId/jobs/:jobId/amount/payments")
+  payJobAmount(@Req() request: FastifyRequest) {
+    return this.core.payment("job", headers(request), params(request).businessId, params(request).jobId, request.body);
+  }
+  @Get("v2/businesses/:businessId/visits/:visitId/amount")
+  getVisitAmount(@Req() request: FastifyRequest) {
+    return this.core.get("visit", headers(request), params(request).businessId, params(request).visitId);
+  }
+  @Put("v2/businesses/:businessId/visits/:visitId/amount")
+  putVisitAmount(@Req() request: FastifyRequest) {
+    return this.core.put("visit", headers(request), params(request).businessId, params(request).visitId, request.body);
+  }
+  @Patch("v2/businesses/:businessId/visits/:visitId/amount")
+  patchVisitAmount(@Req() request: FastifyRequest) {
+    return this.core.patch(
+      "visit",
+      headers(request),
+      params(request).businessId,
+      params(request).visitId,
+      request.body
+    );
+  }
+  @Post("v2/businesses/:businessId/visits/:visitId/amount/payments")
+  payVisitAmount(@Req() request: FastifyRequest) {
+    return this.core.payment(
+      "visit",
+      headers(request),
+      params(request).businessId,
+      params(request).visitId,
+      request.body
+    );
+  }
+  @Get("v2/businesses/:businessId/reports/payments")
+  paymentReport(@Req() request: FastifyRequest) {
+    return this.core.paymentReport(headers(request), params(request).businessId, request.query);
+  }
+  @Get("v2/businesses/:businessId/reports/open-balances")
+  openBalances(@Req() request: FastifyRequest) {
+    return this.core.openBalances(headers(request), params(request).businessId);
+  }
+}
 
 @Controller()
 export class V2ActionBatchesController {
-  constructor(@Inject(CoreV2ActionBatchesService) readonly core: CoreV2ActionBatchesService) {}
-}
+  constructor(@Inject(CoreV2ActionBatchesService) private readonly core: CoreV2ActionBatchesService) {}
 
-defineRoutes(V2ActionBatchesController, [
-  { name: "list", method: "get", path: "v2/businesses/:businessId/action-batches", delegate: (core, request) => core.list(headers(request), params(request).businessId) },
-  { name: "get", method: "get", path: "v2/businesses/:businessId/action-batches/:actionBatchId", delegate: (core, request) => core.get(headers(request), params(request).businessId, params(request).actionBatchId) },
-  { name: "undoPreview", method: "post", path: "v2/businesses/:businessId/action-batches/:actionBatchId/undo-preview", delegate: (core, request) => core.undoPreview(headers(request), params(request).businessId, params(request).actionBatchId) },
-  { name: "undo", method: "post", path: "v2/businesses/:businessId/action-batches/:actionBatchId/undo", delegate: (core, request) => core.undo(headers(request), params(request).businessId, params(request).actionBatchId, request.body) },
-  { name: "speech", method: "post", path: "v2/businesses/:businessId/action-batches/:actionBatchId/speech", delegate: (core, request) => core.speech(headers(request), params(request).businessId, params(request).actionBatchId) },
-  { name: "getPreferences", method: "get", path: "v2/users/me/preferences", delegate: (core, request) => core.getPreferences(headers(request)) },
-  { name: "updatePreferences", method: "patch", path: "v2/users/me/preferences", delegate: (core, request) => core.updatePreferences(headers(request), request.body) },
-  { name: "retention", method: "post", path: "internal/v2/retention", delegate: (core, request) => core.runRetention(headers(request)) }
-]);
+  @Get("v2/businesses/:businessId/action-batches")
+  list(@Req() request: FastifyRequest) {
+    return this.core.list(headers(request), params(request).businessId);
+  }
+  @Get("v2/businesses/:businessId/action-batches/:actionBatchId")
+  get(@Req() request: FastifyRequest) {
+    return this.core.get(headers(request), params(request).businessId, params(request).actionBatchId);
+  }
+  @Post("v2/businesses/:businessId/action-batches/:actionBatchId/undo-preview")
+  undoPreview(@Req() request: FastifyRequest) {
+    return this.core.undoPreview(headers(request), params(request).businessId, params(request).actionBatchId);
+  }
+  @Post("v2/businesses/:businessId/action-batches/:actionBatchId/undo")
+  undo(@Req() request: FastifyRequest) {
+    return this.core.undo(headers(request), params(request).businessId, params(request).actionBatchId, request.body);
+  }
+  @Post("v2/businesses/:businessId/action-batches/:actionBatchId/speech")
+  speech(@Req() request: FastifyRequest) {
+    return this.core.speech(headers(request), params(request).businessId, params(request).actionBatchId);
+  }
+  @Get("v2/users/me/preferences")
+  getPreferences(@Req() request: FastifyRequest) {
+    return this.core.getPreferences(headers(request));
+  }
+  @Patch("v2/users/me/preferences")
+  updatePreferences(@Req() request: FastifyRequest) {
+    return this.core.updatePreferences(headers(request), request.body);
+  }
+  @Post("internal/v2/retention")
+  retention(@Req() request: FastifyRequest) {
+    return this.core.runRetention(headers(request));
+  }
+}
 
 @Controller()
 export class NotificationsController {
-  constructor(@Inject(CoreNotificationsApplicationService) readonly core: CoreNotificationsApplicationService) {}
-}
+  constructor(
+    @Inject(CoreNotificationsApplicationService) private readonly core: CoreNotificationsApplicationService
+  ) {}
 
-defineRoutes(NotificationsController, [
-  { name: "listNotifications", method: "get", path: "businesses/:businessId/notifications", delegate: (core, request) => core.listNotifications(headers(request), params(request).businessId, request.query) },
-  { name: "registerDeviceToken", method: "post", path: "businesses/:businessId/device-tokens", delegate: (core, request) => core.registerDeviceToken(headers(request), params(request).businessId, request.body) },
-  { name: "updateNotification", method: "patch", path: "businesses/:businessId/notifications/:notificationId", delegate: (core, request) => core.updateNotification(headers(request), params(request).businessId, params(request).notificationId, request.body) },
-  { name: "markNotificationRead", method: "post", path: "businesses/:businessId/notifications/:notificationId/read", delegate: (core, request) => core.markNotificationRead(headers(request), params(request).businessId, params(request).notificationId) },
-  { name: "markAllNotificationsRead", method: "post", path: "businesses/:businessId/notifications/read-all", delegate: (core, request) => core.markAllNotificationsRead(headers(request), params(request).businessId) },
-  { name: "snoozeNotification", method: "post", path: "businesses/:businessId/notifications/:notificationId/snooze", delegate: (core, request) => core.snoozeNotification(headers(request), params(request).businessId, params(request).notificationId, request.body) }
-]);
+  @Get("businesses/:businessId/notifications")
+  listNotifications(@Req() request: FastifyRequest) {
+    return this.core.listNotifications(headers(request), params(request).businessId, request.query);
+  }
+  @Post("businesses/:businessId/device-tokens")
+  registerDeviceToken(@Req() request: FastifyRequest) {
+    return this.core.registerDeviceToken(headers(request), params(request).businessId, request.body);
+  }
+  @Patch("businesses/:businessId/notifications/:notificationId")
+  updateNotification(@Req() request: FastifyRequest) {
+    return this.core.updateNotification(
+      headers(request),
+      params(request).businessId,
+      params(request).notificationId,
+      request.body
+    );
+  }
+  @Post("businesses/:businessId/notifications/:notificationId/read")
+  markNotificationRead(@Req() request: FastifyRequest) {
+    return this.core.markNotificationRead(headers(request), params(request).businessId, params(request).notificationId);
+  }
+  @Post("businesses/:businessId/notifications/read-all")
+  markAllNotificationsRead(@Req() request: FastifyRequest) {
+    return this.core.markAllNotificationsRead(headers(request), params(request).businessId);
+  }
+  @Post("businesses/:businessId/notifications/:notificationId/snooze")
+  snoozeNotification(@Req() request: FastifyRequest) {
+    return this.core.snoozeNotification(
+      headers(request),
+      params(request).businessId,
+      params(request).notificationId,
+      request.body
+    );
+  }
+}
