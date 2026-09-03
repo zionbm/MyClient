@@ -1,5 +1,4 @@
 import { Inject, Injectable } from "@nestjs/common";
-import { Prisma } from "@prisma/client";
 import { PrismaService } from "../prisma.service.js";
 import { BusinessesRepository } from "./business.repositories.js";
 import { createdAtCursorWhere, paginationTake, type CreateCallTranscriptInput, type CreateIncomingCallInput, type PaginationInput, type UpdateIncomingCallInput } from "./repository.shared.js";

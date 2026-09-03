@@ -295,7 +295,7 @@ export function parseHebrewNumber(value: string) {
 
 export function parseHebrewHour(value: string, context: string) {
   const numeric = Number(value);
-  let hour = Number.isFinite(numeric) && numeric > 0 ? numeric : {
+  const hour = Number.isFinite(numeric) && numeric > 0 ? numeric : {
     "אחת": 1,
     "אחד": 1,
     "שתיים": 2,

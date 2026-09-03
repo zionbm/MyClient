@@ -10,6 +10,11 @@
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "check": "tsc -b tsconfig.json",
+    "lint": "eslint services packages scripts",
+    "format": "prettier --write services packages scripts package.json tsconfig*.json",
+    "test:unit:core": "tsx --test 'packages/common/src/**/*.test.ts' 'services/core/src/**/*.test.ts'",
+    "test:unit:ai": "tsx --test 'services/ai/src/**/*.test.ts'",
+    "test:unit": "npm run test:unit:core && npm run test:unit:ai",
     "dev:core": "npm run dev -w @myclient/core",
     "dev:ai": "npm run dev -w @myclient/ai",
     "dev:voice": "npm run dev -w @myclient/voice",
@@ -34,10 +39,15 @@
     "zod": "^3.25.76"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/node": "^24.3.0",
+    "eslint": "^10.9.1",
+    "eslint-config-prettier": "^10.1.8",
+    "prettier": "^3.9.6",
     "prisma": "6.12.0",
     "tsx": "^4.20.4",
-    "typescript": "^5.9.2"
+    "typescript": "^5.9.2",
+    "typescript-eslint": "^8.69.0"
   },
   "engines": {
     "node": ">=24"

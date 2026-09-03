@@ -34,7 +34,7 @@ import {
 import { applyAssistantConfirmationPolicy, materializeStepReferences, preferTranscriptCustomerName, stepsBlockedByPlannedClarification } from "./v2-assistant-plan.js";
 import { composeAssistantSummary } from "./v2-assistant-reply.js";
 import { assertAmountInvariant, money, nextPaidAmount, paymentStatus } from "./v2-money.js";
-import { DEFAULT_WORKING_HOURS, freeSlots, isWithinWorkingHours, localDate, localDateTimeToUtc, workingWindow, type WorkingHours } from "./v2-scheduling.js";
+import { DEFAULT_WORKING_HOURS, localDate, localDateTimeToUtc } from "./v2-scheduling.js";
 import { effectiveScheduleEnd, shiftedScheduleEnd, verifyScheduleConflictToken, type ScheduleConflictOperation } from "./v2-schedule-confirmation.js";
 
 function jsonValue(value: unknown): Prisma.InputJsonValue {

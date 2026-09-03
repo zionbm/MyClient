@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from "@nestjs/common";
+import { ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../prisma.service.js";
 import { createdAtCursorWhere, paginationTake, type AuditEventInput, type CreateBusinessMemberInput, type CreateBusinessPhoneNumberInput, type DisableBusinessMemberInput, type PaginationInput, type RegisterBusinessInput, type UpdateBusinessPhoneNumberInput, type UpdateBusinessSettingsInput } from "./repository.shared.js";
