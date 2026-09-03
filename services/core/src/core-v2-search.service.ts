@@ -3,6 +3,7 @@ import { V2SearchQuerySchema } from "@myclient/contracts";
 import { CoreAccessService } from "./core-access.service.js";
 import { PrismaService } from "./prisma.service.js";
 import { encodePageCursor, paginationFromParsedQuery, type RequestHeaders } from "./core-utils.js";
+import { normalizeIsraeliPhone, normalizeServiceAddress } from "./v2-normalization.js";
 
 @Injectable()
 export class CoreV2SearchService {
@@ -16,6 +17,8 @@ export class CoreV2SearchService {
     const command = V2SearchQuerySchema.parse(query);
     const pagination = paginationFromParsedQuery(command);
     const contains = { contains: command.query, mode: "insensitive" as const };
+    const normalizedPhone = normalizeIsraeliPhone(command.query);
+    const normalizedAddress = normalizeServiceAddress(command.query);
     const wants = (target: string) => command.target === "all" || command.target === target;
     const taskStatus = command.status === "all" ? undefined
       : command.status === "open" ? "OPEN" as const
@@ -34,7 +37,39 @@ export class CoreV2SearchService {
     } : {};
     const [customers, tasks, jobs, visits] = await Promise.all([
       wants("customers") ? this.prisma.customer.findMany({
-        where: { businessId, deletedAt: null, mergedIntoCustomerId: null, AND: [cursorWhere, { OR: [{ name: contains }, { email: contains }] }] },
+        where: {
+          businessId,
+          deletedAt: null,
+          mergedIntoCustomerId: null,
+          AND: [cursorWhere, {
+            OR: [
+              { name: contains },
+              { email: contains },
+              {
+                customerPhones: {
+                  some: {
+                    deletedAt: null,
+                    OR: [
+                      { rawPhone: contains },
+                      ...(normalizedPhone ? [{ normalizedPhone }] : [])
+                    ]
+                  }
+                }
+              },
+              {
+                serviceAddresses: {
+                  some: {
+                    deletedAt: null,
+                    OR: [
+                      { addressText: contains },
+                      { normalizedAddress: { contains: normalizedAddress } }
+                    ]
+                  }
+                }
+              }
+            ]
+          }]
+        },
         take,
         orderBy: { updatedAt: "desc" }
       }) : [],

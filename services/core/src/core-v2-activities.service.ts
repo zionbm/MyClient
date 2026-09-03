@@ -3,6 +3,7 @@ import { Prisma, type ActivityStatus } from "@prisma/client";
 import { getInternalApiSecret, log } from "@myclient/common";
 import {
   V2AvailabilityQuerySchema,
+  V2ActivityListQuerySchema,
   V2CreateJobSchema,
   V2CreateVisitSchema,
   V2ScheduleQuerySchema,
@@ -21,7 +22,7 @@ import {
 import type { V2ActivityKind, V2ActivityWrite } from "./repositories/v2-activities.repositories.js";
 import {
   paginatedResponse,
-  paginationFromQuery,
+  paginationFromParsedQuery,
   parseOptionalDate,
   requiredIdempotencyKey,
   type RequestHeaders
@@ -221,8 +222,15 @@ export class CoreV2ActivitiesService {
 
   private async listActivities(kind: V2ActivityKind, headers: RequestHeaders, businessId: string, query: unknown) {
     await this.access.requireV2BusinessAccess(headers, businessId);
-    const pagination = paginationFromQuery(query);
-    const page = paginatedResponse(await this.activities.list(kind, businessId, pagination), pagination.limit);
+    const command = V2ActivityListQuerySchema.parse(query);
+    const pagination = paginationFromParsedQuery(command);
+    const page = paginatedResponse(await this.activities.list(kind, businessId, {
+      ...pagination,
+      status: command.status,
+      customerId: command.customerId,
+      scheduled: command.scheduled,
+      executed: command.executed
+    }), pagination.limit);
     return { [`${kind}s`]: page.items, pageInfo: page.pageInfo };
   }
 

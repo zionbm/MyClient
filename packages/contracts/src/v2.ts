@@ -50,6 +50,26 @@ export const V2PaginationQuerySchema = z.object({
 });
 export type V2PaginationQuery = z.infer<typeof V2PaginationQuerySchema>;
 
+const OptionalQueryBooleanSchema = z.enum(["true", "false"])
+  .transform((value) => value === "true")
+  .optional();
+
+export const V2TaskListQuerySchema = V2PaginationQuerySchema.extend({
+  state: z.enum(["OPEN", "CLOSED"]).optional(),
+  customerId: z.string().trim().min(1).optional(),
+  dueBefore: z.string().datetime({ offset: true }).optional(),
+  includeUndated: OptionalQueryBooleanSchema
+});
+export type V2TaskListQuery = z.infer<typeof V2TaskListQuerySchema>;
+
+export const V2ActivityListQuerySchema = V2PaginationQuerySchema.extend({
+  status: V2ActivityStatusSchema.optional(),
+  customerId: z.string().trim().min(1).optional(),
+  scheduled: OptionalQueryBooleanSchema,
+  executed: OptionalQueryBooleanSchema
+});
+export type V2ActivityListQuery = z.infer<typeof V2ActivityListQuerySchema>;
+
 export const IdempotencyKeySchema = z.string().trim().min(1).max(200);
 export type IdempotencyKey = z.infer<typeof IdempotencyKeySchema>;
 

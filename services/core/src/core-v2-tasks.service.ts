@@ -1,12 +1,12 @@
 import { ConflictException, Inject, Injectable, NotFoundException } from "@nestjs/common";
 import { Prisma, type TaskStatus } from "@prisma/client";
-import { V2CreateTaskSchema, V2UpdateTaskSchema } from "@myclient/contracts";
+import { V2CreateTaskSchema, V2TaskListQuerySchema, V2UpdateTaskSchema } from "@myclient/contracts";
 import { CoreAccessService } from "./core-access.service.js";
 import { CoreV2IdempotencyService } from "./core-v2-idempotency.service.js";
 import { AuditRepository, V2TasksRepository } from "./core.repositories.js";
 import {
   paginatedResponse,
-  paginationFromQuery,
+  paginationFromParsedQuery,
   parseOptionalDate,
   requiredIdempotencyKey,
   type RequestHeaders
@@ -57,8 +57,15 @@ export class CoreV2TasksService {
 
   async listTasks(headers: RequestHeaders, businessId: string, query: unknown) {
     await this.access.requireV2BusinessAccess(headers, businessId);
-    const pagination = paginationFromQuery(query);
-    const page = paginatedResponse(await this.tasks.list(businessId, pagination), pagination.limit);
+    const command = V2TaskListQuerySchema.parse(query);
+    const pagination = paginationFromParsedQuery(command);
+    const page = paginatedResponse(await this.tasks.list(businessId, {
+      ...pagination,
+      state: command.state,
+      customerId: command.customerId,
+      dueBefore: parseOptionalDate(command.dueBefore) ?? undefined,
+      includeUndated: command.includeUndated
+    }), pagination.limit);
     return { tasks: page.items, pageInfo: page.pageInfo };
   }
 

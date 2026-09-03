@@ -21,6 +21,13 @@ export type V2ActivityWrite = {
   idempotencyKey?: string;
 };
 
+type V2ActivityListInput = PaginationInput & {
+  status?: ActivityStatus;
+  customerId?: string;
+  scheduled?: boolean;
+  executed?: boolean;
+};
+
 function effectiveEnd(activity: { startsAt: Date | null; endsAt: Date | null }, kind: V2ActivityKind) {
   if (!activity.startsAt) return null;
   return effectiveScheduleEnd(kind, activity.startsAt, activity.endsAt);
@@ -30,9 +37,17 @@ function effectiveEnd(activity: { startsAt: Date | null; endsAt: Date | null }, 
 export class V2ActivitiesRepository {
   constructor(@Inject(PrismaService) private readonly prisma: PrismaService) {}
 
-  async list(kind: V2ActivityKind, businessId: string, pagination: PaginationInput) {
+  async list(kind: V2ActivityKind, businessId: string, pagination: V2ActivityListInput) {
     const args = {
-      where: { businessId, deletedAt: null, ...createdAtCursorWhere(pagination.cursor) },
+      where: {
+        businessId,
+        deletedAt: null,
+        status: pagination.status,
+        customerId: pagination.customerId,
+        startsAt: pagination.scheduled === undefined ? undefined : pagination.scheduled ? { not: null } : null,
+        executionCompletedAt: pagination.executed === undefined ? undefined : pagination.executed ? { not: null } : null,
+        ...createdAtCursorWhere(pagination.cursor)
+      },
       include: { customer: true, serviceAddress: true, amounts: { where: { deletedAt: null }, take: 1 } },
       orderBy: [{ createdAt: "desc" as const }, { id: "desc" as const }],
       take: paginationTake(pagination)

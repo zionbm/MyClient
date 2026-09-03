@@ -5,6 +5,13 @@ import { PrismaService } from "../prisma.service.js";
 import { BusinessesRepository } from "./business.repositories.js";
 import { createdAtCursorWhere, paginationTake, type PaginationInput } from "./repository.shared.js";
 
+type V2TaskListInput = PaginationInput & {
+  state?: "OPEN" | "CLOSED";
+  customerId?: string;
+  dueBefore?: Date;
+  includeUndated?: boolean;
+};
+
 @Injectable()
 export class V2CustomersRepository {
   constructor(
@@ -410,10 +417,28 @@ export class V2TasksRepository {
     return this.prisma.task.create({ data: input });
   }
 
-  async list(businessId: string, pagination: PaginationInput) {
+  async list(businessId: string, pagination: V2TaskListInput) {
     await this.businesses.requireBusiness(businessId);
+    const dueAt = pagination.dueBefore
+      ? pagination.includeUndated
+        ? { OR: [{ dueAt: { lt: pagination.dueBefore } }, { dueAt: null }] }
+        : { dueAt: { lt: pagination.dueBefore } }
+      : pagination.includeUndated === false
+        ? { dueAt: { not: null } }
+        : {};
     return this.prisma.task.findMany({
-      where: { businessId, deletedAt: null, ...createdAtCursorWhere(pagination.cursor) },
+      where: {
+        businessId,
+        deletedAt: null,
+        customerId: pagination.customerId,
+        status: pagination.state === "OPEN"
+          ? "OPEN"
+          : pagination.state === "CLOSED"
+            ? { in: ["DONE", "CANCELLED"] }
+            : undefined,
+        ...dueAt,
+        ...createdAtCursorWhere(pagination.cursor)
+      },
       include: { customer: true },
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       take: paginationTake(pagination)
