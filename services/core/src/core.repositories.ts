@@ -19,15 +19,15 @@ export {
   ActionBatchesRepository,
   AssistantSessionsRepository,
   UserPreferencesRepository
-} from "./repositories/v2-foundation.repositories.js";
+} from "./repositories/foundation.repositories.js";
 
 export {
-  V2CustomerPhonesRepository,
-  V2CustomersRepository,
-  V2NotesRepository,
-  V2ServiceAddressesRepository,
-  V2TasksRepository
-} from "./repositories/v2-crm.repositories.js";
+  CustomerPhonesRepository,
+  CustomersRepository,
+  NotesRepository,
+  ServiceAddressesRepository,
+  TasksRepository
+} from "./repositories/crm.repositories.js";
 
-export { V2ActivitiesRepository } from "./repositories/v2-activities.repositories.js";
-export { V2AmountsRepository } from "./repositories/v2-amounts.repositories.js";
+export { ActivitiesRepository } from "./repositories/activities.repositories.js";
+export { AmountsRepository } from "./repositories/amounts.repositories.js";

@@ -4,14 +4,14 @@ import type { CoreService } from "./main.js";
 import { CoreNotificationsApplicationService } from "./core-notifications-application.service.js";
 import { CoreBusinessApplicationService } from "./core-business-application.service.js";
 import { CoreCallsService } from "./core-calls.service.js";
-import { CoreV2CustomersService } from "./core-v2-customers.service.js";
-import { CoreV2TasksService } from "./core-v2-tasks.service.js";
-import { CoreV2AssistantService } from "./core-v2-assistant.service.js";
-import { CoreV2ActivitiesService } from "./core-v2-activities.service.js";
-import { CoreV2SearchService } from "./core-v2-search.service.js";
-import { CoreV2AmountsService } from "./core-v2-amounts.service.js";
-import { CoreV2ActionBatchesService } from "./core-v2-action-batches.service.js";
-import { CoreV2NotesService } from "./core-v2-notes.service.js";
+import { CoreCustomersService } from "./core-customers.service.js";
+import { CoreTasksService } from "./core-tasks.service.js";
+import { CoreAssistantService } from "./core-assistant.service.js";
+import { CoreActivitiesService } from "./core-activities.service.js";
+import { CoreSearchService } from "./core-search.service.js";
+import { CoreAmountsService } from "./core-amounts.service.js";
+import { CoreActionBatchesService } from "./core-action-batches.service.js";
+import { CoreNotesService } from "./core-notes.service.js";
 
 export const CORE_SERVICE = Symbol("CORE_SERVICE");
 
@@ -124,8 +124,8 @@ export class CallsController {
 }
 
 @Controller()
-export class V2CustomersController {
-  constructor(@Inject(CoreV2CustomersService) private readonly core: CoreV2CustomersService) {}
+export class CustomersController {
+  constructor(@Inject(CoreCustomersService) private readonly core: CoreCustomersService) {}
 
   @Post("v2/businesses/:businessId/customers")
   createCustomer(@Req() request: FastifyRequest) {
@@ -234,8 +234,8 @@ export class V2CustomersController {
 }
 
 @Controller()
-export class V2NotesController {
-  constructor(@Inject(CoreV2NotesService) private readonly core: CoreV2NotesService) {}
+export class NotesController {
+  constructor(@Inject(CoreNotesService) private readonly core: CoreNotesService) {}
 
   @Post("v2/businesses/:businessId/customers/:customerId/notes")
   createNote(@Req() request: FastifyRequest) {
@@ -263,8 +263,8 @@ export class V2NotesController {
 }
 
 @Controller()
-export class V2TasksController {
-  constructor(@Inject(CoreV2TasksService) private readonly core: CoreV2TasksService) {}
+export class TasksController {
+  constructor(@Inject(CoreTasksService) private readonly core: CoreTasksService) {}
 
   @Post("v2/businesses/:businessId/tasks")
   createTask(@Req() request: FastifyRequest) {
@@ -301,8 +301,8 @@ export class V2TasksController {
 }
 
 @Controller()
-export class V2AssistantController {
-  constructor(@Inject(CoreV2AssistantService) private readonly core: CoreV2AssistantService) {}
+export class AssistantController {
+  constructor(@Inject(CoreAssistantService) private readonly core: CoreAssistantService) {}
 
   @Post("v2/businesses/:businessId/assistant/realtime-session")
   createRealtimeSession(@Req() request: FastifyRequest) {
@@ -345,8 +345,8 @@ export class V2AssistantController {
 }
 
 @Controller()
-export class V2ActivitiesController {
-  constructor(@Inject(CoreV2ActivitiesService) private readonly core: CoreV2ActivitiesService) {}
+export class ActivitiesController {
+  constructor(@Inject(CoreActivitiesService) private readonly core: CoreActivitiesService) {}
 
   @Get("v2/businesses/:businessId/jobs")
   listJobs(@Req() request: FastifyRequest) {
@@ -449,8 +449,8 @@ export class V2ActivitiesController {
 }
 
 @Controller()
-export class V2SearchController {
-  constructor(@Inject(CoreV2SearchService) private readonly core: CoreV2SearchService) {}
+export class SearchController {
+  constructor(@Inject(CoreSearchService) private readonly core: CoreSearchService) {}
 
   @Get("v2/businesses/:businessId/search")
   search(@Req() request: FastifyRequest) {
@@ -459,8 +459,8 @@ export class V2SearchController {
 }
 
 @Controller()
-export class V2AmountsController {
-  constructor(@Inject(CoreV2AmountsService) private readonly core: CoreV2AmountsService) {}
+export class AmountsController {
+  constructor(@Inject(CoreAmountsService) private readonly core: CoreAmountsService) {}
 
   @Get("v2/businesses/:businessId/jobs/:jobId/amount")
   getJobAmount(@Req() request: FastifyRequest) {
@@ -517,8 +517,8 @@ export class V2AmountsController {
 }
 
 @Controller()
-export class V2ActionBatchesController {
-  constructor(@Inject(CoreV2ActionBatchesService) private readonly core: CoreV2ActionBatchesService) {}
+export class ActionBatchesController {
+  constructor(@Inject(CoreActionBatchesService) private readonly core: CoreActionBatchesService) {}
 
   @Get("v2/businesses/:businessId/action-batches")
   list(@Req() request: FastifyRequest) {

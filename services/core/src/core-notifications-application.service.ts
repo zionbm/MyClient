@@ -1,9 +1,26 @@
 import { BadRequestException, Inject, Injectable, NotFoundException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
-import { NotificationListQuerySchema, RegisterDeviceTokenSchema, SnoozeNotificationSchema, UpdateNotificationSchema } from "@myclient/contracts";
-import { AuditRepository, BusinessSettingsRepository, DeviceTokensRepository, NotificationsRepository, V2TasksRepository } from "./core.repositories.js";
+import {
+  NotificationListQuerySchema,
+  RegisterDeviceTokenSchema,
+  SnoozeNotificationSchema,
+  UpdateNotificationSchema
+} from "@myclient/contracts";
+import {
+  AuditRepository,
+  BusinessSettingsRepository,
+  DeviceTokensRepository,
+  NotificationsRepository,
+  TasksRepository
+} from "./core.repositories.js";
 import { CoreAccessService } from "./core-access.service.js";
-import { paginatedResponse, paginationFromParsedQuery, publicDeviceToken, snoozeDueAt, type RequestHeaders } from "./core-utils.js";
+import {
+  paginatedResponse,
+  paginationFromParsedQuery,
+  publicDeviceToken,
+  snoozeDueAt,
+  type RequestHeaders
+} from "./core-utils.js";
 
 @Injectable()
 export class CoreNotificationsApplicationService {
@@ -13,13 +30,16 @@ export class CoreNotificationsApplicationService {
     @Inject(BusinessSettingsRepository) private readonly settings: BusinessSettingsRepository,
     @Inject(NotificationsRepository) private readonly notifications: NotificationsRepository,
     @Inject(DeviceTokensRepository) private readonly deviceTokens: DeviceTokensRepository,
-    @Inject(V2TasksRepository) private readonly tasks: V2TasksRepository
+    @Inject(TasksRepository) private readonly tasks: TasksRepository
   ) {}
   async listNotifications(headers: RequestHeaders, businessId: string, query: unknown) {
     await this.access.requireBusinessAccess(headers, businessId);
     const command = NotificationListQuerySchema.parse(query);
     const pagination = paginationFromParsedQuery(command);
-    const page = paginatedResponse(await this.notifications.listByBusinessAndStatus(businessId, command.status, pagination), pagination.limit);
+    const page = paginatedResponse(
+      await this.notifications.listByBusinessAndStatus(businessId, command.status, pagination),
+      pagination.limit
+    );
     return { notifications: page.items, pageInfo: page.pageInfo };
   }
   async registerDeviceToken(headers: RequestHeaders, businessId: string, body: unknown) {
@@ -50,12 +70,7 @@ export class CoreNotificationsApplicationService {
     });
     return { deviceToken: publicDeviceToken(deviceToken) };
   }
-  async updateNotification(
-    headers: RequestHeaders,
-    businessId: string,
-    notificationId: string,
-    body: unknown
-  ) {
+  async updateNotification(headers: RequestHeaders, businessId: string, notificationId: string, body: unknown) {
     const user = await this.access.requireBusinessAccess(headers, businessId);
     const command = UpdateNotificationSchema.parse(body);
     const notification = await this.notifications.updateStatus({
@@ -115,12 +130,7 @@ export class CoreNotificationsApplicationService {
     });
     return { updatedCount: result.count };
   }
-  async snoozeNotification(
-    headers: RequestHeaders,
-    businessId: string,
-    notificationId: string,
-    body: unknown
-  ) {
+  async snoozeNotification(headers: RequestHeaders, businessId: string, notificationId: string, body: unknown) {
     const user = await this.access.requireBusinessAccess(headers, businessId);
     const command = SnoozeNotificationSchema.parse(body);
     const notification = await this.notifications.findByBusinessAndId(businessId, notificationId);

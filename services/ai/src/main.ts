@@ -1,15 +1,30 @@
 import "reflect-metadata";
-import { BadGatewayException, Body, Controller, Get, Headers, Module, Post, UnauthorizedException } from "@nestjs/common";
+import {
+  BadGatewayException,
+  Body,
+  Controller,
+  Get,
+  Headers,
+  Module,
+  Post,
+  UnauthorizedException
+} from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { FastifyAdapter, type NestFastifyApplication } from "@nestjs/platform-fastify";
-import { ApiExceptionFilter, configureHttpObservability, getEnv, getInternalApiSecret, getPort, health, log, validateServiceEnvironment } from "@myclient/common";
 import {
-  AssistantPlanSchema,
-  type AssistantPlan
-} from "@myclient/contracts";
-import { deterministicPendingAssistantPlan, normalizeAssistantPlan } from "./v2-assistant-plan.js";
-import { deterministicAssistantPlan } from "./v2-assistant-fast-path.js";
-import { ASSISTANT_PLAN_JSON_SCHEMA } from "./v2-assistant-schema.js";
+  ApiExceptionFilter,
+  configureHttpObservability,
+  getEnv,
+  getInternalApiSecret,
+  getPort,
+  health,
+  log,
+  validateServiceEnvironment
+} from "@myclient/common";
+import { AssistantPlanSchema, type AssistantPlan } from "@myclient/contracts";
+import { deterministicPendingAssistantPlan, normalizeAssistantPlan } from "./assistant-plan.js";
+import { deterministicAssistantPlan } from "./assistant-fast-path.js";
+import { ASSISTANT_PLAN_JSON_SCHEMA } from "./assistant-schema.js";
 
 const DEFAULT_LLM_MODEL = "gpt-5.6-terra";
 const DEFAULT_REASONING_EFFORT = "low";
@@ -38,22 +53,23 @@ class AiController {
   }
 
   @Post("v2/assistant/plan")
-  async planV2(@Headers() headers: RequestHeaders, @Body() body: { transcript?: string; context?: unknown }) {
+  async plan(@Headers() headers: RequestHeaders, @Body() body: { transcript?: string; context?: unknown }) {
     requireInternalSecret(headers);
     const startedAt = Date.now();
     const transcript = (body.transcript ?? "").trim();
     const mock = getEnv("MOCK_LLM_PROVIDER", "false") === "true";
-    const deterministic = deterministicAssistantPlan(transcript, body.context)
-      ?? deterministicPendingAssistantPlan(body.context, transcript);
+    const deterministic =
+      deterministicAssistantPlan(transcript, body.context) ??
+      deterministicPendingAssistantPlan(body.context, transcript);
     const provider = deterministic ? "deterministic" : mock ? "mock" : "openai";
-    const rawPlan = deterministic ?? (mock
-      ? this.mockV2Plan(transcript)
-      : await this.openAiV2Plan(transcript, body.context));
+    const rawPlan =
+      deterministic ?? (mock ? this.mockPlan(transcript) : await this.openAiPlan(transcript, body.context));
     const plan = normalizeAssistantPlan(rawPlan, body.context, transcript);
-    log("info", "v2 assistant plan completed", {
+    log("info", "assistant plan completed", {
       provider,
       model: provider === "openai" ? getEnv("OPENAI_LLM_MODEL", DEFAULT_LLM_MODEL) : undefined,
-      reasoningEffort: provider === "openai" ? getEnv("OPENAI_LLM_REASONING_EFFORT", DEFAULT_REASONING_EFFORT) : undefined,
+      reasoningEffort:
+        provider === "openai" ? getEnv("OPENAI_LLM_REASONING_EFFORT", DEFAULT_REASONING_EFFORT) : undefined,
       stepCount: plan.steps.length,
       durationMs: Date.now() - startedAt
     });
@@ -63,22 +79,24 @@ class AiController {
     };
   }
 
-  private mockV2Plan(transcript: string): AssistantPlan {
+  private mockPlan(transcript: string): AssistantPlan {
     if (transcript.includes("זמינ") || transcript.includes("פנוי")) {
       return {
         version: "2",
         requestKind: "QUESTION",
         language: "he-IL",
         extractedFacts: {},
-        steps: [{
-          stepId: "availability",
-          kind: "READ",
-          tool: "GET_AVAILABILITY",
-          dependsOn: [],
-          input: { date: new Date().toISOString().slice(0, 10), durationMinutes: 60 },
-          confidence: 0.8,
-          requiresExplicitConfirmation: false
-        }]
+        steps: [
+          {
+            stepId: "availability",
+            kind: "READ",
+            tool: "GET_AVAILABILITY",
+            dependsOn: [],
+            input: { date: new Date().toISOString().slice(0, 10), durationMinutes: 60 },
+            confidence: 0.8,
+            requiresExplicitConfirmation: false
+          }
+        ]
       };
     }
     if (transcript.includes("הפעילות הבאה") || transcript.includes("מה הבא")) {
@@ -89,18 +107,22 @@ class AiController {
         requestKind: "QUESTION",
         language: "he-IL",
         extractedFacts: {},
-        steps: [{
-          stepId: "next_activity",
-          kind: "READ",
-          tool: "GET_SCHEDULE",
-          dependsOn: [],
-          input: { from: from.toISOString(), to: to.toISOString(), limit: 1 },
-          confidence: 0.9,
-          requiresExplicitConfirmation: false
-        }]
+        steps: [
+          {
+            stepId: "next_activity",
+            kind: "READ",
+            tool: "GET_SCHEDULE",
+            dependsOn: [],
+            input: { from: from.toISOString(), to: to.toISOString(), limit: 1 },
+            confidence: 0.9,
+            requiresExplicitConfirmation: false
+          }
+        ]
       };
     }
-    const customerName = transcript.match(/(?:לקוח\s+)?בשם\s+(.+?)(?=\s+ו(?:תזכיר|תוסיף|תיצר|תיצור)|[,.;]|$)/)?.[1]?.trim();
+    const customerName = transcript
+      .match(/(?:לקוח\s+)?בשם\s+(.+?)(?=\s+ו(?:תזכיר|תוסיף|תיצר|תיצור)|[,.;]|$)/)?.[1]
+      ?.trim();
     const taskText = transcript.match(/(?:תזכירי?\s+לי|תוסיף(?:י)?\s+משימה)\s+(.+?)(?:[.;]|$)/)?.[1]?.trim();
     const steps: AssistantPlan["steps"] = [];
     if (customerName) {
@@ -148,7 +170,7 @@ class AiController {
     };
   }
 
-  private async openAiV2Plan(transcript: string, context: unknown): Promise<AssistantPlan> {
+  private async openAiPlan(transcript: string, context: unknown): Promise<AssistantPlan> {
     const startedAt = Date.now();
     const response = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
@@ -166,7 +188,7 @@ class AiController {
           {
             role: "system",
             content:
-              "אתה מתכנן פעולות עבור MyClient V2. החזר AssistantPlan בעברית he-IL בלבד. " +
+              "אתה מתכנן פעולות עבור MyClient . החזר AssistantPlan בעברית he-IL בלבד. " +
               "תכנן רק כלים מתוך ה-allowlist. לפני שינוי ישות קיימת השתמש ב-FIND_CUSTOMERS וב-FIND_TASKS/FIND_JOBS/FIND_VISITS לפי הצורך, ואז העבר entityRef מובנה לשלב הכתיבה. כאשר המשתמש מבקש במפורש ליצור לקוח חדש, צור אותו ישירות ואל תחפש לקוח קיים לפני היצירה. " +
               "יצירה רגילה, עדכון, השלמה, פתיחה מחדש ודיווח סיום אינם דורשים אישור נוסף. ביטול, מחיקה, שינוי סכום, תשלום, מיזוג, Undo ועקיפת התנגשות דורשים requiresExplicitConfirmation=true. Core אוכף מדיניות זו גם אם הדגל הוחזר באופן שגוי. " +
               "חוזי input מדויקים: CREATE/UPDATE_CUSTOMER משתמשים ב-name,email,generalNotes רק לפרטים כלליים של כרטיס הלקוח; בקשה להוסיף הערה ללקוח תמיד משתמשת ב-CREATE_NOTE עם customerId או customerRef ו-text. ADD_CUSTOMER_PHONE משתמש ב-customerId או customerRef וב-phone,label,isPrimary; ADD_SERVICE_ADDRESS משתמש ב-customerId או customerRef וב-addressText,label; CREATE/UPDATE_TASK משתמשים ב-customerId או customerRef וב-title,description,dueAt; CREATE/UPDATE_JOB ו-CREATE/UPDATE_VISIT משתמשים ב-customerId או customerRef וב-title,description,startsAt,endsAt,serviceAddressId,locationSnapshot; SET_ACTIVITY_AMOUNT משתמש ב-entityId או entityRef וב-totalAmount,paidAmount; ADD_PAYMENT משתמש ב-entityId או entityRef וב-amount. אל תשתמש ב-scheduledStart, scheduledEnd או amount במקום totalAmount. אל תמציא תיאור כללי כמו 'עבודה שנקבעה על ידי המשתמש' כאשר המשתמש לא מסר תיאור. " +
@@ -186,7 +208,7 @@ class AiController {
         text: {
           format: {
             type: "json_schema",
-            name: "assistant_plan_v2",
+            name: "assistant_plan",
             strict: true,
             schema: ASSISTANT_PLAN_JSON_SCHEMA
           }
@@ -201,11 +223,12 @@ class AiController {
       output?: Array<{ content?: Array<{ text?: string }> }>;
     };
     if (!response.ok) {
-      throw new BadGatewayException({ message: `OpenAI V2 planning failed with ${response.status}`, details: result });
+      throw new BadGatewayException({ message: `OpenAI  planning failed with ${response.status}`, details: result });
     }
-    const outputText = result.output_text ?? result.output?.flatMap((item) => item.content ?? []).find((content) => content.text)?.text;
-    if (!outputText) throw new BadGatewayException("OpenAI V2 planning returned empty output");
-    log("info", "openai v2 planning response received", {
+    const outputText =
+      result.output_text ?? result.output?.flatMap((item) => item.content ?? []).find((content) => content.text)?.text;
+    if (!outputText) throw new BadGatewayException("OpenAI  planning returned empty output");
+    log("info", "openai planning response received", {
       responseId: result.id,
       durationMs: Date.now() - startedAt,
       inputTokens: result.usage?.input_tokens,
@@ -214,7 +237,6 @@ class AiController {
     });
     return normalizeAssistantPlan(JSON.parse(outputText), context, transcript);
   }
-
 }
 
 @Module({

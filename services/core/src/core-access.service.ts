@@ -88,15 +88,13 @@ export class CoreAccessService {
 
   async requireBusinessAccess(headers: RequestHeaders, businessId: string): Promise<AuthenticatedUser> {
     const user = await this.requireAuthenticatedUser(headers);
-    const hasMembership = user.memberships?.some((membership) => membership.businessId === businessId && membership.status === "ACTIVE");
+    const hasMembership = user.memberships?.some(
+      (membership) => membership.businessId === businessId && membership.status === "ACTIVE"
+    );
     if (user.businessId !== businessId && !hasMembership) {
       throw new ForbiddenException("User is not allowed to access this business");
     }
     return user;
-  }
-
-  async requireV2BusinessAccess(headers: RequestHeaders, businessId: string): Promise<AuthenticatedUser> {
-    return this.requireBusinessAccess(headers, businessId);
   }
 
   requireInternalSecret(headers: RequestHeaders): void {
@@ -119,8 +117,14 @@ export class CoreAccessService {
     try {
       await verifyGoogleOidcToken({
         token,
-        audiences: audience.split(",").map((value) => value.trim()).filter(Boolean),
-        allowedServiceAccounts: allowedServiceAccount.split(",").map((value) => value.trim()).filter(Boolean)
+        audiences: audience
+          .split(",")
+          .map((value) => value.trim())
+          .filter(Boolean),
+        allowedServiceAccounts: allowedServiceAccount
+          .split(",")
+          .map((value) => value.trim())
+          .filter(Boolean)
       });
     } catch {
       throw new UnauthorizedException("Missing or invalid scheduler identity token");

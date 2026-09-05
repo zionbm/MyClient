@@ -19,7 +19,7 @@ import {
   CallTranscriptsRepository,
   IncomingCallsRepository,
   NotificationsRepository,
-  V2TasksRepository
+  TasksRepository
 } from "./core.repositories.js";
 import { CoreAccessService } from "./core-access.service.js";
 import { CoreNotificationsService } from "./core-notifications.service.js";
@@ -27,7 +27,7 @@ import {
   CoreApplicationModule,
   CoreInfrastructureModule,
   CorePersistenceModule,
-  CoreV2Module
+  CoreProductModule
 } from "./core.modules.js";
 import {
   buildReminderFromCallDescription,
@@ -47,7 +47,7 @@ export class CoreService {
     @Inject(BusinessPhoneNumbersRepository) private readonly phoneNumbers: BusinessPhoneNumbersRepository,
     @Inject(IncomingCallsRepository) private readonly incomingCalls: IncomingCallsRepository,
     @Inject(CallTranscriptsRepository) private readonly callTranscripts: CallTranscriptsRepository,
-    @Inject(V2TasksRepository) private readonly v2Tasks: V2TasksRepository,
+    @Inject(TasksRepository) private readonly tasks: TasksRepository,
     @Inject(NotificationsRepository) private readonly notifications: NotificationsRepository
   ) {}
   async createIncomingCall(headers: RequestHeaders, body: unknown) {
@@ -183,7 +183,7 @@ export class CoreService {
     await this.access.requireInternalScheduler(headers);
     const requestedLimit = Number((body as { limit?: unknown })?.limit ?? 20);
     const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 100)) : 20;
-    const dueTasks = await this.v2Tasks.claimDue(limit);
+    const dueTasks = await this.tasks.claimDue(limit);
     const processedTasks = [];
 
     log("info", "due reminder poll started", {
@@ -213,7 +213,7 @@ export class CoreService {
         source: "scheduler",
         entityType: "task",
         entityId: task.id,
-        action: "SEND_V2_TASK_NOTIFICATION",
+        action: "SEND__TASK_NOTIFICATION",
         after: task as Prisma.InputJsonValue,
         result: notificationDelivery.status
       });
@@ -239,10 +239,10 @@ export class CoreService {
     sourceCallId: string;
     idempotencyKey: string;
   }) {
-    const existing = await this.v2Tasks.findByIdempotencyKey(command.businessId, command.idempotencyKey);
+    const existing = await this.tasks.findByIdempotencyKey(command.businessId, command.idempotencyKey);
     if (existing) return { duplicate: true, task: existing };
     const urgentPrefix = command.priority === "URGENT" ? "[URGENT] " : "";
-    const task = await this.v2Tasks.create({
+    const task = await this.tasks.create({
       businessId: command.businessId,
       title: `${urgentPrefix}לחזור ללקוח`,
       description: buildReminderFromCallDescription(command.callerPhone, command.transcript),
@@ -250,7 +250,7 @@ export class CoreService {
       source: "telephony",
       idempotencyKey: command.idempotencyKey
     });
-    if (!task) throw new BadRequestException("Could not create V2 callback task");
+    if (!task) throw new BadRequestException("Could not create  callback task");
     const notification = await this.notifications.create({
       businessId: command.businessId,
       itemType: "task",
@@ -289,40 +289,40 @@ const {
   InternalController,
   NotificationsController,
   SystemController,
-  V2CustomersController,
-  V2NotesController,
-  V2AssistantController,
-  V2ActivitiesController,
-  V2SearchController,
-  V2AmountsController,
-  V2ActionBatchesController,
-  V2TasksController
+  CustomersController,
+  NotesController,
+  AssistantController,
+  ActivitiesController,
+  SearchController,
+  AmountsController,
+  ActionBatchesController,
+  TasksController
 } = await import("./core.controllers.js");
 
 @Module({
-  imports: [CorePersistenceModule, CoreInfrastructureModule, CoreV2Module, CoreApplicationModule],
+  imports: [CorePersistenceModule, CoreInfrastructureModule, CoreProductModule, CoreApplicationModule],
   controllers: [
     SystemController,
     InternalController,
     CallsController,
-    V2CustomersController,
-    V2NotesController,
-    V2AssistantController,
-    V2ActivitiesController,
-    V2SearchController,
-    V2AmountsController,
-    V2ActionBatchesController,
-    V2TasksController,
+    CustomersController,
+    NotesController,
+    AssistantController,
+    ActivitiesController,
+    SearchController,
+    AmountsController,
+    ActionBatchesController,
+    TasksController,
     NotificationsController
   ],
   providers: [CoreService, { provide: CORE_SERVICE, useExisting: CoreService }]
 })
-class CoreModule {}
+class CoreRootModule {}
 
 async function bootstrap() {
   validateServiceEnvironment("core");
   const adapter = new FastifyAdapter();
-  const app = await NestFactory.create<NestFastifyApplication>(CoreModule, adapter);
+  const app = await NestFactory.create<NestFastifyApplication>(CoreRootModule, adapter);
   app.enableShutdownHooks();
   configureHttpObservability(adapter.getInstance(), "core");
   app.useGlobalFilters(new ApiExceptionFilter("core"));

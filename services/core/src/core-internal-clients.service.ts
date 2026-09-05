@@ -16,16 +16,21 @@ export class CoreVoiceInternalClient {
       },
       body: JSON.stringify({ text })
     });
-    const result = (await response.json().catch(() => ({}))) as { provider?: string; audioObjectUri?: string; audioBase64?: string; contentType?: string; text?: string };
+    const result = (await response.json().catch(() => ({}))) as {
+      provider?: string;
+      audioObjectUri?: string;
+      audioBase64?: string;
+      contentType?: string;
+      text?: string;
+    };
     if (!response.ok) throw new BadGatewayException("Voice TTS failed");
     return result;
   }
-
 }
 
 @Injectable()
 export class CoreAiInternalClient {
-  async planV2AssistantCommand(input: { transcript: string; context: unknown; requestId?: string }) {
+  async planAssistantCommand(input: { transcript: string; context: unknown; requestId?: string }) {
     const aiBaseUrl = getEnv("AI_BASE_URL", "http://localhost:3001");
     const response = await fetch(`${aiBaseUrl}/v2/assistant/plan`, {
       method: "POST",
@@ -39,9 +44,8 @@ export class CoreAiInternalClient {
     });
     const result = (await response.json().catch(() => ({}))) as { provider?: string; plan?: unknown };
     if (!response.ok) {
-      throw new BadGatewayException({ message: `AI V2 planning failed with ${response.status}`, details: result });
+      throw new BadGatewayException({ message: `AI  planning failed with ${response.status}`, details: result });
     }
     return { provider: result.provider ?? "openai", plan: AssistantPlanSchema.parse(result.plan) };
   }
-
 }
